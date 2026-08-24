@@ -710,18 +710,47 @@ PEDIGREE_EXCLUDE = {
 }
 TITLE_PATTERNS = [
     ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?|CIB-J)\b"),
-    ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+CHAMPION|C\.?I\.?B\.?)\b"),
+    ("international_veteran_champion", r"\b(?:CIB-V|INTERNATIONAL\s+VETERAN\s+CHAMPION)\b"),
+    ("international_show_champion", r"\b(?:C\.?I\.?E\.?)\b"),
+    ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+(?:BEAUTY\s+)?CHAMPION|C\.?I\.?B\.?)\b"),
     ("junior_champion", r"\b(?:J\.?\s*CH\.?|JR\.?\s*CH\.?|JUNIOR\s+CHAMPION)\b"),
+    ("veteran_champion", r"\b(?:V\.?\s*CH\.?|VETERAN\s+CHAMPION)\b"),
     ("grand_champion", r"\b(?:GCH|GR\.?\s*CH\.?|GRAND\s+CHAMPION)\b"),
-    ("champion", r"\b(?:CH\.?|CHAMPION)\b"),
+    ("champion", r"(?<![A-Z.])\b(?:CH\.?|CHAMPION)\b"),
 ]
 TITLE_LABELS = {
     "champion": ("CH", "silver", "チャンピオン"),
     "international_champion": ("INT.CH", "gold", "インターチャンピオン"),
     "junior_champion": ("J.CH", "rose", "ジュニアチャンピオン"),
     "junior_international_champion": ("J.INT.CH", "purple", "ジュニアインターチャンピオン"),
+    "international_veteran_champion": ("CIB-V", "purple", "インターナショナルベテランチャンピオン"),
+    "international_show_champion": ("C.I.E.", "gold", "インターナショナルショーチャンピオン"),
+    "veteran_champion": ("V.CH", "rose", "ベテランチャンピオン"),
     "grand_champion": ("G.CH", "blue", "グランドチャンピオン"),
 }
+
+# JKC公式の3代祖血統証明書に記載される番号と領域。番号検出が一つ失敗しても、
+# 後続の犬が別の親族欄へずれないよう各欄を独立して読み取る。
+JKC_SLOT_BOXES = {
+    1: (.08, .385, .49, .465), 2: (.08, .698, .49, .785),
+    3: (.08, .285, .49, .385), 4: (.08, .445, .49, .555),
+    5: (.08, .600, .49, .710), 6: (.08, .755, .49, .870),
+    7: (.545, .265, .965, .355), 8: (.545, .345, .965, .435),
+    9: (.545, .420, .965, .510), 10: (.545, .495, .965, .590),
+    11: (.545, .575, .965, .655), 12: (.545, .655, .965, .750),
+    13: (.545, .730, .965, .825), 14: (.545, .805, .965, .900),
+}
+
+
+def extract_title_keys(value: str) -> list[str]:
+    """長い称号から先に消費し、J.CH/INT.CH内のCHを二重計上しない。"""
+    remaining = value.upper().replace("／", "/")
+    found: list[str] = []
+    for key, pattern in TITLE_PATTERNS:
+        if re.search(pattern, remaining, re.IGNORECASE):
+            found.append(key)
+            remaining = re.sub(pattern, " ", remaining, flags=re.IGNORECASE)
+    return found
 
 
 def title_marks(value: str | None) -> str:
@@ -730,12 +759,10 @@ def title_marks(value: str | None) -> str:
 
 
 def split_name_titles(value: str) -> tuple[str, list[str]]:
-    titles: list[str] = []
+    titles = extract_title_keys(value)
     name = value
     for key, pattern in TITLE_PATTERNS:
-        if re.search(pattern, name, re.IGNORECASE):
-            titles.append(key)
-            name = re.sub(pattern, " ", name, flags=re.IGNORECASE)
+        name = re.sub(pattern, " ", name, flags=re.IGNORECASE)
     return re.sub(r"\s{2,}", " ", name).strip(" ,-./"), titles
 
 
@@ -749,8 +776,9 @@ def ocr_image(image: Image.Image, psm: int = 11) -> str:
 
 def ocr_spatial_records(image: Image.Image, box: tuple[float, float, float, float] = (0, 0, 1, 1)) -> list[tuple[float, float, str]]:
     """全面OCRの座標を保ったまま、指定範囲内の行を返す。"""
-    available = set(pytesseract.get_languages(config=""))
-    languages = "+".join(code for code in ["eng", "jpn"] if code in available) or "eng"
+    # JKCの犬名・番号・称号欄は英字で構成される。jpnとの混在認識は英字行を
+    # 落とすことがあるため、配置解析だけはeng固定で実行する。
+    languages = "eng"
     data = pytesseract.image_to_data(image, lang=languages, config="--psm 11", output_type=pytesseract.Output.DICT, timeout=70)
     width, height = image.size
     left, top, right, bottom = box
@@ -781,7 +809,7 @@ def ocr_spatial_lines(image: Image.Image, box: tuple[float, float, float, float]
 def normalize_jkc_number(value: str) -> str:
     value = value.upper().replace("—", "-").replace("–", "-")
     value = re.sub(r"\b(?:IKC|JKO)\b", "JKC", value)
-    match = re.search(r"JKC\s*[- ]?\s*MS\s*[- ]?\s*(\d{4,6})\s*/\s*(\d{2})", value)
+    match = re.search(r"(?:JKC|KC)\s*[- ]?\s*MS\s*[- ]?\s*(\d{4,6})\s*/\s*(\d{2})", value)
     return f"JKC-MS-{match.group(1).zfill(5)}/{match.group(2)}" if match else ""
 
 
@@ -824,59 +852,121 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     elif re.search(r"\bFEMALE\b", upper_value):
         result["sex"] = "female"
 
-    birth = re.search(r"(20\d{2})\s*(?:年|[#48])?\s*(\d{1,2})\s*(?:月|[A])?\s*(\d{1,2})\s*(?:日|[O0])?", value)
+    # 日本語ラベル「年・月・日」はOCRで 48/A/0 に崩れやすい。
+    birth = re.search(r"(20\d{2})\s*(?:年|[#4]8?)\s*(1[0-2]|[1-9])\s*(?:月|A)?\s*(3[01]|[12]\d|[1-9])", value)
+    if not birth:
+        birth = re.search(r"(20\d{2})\D{1,3}(1[0-2]|[1-9])\D{0,2}(3[01]|[12]\d|[1-9])", value)
     if birth:
         year, month, day = map(int, birth.groups())
         try:
             result["birth_date"] = date(year, month, day).isoformat()
         except ValueError:
             pass
-    title_keys = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, value, re.IGNORECASE)]
+    title_keys = extract_title_keys(value)
     if title_keys:
         result["titles"] = ",".join(title_keys)
     return result
 
 
 def jkc_slot_text(image: Image.Image) -> str:
-    """登録番号の座標から3世代の列を動的に復元し、撮影余白の違いに追従する。"""
+    """JKCの番号付き15欄を独立解析し、欠落による血縁位置の連鎖ずれを防ぐ。"""
     metadata = jkc_root_metadata(image)
     results: list[str] = [f"[[PEDIGREE_META]] {json.dumps(metadata, ensure_ascii=False)}"]
     records = ocr_spatial_records(image)
-    registration_lines = [(x, y, value) for x, y, value in records if normalize_jkc_number(value)]
-    root_lines = [record for record in registration_lines if record[1] < .30]
-    ancestor_lines = [record for record in registration_lines if record[1] >= .30]
-    right = sorted((record for record in ancestor_lines if record[0] >= .48), key=lambda item: item[1])[:8]
-    left = [record for record in ancestor_lines if record[0] < .48]
-    parents = sorted(sorted(left, key=lambda item: item[0])[:2], key=lambda item: item[1])
-    parent_ids = {id(record) for record in parents}
-    grandparents = sorted((record for record in left if id(record) not in parent_ids), key=lambda item: item[1])[:4]
-    assigned = {}
-    for index, record in zip([1, 2], parents):
-        assigned[index] = record
-    for index, record in zip([3, 4, 5, 6], grandparents):
-        assigned[index] = record
-    for index, record in zip(range(7, 15), right):
-        assigned[index] = record
 
-    def details_for(registration: tuple[float, float, str]) -> tuple[str, list[str]]:
-        reg_x, reg_y, _ = registration
-        same_column = [record for record in records if 0 < reg_y - record[1] < .055 and ((reg_x >= .48 and record[0] >= .48) or (reg_x < .48 and record[0] < .48))]
+    def crop_text(box: tuple[float, float, float, float], psm: int = 6) -> str:
+        width, height = image.size
+        left, top, right, bottom = box
+        # 3倍化と単一ブロック解析で、全面OCRが落とした父母欄も再試行する。
+        crop = image.crop((int(width * max(0, left - .04)), int(height * top), int(width * right), int(height * bottom)))
+        crop = crop.resize((crop.width * 3, crop.height * 3), Image.Resampling.LANCZOS)
+        prepared = ImageEnhance.Contrast(crop.convert("L")).enhance(1.8).filter(ImageFilter.SHARPEN)
+        return pytesseract.image_to_string(prepared, lang="eng", config=f"--psm {psm}", timeout=70)
+
+    def details_from_text(value: str) -> tuple[str, list[str]]:
+        lines = [re.sub(r"\s{2,}", " ", line).strip(" |") for line in value.splitlines() if line.strip()]
+        reg_index = next((i for i, line in enumerate(lines) if normalize_jkc_number(line)), None)
+        if reg_index is None:
+            return "", []
         possible = []
-        for _, candidate_y, candidate in same_column:
+        for candidate in lines[max(0, reg_index - 3):reg_index]:
+            candidate = candidate.rsplit("|", 1)[-1]
+            candidate = re.sub(r"^[^A-Z]+", "", candidate.upper())
             clean_name, _ = split_name_titles(candidate)
             upper = clean_name.upper()
-            if len(clean_name) >= 5 and re.search(r"[A-Z]{4}", upper) and not any(word in upper for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK|MALE|FEMALE)\b", upper) and not re.fullmatch(r"[A-Z. ]*CH[A-Z0-9/., ()-]*", upper):
+            if len(clean_name) >= 5 and re.search(r"[A-Z]{4}", upper) and not any(word in upper for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK)\b", upper):
+                possible.append(upper)
+        title_context = "\n".join(lines[max(0, reg_index - 5):reg_index])
+        name = possible[-1] if possible else ""
+        if not name:
+            # 表の罫線が | や ] として犬名先頭に付着したケース。
+            compact = "\n".join(lines)
+            direct = re.search(r"(?:^|\n)[^A-Z\n]*([A-Z][A-Z0-9'’* .-]{4,})\n[^\n]*(?:JKC|KC)\s*-?\s*MS", compact)
+            if direct:
+                name = direct.group(1).strip(" .-")
+        return name, extract_title_keys(title_context)
+
+    def details_for(box: tuple[float, float, float, float]) -> tuple[str, list[str]]:
+        left, top, right, bottom = box
+        local = [record for record in records if left <= record[0] <= right and top <= record[1] <= bottom]
+        registration_lines = [record for record in local if normalize_jkc_number(record[2])]
+        if registration_lines:
+            reg_y = registration_lines[0][1]
+            before_registration = [record for record in local if record[1] < reg_y]
+        else:
+            # 登録番号だけが読めない場合も、欄上部の犬名は回収する。
+            before_registration = [record for record in local if record[1] < top + (bottom - top) * .58]
+        possible = []
+        for _, candidate_y, candidate in before_registration:
+            candidate = candidate.rsplit("|", 1)[-1]
+            clean_name, _ = split_name_titles(candidate)
+            upper = clean_name.upper()
+            if len(clean_name) >= 5 and re.search(r"[A-Z]{4}", upper) and not any(word in upper for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK|MALE|FEMALE|G\.?G\.?)\b", upper) and not re.fullmatch(r"[A-Z. ]*CH[A-Z0-9/., ()-]*", upper):
                 possible.append((candidate_y, clean_name))
-        name = max(possible, key=lambda item: (len(re.findall(r"[A-Z]", item[1].upper())), item[0]))[1] if possible else ""
-        context = "\n".join(record[2] for record in same_column)
-        titles = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, context, re.IGNORECASE)]
+        # 登録番号に最も近い直前行が犬名。長さ優先だと隣接欄の文字を選びやすい。
+        name = max(possible, key=lambda item: item[0])[1] if possible else ""
+        name_y = max((item[0] for item in possible), default=bottom)
+        title_context = "\n".join(record[2] for record in local if record[1] < name_y)
+        titles = extract_title_keys(title_context)
+        fallback_name, fallback_titles = details_from_text(crop_text(box))
+        if not name:
+            name = fallback_name
+        for key in fallback_titles:
+            if key not in titles:
+                titles.append(key)
         return name, titles
 
     if metadata.get("registered_name"):
         root_titles = [key for key in metadata.get("titles", "").split(",") if key in TITLE_LABELS]
         results.append(f"[[PEDIGREE_SLOT_0]] {metadata['registered_name']} || {','.join(root_titles)}")
-    for index, registration in assigned.items():
-        name, title_keys = details_for(registration)
+    for index, box in JKC_SLOT_BOXES.items():
+        name, title_keys = details_for(box)
+        if not name:
+            retry = crop_text(box, psm=11)
+            retry_lines = [line.strip() for line in retry.upper().splitlines() if line.strip()]
+            reg_index = next((i for i, line in enumerate(retry_lines) if normalize_jkc_number(line)), None)
+            if reg_index is not None and reg_index > 0:
+                retry_names = []
+                for raw_name in retry_lines[max(0, reg_index - 4):reg_index]:
+                    raw_name = raw_name.rsplit("|", 1)[-1]
+                    raw_name = re.sub(r"^[^A-Z]+", "", raw_name)
+                    if len(raw_name) >= 5 and re.search(r"[A-Z]{4}", raw_name) and not re.search(r"\b(?:CH|SIRE|DAM|DNA|SLT|PPR)\b", raw_name):
+                        retry_names.append(raw_name)
+                if retry_names:
+                    name = max(retry_names, key=len).strip(" .-")
+                    title_keys = extract_title_keys("\n".join(retry_lines[:reg_index - 1]))
+        # 縦罫線を I と誤認した犬名だけを安全に補正する。
+        name = re.sub(r"(?<=[A-Z])\](?=[A-Z])", "I", name.upper())
+        # 同じ血統書内の本犬名に完全一致する語列があれば、OCRで分断された
+        # "NI INA" のような空白だけを原表記へ戻す。
+        root_name = metadata.get("registered_name", "")
+        compact_name = re.sub(r"[^A-Z0-9]", "", name)
+        root_words = root_name.split()
+        for start in range(len(root_words)):
+            candidate = " ".join(root_words[start:])
+            if compact_name and re.sub(r"[^A-Z0-9]", "", candidate) == compact_name:
+                name = candidate
+                break
         if name:
             results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(title_keys)}")
     return "\n".join(results)
@@ -960,7 +1050,7 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
     metadata.update({key: value for key, value in trusted_metadata.items() if key != "registered_name" and key != "titles"})
 
     slots: dict[int, tuple[str, list[str]]] = {}
-    for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\]\s*(.*?)\s*\|\|\s*([^\n]*)", clean):
+    for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\][ \t]*(.*?)[ \t]*\|\|[ \t]*([^\n]*)", clean):
         index = int(match.group(1))
         if 0 <= index <= 14:
             title_values = [key for key in match.group(3).split(",") if key in TITLE_LABELS]
