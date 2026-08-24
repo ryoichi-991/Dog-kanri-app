@@ -11,10 +11,10 @@ from enum import Enum
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
-from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select, text
+from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -100,6 +100,17 @@ class Dog(Base):
     sire_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     dam_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class PedigreeUpload(Base):
+    __tablename__ = "pedigree_uploads"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class TaskEvent(Base):
@@ -1250,6 +1261,9 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
         return HTMLResponse(layout("読み取りエラー", f'<h1>読み取りできませんでした</h1><p class="error">画像が不鮮明、または対応できないPDFです。撮り直すか別形式でお試しください。</p><p><small>{html.escape(type(exc).__name__)}</small></p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=422)
 
+    upload = PedigreeUpload(tenant_id=tenant.id, filename=(pedigree_file.filename or f"pedigree{suffix}")[:255], content_type=pedigree_file.content_type or "application/octet-stream", file_data=content)
+    session.add(upload)
+    session.commit()
     names = (candidates + [""] * 15)[:15]
     titles_by_dog = (detected_titles + [[] for _ in range(15)])[:15]
     def title_select(index: int) -> str:
@@ -1262,7 +1276,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in existing_dogs)
     body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
-    <form method="post" action="/modules/dogs/pedigree/import"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
 
@@ -1270,6 +1284,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
 @app.post("/modules/dogs/pedigree/import")
 def pedigree_import(
     call_name: str = Form(...), sex: str = Form(...), category: str = Form("parent"),
+    upload_id: int = Form(...),
     birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
     existing_dog_id: str = Form(""), pedigree_country: str = Form(""), pedigree_organization: str = Form(""),
     ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
@@ -1337,6 +1352,10 @@ def pedigree_import(
     root.pedigree_country = pedigree_country.strip() or None
     root.pedigree_organization = pedigree_organization.strip() or None
     root.pedigree_updated_at = datetime.now(timezone.utc)
+    upload = session.scalar(select(PedigreeUpload).where(PedigreeUpload.id == upload_id, PedigreeUpload.tenant_id == tenant.id))
+    if not upload or upload.dog_id is not None:
+        raise HTTPException(status_code=400, detail="アップロードした血統書データが見つかりません")
+    upload.dog_id = root.id
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
@@ -1406,13 +1425,30 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
     dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
     grands = [session.get(Dog, parent_id) if parent_id else None for parent_id in [sire.sire_id if sire else None, sire.dam_id if sire else None, dam.sire_id if dam else None, dam.dam_id if dam else None]]
     pedigree_summary = f'''<div class="tenant"><h2 style="margin-top:0">血統構成</h2><div class="grid"><div><label>本犬</label><strong>{html.escape(dog.registered_name or dog.call_name)}</strong></div><div><label>父犬</label>{html.escape(sire.registered_name or sire.call_name) if sire else "未登録"}</div><div><label>母犬</label>{html.escape(dam.registered_name or dam.call_name) if dam else "未登録"}</div><div><label>父方祖父</label>{html.escape(grands[0].registered_name or grands[0].call_name) if grands[0] else "未登録"}</div><div><label>父方祖母</label>{html.escape(grands[1].registered_name or grands[1].call_name) if grands[1] else "未登録"}</div><div><label>母方祖父</label>{html.escape(grands[2].registered_name or grands[2].call_name) if grands[2] else "未登録"}</div><div><label>母方祖母</label>{html.escape(grands[3].registered_name or grands[3].call_name) if grands[3] else "未登録"}</div></div></div>'''
-    body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{pedigree_summary}
+    uploads = session.scalars(select(PedigreeUpload).where(PedigreeUpload.tenant_id == tenant.id, PedigreeUpload.dog_id == dog.id).order_by(PedigreeUpload.uploaded_at.desc())).all()
+    upload_views = ""
+    for index, item in enumerate(uploads):
+        source = f"/modules/dogs/{dog.id}/pedigree-files/{item.id}"
+        preview = f'<img src="{source}" alt="血統書" style="max-width:100%;max-height:900px;object-fit:contain">' if item.content_type.startswith("image/") else f'<iframe src="{source}" title="血統書PDF" style="width:100%;height:800px;border:1px solid #eadde1;border-radius:10px"></iframe>' if item.content_type == "application/pdf" else ""
+        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
+    document_section = f'<div class="tenant"><h2 style="margin-top:0">アップロードした血統書原本</h2>{upload_views or "<p>この犬には原本ファイルがまだ保存されていません。次回の血統書読み込みから自動保存されます。</p>"}</div>'
+    body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{document_section}{pedigree_summary}
     <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
     <label>タイトル（複数選択可）</label><select name="titles" multiple size="8">{title_options}</select><p><small>Macは⌘キー、WindowsはCtrlキーを押しながら選択すると複数指定できます。</small></p>
     <h2>販売先のお客様</h2><label>登録済みのお客様から選択</label><select name="customer_id">{customer_options}</select>
     <details><summary>新しいお客様をここで登録する</summary><div class="grid"><div><label>お客様名</label><input name="customer_name"></div><div><label>電話番号</label><input name="customer_phone"></div><div><label>メールアドレス</label><input type="email" name="customer_email"></div><div><label>住所</label><input name="customer_address"></div></div></details>
     <p><small>新しいお客様名を入力した場合は、登録済みのお客様の選択より優先されます。「販売済」にすると販売管理にも販売完了として反映します。</small></p><button>変更を保存</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>'''
     return layout("犬の編集", body, user)
+
+
+@app.get("/modules/dogs/{dog_id}/pedigree-files/{upload_id}")
+def pedigree_file(dog_id: int, upload_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    tenant_dog(session, tenant.id, dog_id)
+    upload = session.scalar(select(PedigreeUpload).where(PedigreeUpload.id == upload_id, PedigreeUpload.dog_id == dog_id, PedigreeUpload.tenant_id == tenant.id))
+    if not upload:
+        raise HTTPException(status_code=404, detail="血統書原本が見つかりません")
+    return Response(content=upload.file_data, media_type=upload.content_type)
 
 
 @app.post("/modules/dogs/{dog_id}/edit")
