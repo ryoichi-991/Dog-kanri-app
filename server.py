@@ -2,14 +2,14 @@ import hashlib
 import html
 import os
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
-from sqlalchemy import Boolean, DateTime, Enum as SQLEnum, ForeignKey, String, UniqueConstraint, create_engine, select, text
+from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
@@ -18,6 +18,15 @@ SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "7"))
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 passwords = CryptContext(schemes=["argon2"], deprecated="auto")
+MODULES = {
+    "legal": ("法令・行政書類", "定期報告、開始・更新・変更申請、法定帳簿"),
+    "dogs": ("犬・血統書管理", "個体、マイクロチップ、血統書、親子関係"),
+    "breeding": ("交配・近親交配率", "交配計画、係数計算、組み合わせ提案"),
+    "births": ("出産・ヒート周期", "ヒート予測、交配日、出産、仔犬"),
+    "health": ("健康・ワクチン", "体重、診療、予防接種、次回予定"),
+    "genetics": ("遺伝子検査", "遺伝病検査結果と交配リスク"),
+    "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
+}
 
 
 class Base(DeclarativeBase):
@@ -58,6 +67,115 @@ class Membership(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role: Mapped[Role] = mapped_column(SQLEnum(Role, name="membership_role"))
+
+
+class Dog(Base):
+    __tablename__ = "dogs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    call_name: Mapped[str] = mapped_column(String(100))
+    registered_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    sex: Mapped[str] = mapped_column(String(10))
+    birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    color: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    microchip_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    pedigree_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sire_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
+    dam_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class BreedingRecord(Base):
+    __tablename__ = "breeding_records"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    sire_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    dam_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    mating_date: Mapped[date] = mapped_column(Date)
+    coefficient: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="planned")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Litter(Base):
+    __tablename__ = "litters"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    breeding_id: Mapped[int | None] = mapped_column(ForeignKey("breeding_records.id"), nullable=True)
+    dam_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    birth_date: Mapped[date] = mapped_column(Date)
+    born_count: Mapped[int] = mapped_column(Integer, default=0)
+    alive_count: Mapped[int] = mapped_column(Integer, default=0)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class HeatCycle(Base):
+    __tablename__ = "heat_cycles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class HealthRecord(Base):
+    __tablename__ = "health_records"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    record_date: Mapped[date] = mapped_column(Date)
+    category: Mapped[str] = mapped_column(String(50))
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    clinic: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Vaccination(Base):
+    __tablename__ = "vaccinations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    vaccine_name: Mapped[str] = mapped_column(String(150))
+    administered_on: Mapped[date] = mapped_column(Date)
+    next_due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    certificate_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class GeneticTest(Base):
+    __tablename__ = "genetic_tests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    test_name: Mapped[str] = mapped_column(String(150))
+    result: Mapped[str] = mapped_column(String(50))
+    tested_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    laboratory: Mapped[str | None] = mapped_column(String(150), nullable=True)
+
+
+class PuppySale(Base):
+    __tablename__ = "puppy_sales"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    customer_name: Mapped[str] = mapped_column(String(150))
+    customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contract_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    handover_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="inquiry")
+
+
+class LegalDocument(Base):
+    __tablename__ = "legal_documents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    document_type: Mapped[str] = mapped_column(String(100))
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="draft")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class LoginSession(Base):
@@ -141,13 +259,20 @@ def require_tenant_admin(request: Request, user: User = Depends(require_user), s
     return user, tenant
 
 
+def require_tenant_user(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
+    tenant = selected_tenant(request, user, session)
+    if not tenant or tenant_role(user, tenant, session) is None:
+        raise HTTPException(status_code=403, detail="利用できるテナントがありません")
+    return user, tenant
+
+
 def layout(title: str, body: str, user: User | None = None) -> str:
     nav = ""
     if user:
         platform_link = '<a href="/platform/tenants">テナント管理</a>' if user.platform_admin else ""
         nav = f'<nav><a href="/dashboard">ホーム</a><a href="/admin/users">ユーザー管理</a>{platform_link}<form method="post" action="/logout"><button>ログアウト</button></form></nav>'
     return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
-<style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:950px;margin:45px auto;padding:0 20px}}.card{{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:18px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:#fff;text-decoration:none;cursor:pointer}}.secondary{{background:#68748a}}.danger{{background:#a53232}}.success{{background:#247346}}.inline{{display:inline}}.inline button{{margin:3px;padding:8px 11px}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 950px)/2));display:flex;gap:20px;align-items:center}}nav a,nav button{{color:#fff;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:11px 7px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}.tenant{{padding:16px;background:#eef3fa;border-radius:12px;margin-bottom:24px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
+<style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:1050px;margin:45px auto;padding:0 20px}}.card{{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select,textarea{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:18px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:#fff;text-decoration:none;cursor:pointer}}.secondary{{background:#68748a}}.danger{{background:#a53232}}.success{{background:#247346}}.inline{{display:inline}}.inline button{{margin:3px;padding:8px 11px}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 1050px)/2));display:flex;gap:20px;align-items:center}}nav a,nav button{{color:#fff;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:11px 7px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}.tenant{{padding:16px;background:#eef3fa;border-radius:12px;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px;margin-top:22px}}.module{{display:block;padding:20px;border:1px solid #dce3ef;border-radius:14px;text-decoration:none;color:#24304a;background:#fbfcff}}.module:hover{{border-color:#244b86;box-shadow:0 5px 16px #18233b12}}.module h3{{margin:0 0 8px}}.module p{{margin:0;color:#68748a;font-size:14px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
 mcp = FastMCP("Dog-kanri-app")
@@ -289,7 +414,56 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
     switcher = f'<div class="tenant"><form method="post" action="/tenant/switch"><label>表示する会社・犬舎</label><select name="tenant_id">{options}</select><button>切り替える</button></form></div>' if tenants else '<p class="error">所属テナントがありません。管理者へ連絡してください。</p>'
     role = tenant_role(user, tenant, session)
     label = "運営管理者" if user.platform_admin else ({Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}.get(role, "未所属"))
-    return layout("ホーム", f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>', user)
+    dog_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id)) if tenant else 0
+    module_cards = ""
+    if tenant:
+        for key, (title, description) in MODULES.items():
+            extra = f"（登録 {dog_count}頭）" if key == "dogs" else ""
+            module_cards += f'<a class="module" href="/modules/{key}"><h3>{title}</h3><p>{description}{extra}</p></a>'
+    body = f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>'
+    if tenant:
+        body += f'<h2>{html.escape(tenant.name)} 業務ホーム</h2><div class="grid">{module_cards}</div>'
+    return layout("ホーム", body, user)
+
+
+@app.get("/modules/dogs", response_class=HTMLResponse)
+def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{html.escape(d.pedigree_no or '-')}</td></tr>" for d in dogs)
+    body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
+    <form method="post"><div class="grid"><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
+    <table><tr><th>呼び名</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>血統書番号</th></tr>{rows}</table>'''
+    return layout("犬・血統書管理", body, user)
+
+
+@app.post("/modules/dogs")
+def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if sex not in {"male", "female"}:
+        raise HTTPException(status_code=400)
+    parsed_birth = date.fromisoformat(birth_date) if birth_date else None
+    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, birth_date=parsed_birth, color=color.strip() or None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/dogs", status_code=303)
+
+
+@app.get("/modules/{module_key}", response_class=HTMLResponse)
+def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    if module_key not in MODULES or module_key == "dogs":
+        raise HTTPException(status_code=404)
+    user, tenant = access
+    title, description = MODULES[module_key]
+    details = {
+        "legal": "定期報告、第一種動物取扱業の開始・更新・変更書類、法定帳簿を作成・保存します。",
+        "breeding": "父犬・母犬、交配日、妊娠状況、近親交配率を記録し、将来は血統から組み合わせを提案します。",
+        "births": "ヒート開始日、交配予定、出産予定、出生頭数、仔犬の状態を管理します。",
+        "health": "体重、診療、投薬、健康診断、ワクチンと次回接種日を管理します。",
+        "genetics": "遺伝病ごとのクリア・キャリア・アフェクテッド等の結果と検査機関を管理します。",
+        "sales": "問い合わせから契約、法定説明、代金、引渡し、アフターフォローまで管理します。",
+    }
+    body = f'<h1>{title}</h1><p><span class="badge">{html.escape(tenant.name)}</span></p><p>{description}</p><div class="tenant"><strong>この機能で行うこと</strong><p>{details[module_key]}</p></div><p>専用データベースは作成済みです。入力・帳票画面を順次追加します。</p><a class="button secondary" href="/dashboard">業務ホームへ戻る</a>'
+    return layout(title, body, user)
 
 
 @app.get("/platform/tenants", response_class=HTMLResponse)
