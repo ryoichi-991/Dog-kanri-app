@@ -1650,7 +1650,7 @@ def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
             name = html.escape(dog.registered_name or dog.call_name)
             call_name = f'<small>{html.escape(dog.call_name)}</small>' if dog.registered_name and dog.call_name != dog.registered_name else ""
             marks = title_marks(dog.titles)
-            card = f'''<a class="pedigree-node" style="left:{x}px;top:{y}px" href="/modules/dogs/{dog.id}"><span class="pedigree-role">{label}</span><strong>{name}</strong>{call_name}<span class="pedigree-sex">{"牡" if dog.sex == "male" else "牝"}</span><span class="pedigree-titles">{marks or "称号なし"}</span></a>'''
+            card = f'''<a class="pedigree-node" style="left:{x}px;top:{y}px" href="/modules/dogs/{dog.id}"><span class="pedigree-role">{label}</span><strong>{name}</strong>{call_name}<span class="pedigree-sex">{"牡" if dog.sex == "male" else "牝"}</span><span class="pedigree-color">毛色：{html.escape(dog.color or "未登録")}</span><span class="pedigree-titles">{marks or "称号なし"}</span></a>'''
         else:
             card = f'''<div class="pedigree-node missing" style="left:{x}px;top:{y}px"><span class="pedigree-role">{label}</span><strong>未登録</strong><span class="pedigree-titles">－</span></div>'''
         cards += card
@@ -1660,8 +1660,8 @@ def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
         x1, y1 = positions[parent_index]
         for ancestor_index in (parent_index * 2 + 1, parent_index * 2 + 2):
             x2, y2 = positions[ancestor_index]
-            start_x, start_y = x1 + 205, y1 + 50
-            end_x, end_y = x2, y2 + 50
+            start_x, start_y = x1 + 205, y1 + 53
+            end_x, end_y = x2, y2 + 53
             middle_x = (start_x + end_x) // 2
             lines += f'''<path d="M {start_x} {start_y} H {middle_x} V {end_y} H {end_x}"/>'''
     return f'''<div class="pedigree-scroll"><div class="pedigree-canvas"><svg class="pedigree-lines" viewBox="0 0 970 885" aria-hidden="true">{lines}</svg>{cards}</div></div>'''
@@ -1699,8 +1699,8 @@ def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: S
     .dog-facts div{{background:#fff;padding:14px}}.dog-facts dt{{font-size:12px;color:#765f68;font-weight:700}}.dog-facts dd{{margin:5px 0 0;font-weight:650}}
     .pedigree-scroll{{overflow-x:auto;overflow-y:hidden;padding:10px 0 24px;width:100%}}.pedigree-canvas{{position:relative;width:970px;height:885px;min-width:970px;margin:0 auto;background:linear-gradient(90deg,#fff 0%,#fffafc 100%);border:1px solid #f0e1e5;border-radius:16px}}
     .pedigree-lines{{position:absolute;inset:0;width:970px;height:885px;pointer-events:none}}.pedigree-lines path{{fill:none;stroke:#c990a0;stroke-width:2;vector-effect:non-scaling-stroke}}
-    .pedigree-node{{position:absolute;width:205px;height:100px;padding:8px 9px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12;overflow:hidden;text-align:center}}
-    .pedigree-node:hover{{border-color:#b66f7c;background:#fff8fa}}.pedigree-node.missing{{opacity:.55;border-style:dashed}}.pedigree-role{{font-size:10px;color:#9a6d79;font-weight:700}}.pedigree-node strong{{font-size:11px;line-height:1.25;margin:3px 0;overflow-wrap:anywhere;max-width:100%}}.pedigree-node small{{font-size:9px;color:#806b72}}.pedigree-sex{{font-size:10px}}.pedigree-titles{{font-size:9px;min-height:20px;margin-top:2px;white-space:nowrap}}.pedigree-titles .title-crown{{font-size:15px;margin:0 2px}}
+    .pedigree-node{{position:absolute;width:205px;height:106px;padding:6px 9px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12;overflow:hidden;text-align:center}}
+    .pedigree-node:hover{{border-color:#b66f7c;background:#fff8fa}}.pedigree-node.missing{{opacity:.55;border-style:dashed}}.pedigree-role{{font-size:10px;color:#9a6d79;font-weight:700}}.pedigree-node strong{{font-size:11px;line-height:1.2;margin:2px 0;overflow-wrap:anywhere;max-width:100%}}.pedigree-node small{{font-size:9px;color:#806b72}}.pedigree-sex{{font-size:10px}}.pedigree-color{{font-size:9px;color:#765f68;line-height:1.2;margin-top:1px}}.pedigree-titles{{font-size:9px;min-height:18px;margin-top:1px;white-space:nowrap}}.pedigree-titles .title-crown{{font-size:14px;margin:0 2px}}
     @media(max-width:1100px){{.pedigree-canvas{{margin:0}}}}
     </style><div class="detail-head"><div><h1>{html.escape(dog.call_name)}の詳細</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p></div><a class="button" href="/modules/dogs/{dog.id}/edit">編集する</a></div>
     <dl class="dog-facts">{info_html}</dl><h2>血統構成フローチャート</h2><p><small>各個体をクリックすると、その犬の詳細ページを開きます。王冠は登録されている称号を表します。</small></p>{flow}{document_section}<p><a class="button secondary" href="/modules/resident-dogs">在籍犬一覧へ戻る</a></p>'''
