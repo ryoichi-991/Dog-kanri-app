@@ -213,16 +213,40 @@ class FoodHistory(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class Customer(Base):
+    __tablename__ = "customers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    name_kana: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    postal_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class PuppySale(Base):
     __tablename__ = "puppy_sales"
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     customer_name: Mapped[str] = mapped_column(String(150))
     customer_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inquiry_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inquiry_channel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    next_action_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     contract_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    contract_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     handover_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deposit_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    paid_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    explanation_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    microchip_transfer_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="inquiry")
 
 
@@ -387,6 +411,17 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_organization VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_updated_at TIMESTAMPTZ"))
     Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS inquiry_date DATE"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS inquiry_channel VARCHAR(50)"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS next_action_date DATE"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS contract_no VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS deposit_amount INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS paid_amount INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS explanation_completed BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS microchip_transfer_completed BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS notes TEXT"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
@@ -1163,9 +1198,93 @@ def genetics_create(dog_id: int = Form(...), test_name: str = Form(...), result:
     return RedirectResponse("/modules/genetics", status_code=303)
 
 
+SALE_STAGES = {
+    "inquiry": "問い合わせ", "visit": "見学予定", "consideration": "検討中", "reserved": "予約済み",
+    "contracted": "契約済み", "paid": "入金済み", "handed_over": "引渡し完了", "cancelled": "キャンセル",
+}
+
+
+@app.get("/modules/sales", response_class=HTMLResponse)
+def sales_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    customers = session.scalars(select(Customer).where(Customer.tenant_id == tenant.id).order_by(Customer.created_at.desc())).all()
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category.in_(["puppy", "parent"]), Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    cases = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id).order_by(PuppySale.id.desc())).all()
+    customer_options = "".join(f'<option value="{c.id}">{html.escape(c.name)}／{html.escape(c.phone or c.email or "連絡先未登録")}</option>' for c in customers)
+    dog_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}／{html.escape(d.registered_name or "血統名未登録")}</option>' for d in dogs)
+    active_count = sum(case.status not in {"handed_over", "cancelled"} for case in cases)
+    contracted_count = sum(case.status in {"contracted", "paid"} for case in cases)
+    sales_total = sum(case.price or 0 for case in cases if case.status != "cancelled")
+    unpaid_total = sum(max((case.price or 0) - (case.paid_amount or 0), 0) for case in cases if case.status not in {"cancelled", "handed_over"})
+    metrics = f'''<div class="grid"><div class="module"><h3>進行中の商談</h3><p><strong style="font-size:28px">{active_count}</strong>件</p></div><div class="module"><h3>契約・入金待ち</h3><p><strong style="font-size:28px">{contracted_count}</strong>件</p></div><div class="module"><h3>販売予定額</h3><p><strong style="font-size:24px">¥{sales_total:,}</strong></p></div><div class="module"><h3>未入金額</h3><p><strong style="font-size:24px">¥{unpaid_total:,}</strong></p></div></div>'''
+    case_cards = ""
+    for sale in cases:
+        dog = session.get(Dog, sale.dog_id)
+        customer = session.get(Customer, sale.customer_id) if sale.customer_id else None
+        stage_options = "".join(f'<option value="{key}" {"selected" if sale.status == key else ""}>{label}</option>' for key, label in SALE_STAGES.items())
+        remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0)
+        case_cards += f'''<div class="tenant"><h3>{html.escape(dog.call_name if dog else "犬未登録")} × {html.escape(customer.name if customer else sale.customer_name)}</h3><p><span class="badge">{SALE_STAGES.get(sale.status, sale.status)}</span>　残金 ¥{remaining:,}</p><form method="post" action="/modules/sales/{sale.id}/update"><div class="grid"><div><label>進捗</label><select name="status">{stage_options}</select></div><div><label>次回対応日</label><input type="date" name="next_action_date" value="{sale.next_action_date or ''}"></div><div><label>契約番号</label><input name="contract_no" value="{html.escape(sale.contract_no or '')}"></div><div><label>契約日</label><input type="date" name="contract_date" value="{sale.contract_date or ''}"></div><div><label>販売価格</label><input type="number" min="0" name="price" value="{sale.price or 0}"></div><div><label>予約金</label><input type="number" min="0" name="deposit_amount" value="{sale.deposit_amount or 0}"></div><div><label>入金済額</label><input type="number" min="0" name="paid_amount" value="{sale.paid_amount or 0}"></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date or ''}"></div></div><label><input style="width:auto" type="checkbox" name="explanation_completed" value="true" {"checked" if sale.explanation_completed else ""}> 対面説明・契約書確認済み</label><label><input style="width:auto" type="checkbox" name="microchip_transfer_completed" value="true" {"checked" if sale.microchip_transfer_completed else ""}> マイクロチップ変更手続き済み</label><label>商談・契約メモ</label><textarea name="notes">{html.escape(sale.notes or '')}</textarea><button>案件を更新</button></form></div>'''
+    customer_rows = "".join(f'<tr><td>{html.escape(c.name)}</td><td>{html.escape(c.phone or "-")}</td><td>{html.escape(c.email or "-")}</td><td>{html.escape(c.address or "-")}</td></tr>' for c in customers)
+    body = f'''<h1>仔犬販売・顧客管理</h1>{metrics}<h2>新しいお客様を登録</h2><form method="post" action="/modules/sales/customers"><div class="grid"><div><label>氏名</label><input name="name" required></div><div><label>フリガナ</label><input name="name_kana"></div><div><label>電話番号</label><input name="phone"></div><div><label>メール</label><input type="email" name="email"></div><div><label>郵便番号</label><input name="postal_code"></div><div><label>住所</label><input name="address"></div></div><label>顧客メモ</label><textarea name="notes"></textarea><button>お客様を登録</button></form>
+    <h2>新しい販売・商談案件</h2>{'<form method="post" action="/modules/sales/cases"><div class="grid"><div><label>対象犬</label><select name="dog_id">'+dog_options+'</select></div><div><label>お客様</label><select name="customer_id">'+customer_options+'</select></div><div><label>問い合わせ日</label><input type="date" name="inquiry_date" value="'+str(date.today())+'"></div><div><label>問い合わせ経路</label><select name="inquiry_channel"><option>Instagram</option><option>ホームページ</option><option>みんなのブリーダー</option><option>紹介</option><option>電話</option><option>その他</option></select></div><div><label>次回対応日</label><input type="date" name="next_action_date"></div><div><label>販売予定価格</label><input type="number" min="0" name="price"></div></div><label>商談メモ</label><textarea name="notes"></textarea><button>商談を開始</button></form>' if customers and dogs else '<p class="error">商談を登録するには、お客様と対象犬を先に登録してください。</p>'}
+    <h2>商談・契約・引渡し案件</h2>{case_cards or '<p>販売案件はまだありません。</p>'}<h2>顧客一覧</h2><table><tr><th>氏名</th><th>電話</th><th>メール</th><th>住所</th></tr>{customer_rows}</table>'''
+    return layout("仔犬販売・顧客管理", body, user)
+
+
+@app.post("/modules/sales/customers")
+def customer_create(name: str = Form(...), name_kana: str = Form(""), email: str = Form(""), phone: str = Form(""), postal_code: str = Form(""), address: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    session.add(Customer(tenant_id=tenant.id, name=name.strip(), name_kana=name_kana.strip() or None, email=normalize_email(email) if email else None, phone=phone.strip() or None, postal_code=postal_code.strip() or None, address=address.strip() or None, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/sales", status_code=303)
+
+
+@app.post("/modules/sales/cases")
+def sale_create(dog_id: int = Form(...), customer_id: int = Form(...), inquiry_date: str = Form(...), inquiry_channel: str = Form(""), next_action_date: str = Form(""), price: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    customer = session.scalar(select(Customer).where(Customer.id == customer_id, Customer.tenant_id == tenant.id))
+    if not customer:
+        raise HTTPException(status_code=400, detail="お客様が見つかりません")
+    next_date = date.fromisoformat(next_action_date) if next_action_date else None
+    sale = PuppySale(tenant_id=tenant.id, dog_id=dog.id, customer_id=customer.id, customer_name=customer.name, customer_email=customer.email, inquiry_date=date.fromisoformat(inquiry_date), inquiry_channel=inquiry_channel.strip() or None, next_action_date=next_date, price=int(price) if price else None, notes=notes.strip() or None)
+    session.add(sale)
+    if next_date:
+        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{customer.name}様へ販売商談フォロー", category="sales", due_date=next_date))
+    session.commit()
+    return RedirectResponse("/modules/sales", status_code=303)
+
+
+@app.post("/modules/sales/{sale_id}/update")
+def sale_update(sale_id: int, status_value: str = Form(..., alias="status"), next_action_date: str = Form(""), contract_no: str = Form(""), contract_date: str = Form(""), price: int = Form(0), deposit_amount: int = Form(0), paid_amount: int = Form(0), handover_date: str = Form(""), explanation_completed: bool = Form(False), microchip_transfer_completed: bool = Form(False), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    sale = session.scalar(select(PuppySale).where(PuppySale.id == sale_id, PuppySale.tenant_id == tenant.id))
+    if not sale or status_value not in SALE_STAGES or min(price, deposit_amount, paid_amount) < 0:
+        raise HTTPException(status_code=400, detail="販売案件を確認してください")
+    sale.status = status_value
+    sale.next_action_date = date.fromisoformat(next_action_date) if next_action_date else None
+    sale.contract_no = contract_no.strip() or None
+    sale.contract_date = date.fromisoformat(contract_date) if contract_date else None
+    sale.price, sale.deposit_amount, sale.paid_amount = price, deposit_amount, paid_amount
+    sale.handover_date = date.fromisoformat(handover_date) if handover_date else None
+    sale.explanation_completed, sale.microchip_transfer_completed = explanation_completed, microchip_transfer_completed
+    sale.notes = notes.strip() or None
+    dog = tenant_dog(session, tenant.id, sale.dog_id)
+    if status_value in {"reserved", "contracted", "paid"}:
+        dog.status = "reserved"
+    elif status_value == "handed_over":
+        dog.status = "delivered"
+    elif status_value == "cancelled" and dog.status == "reserved":
+        dog.status = "resident"
+    if sale.next_action_date:
+        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{sale.customer_name}様へ販売案件対応", category="sales", due_date=sale.next_action_date))
+    session.commit()
+    return RedirectResponse("/modules/sales", status_code=303)
+
+
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
