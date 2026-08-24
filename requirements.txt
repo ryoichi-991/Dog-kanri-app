@@ -3,3 +3,5 @@ uvicorn>=0.29
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 mcp>=1.28,<2
+passlib[argon2]>=1.7.4
+python-multipart>=0.0.9
