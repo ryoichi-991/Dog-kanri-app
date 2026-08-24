@@ -90,6 +90,10 @@ class Dog(Base):
     color: Mapped[str | None] = mapped_column(String(100), nullable=True)
     microchip_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     pedigree_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    titles: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pedigree_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pedigree_organization: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    pedigree_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     category: Mapped[str] = mapped_column(String(20), default="parent")
     status: Mapped[str] = mapped_column(String(30), default="resident")
     sire_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
@@ -353,7 +357,7 @@ def layout(title: str, body: str, user: User | None = None) -> str:
 <style>
 :root{{--wine:#704454;--rose:#b66f7c;--rose-light:#ead0d5;--cream:#faf6f3;--paper:#fffdfb;--ink:#3f3036;--muted:#816f76;--line:#eadfe1;--green:#718b75;--danger:#a94f55}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--cream);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;line-height:1.55}}.sidebar{{position:fixed;inset:0 auto 0 0;width:260px;background:linear-gradient(180deg,#68404f 0%,#55333f 100%);color:#fff;display:flex;flex-direction:column;z-index:10;box-shadow:6px 0 24px #4b26331a}}.brand{{height:84px;display:flex;align-items:center;gap:13px;padding:18px 22px;color:#fff;text-decoration:none;border-bottom:1px solid #ffffff1f}}.brand-mark{{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#f0d8dc;color:var(--wine);font-family:Georgia,serif;font-size:25px}}.brand strong{{display:block;letter-spacing:1.8px;font-family:Georgia,serif}}.brand small,.sidebar-user small{{display:block;color:#ead5da;font-size:11px}}.sidebar nav{{padding:12px 13px;overflow-y:auto;flex:1}}.sidebar nav a{{display:flex;align-items:center;gap:12px;color:#f8eef1;text-decoration:none;padding:10px 13px;border-radius:10px;font-size:14px;margin:2px 0}}.sidebar nav a:hover{{background:#ffffff17;color:#fff}}.sidebar nav a span{{width:20px;text-align:center;color:#eac3cb}}.nav-label{{margin:14px 12px 5px;color:#cbaeb5;font-size:10px;letter-spacing:1.5px;font-weight:700}}.sidebar-user{{display:flex;align-items:center;gap:10px;padding:15px;border-top:1px solid #ffffff1f;background:#452934}}.sidebar-user .avatar{{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#e7c6cc;color:var(--wine);font-weight:700}}.sidebar-user strong{{display:block;max-width:125px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}}.sidebar-user form{{margin-left:auto}}.sidebar-user button{{margin:0;padding:8px;background:transparent;color:#fff;font-size:18px}}main{{max-width:1280px;margin-left:260px;padding:38px 42px}}.card{{background:var(--paper);padding:34px;border:1px solid #f1e7e8;border-radius:20px;box-shadow:0 10px 35px #63404c0d}}h1{{margin:0 0 22px;font-size:28px;letter-spacing:.02em}}h2{{margin-top:34px;padding-bottom:8px;border-bottom:1px solid var(--line);font-size:20px}}label{{display:block;margin:15px 0 6px;font-size:13px;font-weight:650;color:#665159}}input,select,textarea{{width:100%;padding:11px 13px;border:1px solid #dacdd0;border-radius:10px;background:#fff;font-size:15px;color:var(--ink);outline:none}}input:focus,select:focus,textarea:focus{{border-color:var(--rose);box-shadow:0 0 0 3px #b66f7c18}}textarea{{min-height:84px;resize:vertical}}button,.button{{display:inline-block;margin-top:17px;padding:11px 18px;border:0;border-radius:10px;background:var(--rose);color:#fff;text-decoration:none;font-weight:650;cursor:pointer;box-shadow:0 4px 12px #b66f7c28}}button:hover,.button:hover{{filter:brightness(.95)}}.secondary{{background:#89747b}}.danger{{background:var(--danger)}}.success{{background:var(--green)}}.inline{{display:inline}}.inline button{{margin:3px;padding:7px 10px;font-size:12px}}.error{{background:#fff0f0;color:#963c43;padding:13px;border-left:4px solid var(--danger);border-radius:8px}}table{{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;font-size:14px;overflow:hidden}}th{{background:#f6edef;color:#694d57;font-size:12px;letter-spacing:.03em}}th,td{{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}}tr:hover td{{background:#fdf8f8}}.badge{{display:inline-block;padding:5px 10px;border-radius:99px;background:var(--rose-light);color:var(--wine);font-size:12px;font-weight:700}}.tenant{{padding:18px;background:#f7edef;border:1px solid #ecdadd;border-radius:14px;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:18px}}.module{{position:relative;display:block;min-height:118px;padding:21px;border:1px solid var(--line);border-radius:15px;text-decoration:none;color:var(--ink);background:linear-gradient(145deg,#fff 0%,#fdf8f7 100%);transition:.2s}}.module:after{{content:"›";position:absolute;right:18px;top:15px;color:#c18a94;font-size:24px}}.module:hover{{transform:translateY(-2px);border-color:#d6a7af;box-shadow:0 9px 22px #70445414}}.module h3{{margin:0 25px 9px 0;font-size:17px;color:#66404e}}.module p{{margin:0;color:var(--muted);font-size:13px}}
-.brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
+.brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.title-crown{{display:inline-flex;align-items:center;gap:2px;margin:2px 5px 2px 0;font-size:20px;font-weight:800}}.title-crown small{{font-size:9px;color:var(--ink)}}.crown-silver{{color:#9da3aa;text-shadow:0 1px #fff}}.crown-gold{{color:#d4a72c;text-shadow:0 1px #fff}}.crown-rose{{color:#cf788b}}.crown-purple{{color:#9167a8}}.crown-blue{{color:#668caf}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
 @media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
 
@@ -378,6 +382,10 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'resident'"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS titles TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_country VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_organization VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_updated_at TIMESTAMPTZ"))
     Base.metadata.create_all(engine)
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -664,6 +672,35 @@ PEDIGREE_EXCLUDE = {
     "PEDIGREE", "CERTIFICATE", "JAPAN KENNEL CLUB", "MINIATURE SCHNAUZER",
     "BREED", "SEX", "COLOR", "DATE OF BIRTH", "OWNER", "BREEDER", "REGISTRATION",
 }
+TITLE_PATTERNS = [
+    ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?)\b"),
+    ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+CHAMPION|C\.?I\.?B\.?)\b"),
+    ("junior_champion", r"\b(?:J\.?\s*CH\.?|JR\.?\s*CH\.?|JUNIOR\s+CHAMPION)\b"),
+    ("grand_champion", r"\b(?:GCH|GR\.?\s*CH\.?|GRAND\s+CHAMPION)\b"),
+    ("champion", r"\b(?:CH\.?|CHAMPION)\b"),
+]
+TITLE_LABELS = {
+    "champion": ("CH", "silver", "チャンピオン"),
+    "international_champion": ("INT.CH", "gold", "インターチャンピオン"),
+    "junior_champion": ("J.CH", "rose", "ジュニアチャンピオン"),
+    "junior_international_champion": ("J.INT.CH", "purple", "ジュニアインターチャンピオン"),
+    "grand_champion": ("G.CH", "blue", "グランドチャンピオン"),
+}
+
+
+def title_marks(value: str | None) -> str:
+    keys = [key for key in (value or "").split(",") if key in TITLE_LABELS]
+    return "".join(f'<span class="title-crown crown-{TITLE_LABELS[key][1]}" title="{TITLE_LABELS[key][2]}">♛<small>{TITLE_LABELS[key][0]}</small></span>' for key in keys)
+
+
+def split_name_titles(value: str) -> tuple[str, list[str]]:
+    titles: list[str] = []
+    name = value
+    for key, pattern in TITLE_PATTERNS:
+        if re.search(pattern, name, re.IGNORECASE):
+            titles.append(key)
+            name = re.sub(pattern, " ", name, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", name).strip(" ,-./"), titles
 
 
 def extract_pedigree_text(path: Path, content_type: str) -> str:
@@ -687,10 +724,13 @@ def extract_pedigree_text(path: Path, content_type: str) -> str:
         image = ImageOps.exif_transpose(source).convert("L")
         image = ImageEnhance.Contrast(image).enhance(1.7)
         image = image.filter(ImageFilter.SHARPEN)
-        return pytesseract.image_to_string(image, lang="eng+jpn", config="--psm 6", timeout=50)
+        available = set(pytesseract.get_languages(config=""))
+        requested = ["eng", "jpn", "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "hun", "rus"]
+        languages = "+".join(code for code in requested if code in available) or "eng"
+        return pytesseract.image_to_string(image, lang=languages, config="--psm 6", timeout=70)
 
 
-def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str]]:
+def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]]]:
     """OCR結果から本人情報と血統名候補を作る。最終確定前に必ず編集画面を表示する。"""
     clean = re.sub(r"[\t ]+", " ", raw_text.replace("\r", "\n"))
     metadata: dict[str, str] = {}
@@ -704,8 +744,23 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str]]:
         match = re.search(pattern, clean, re.IGNORECASE)
         if match:
             metadata[key] = match.group(1).strip().replace(".", "-").replace("/", "-") if key == "birth_date" else match.group(1).strip()
+    organizations = ["JKC", "FCI", "AKC", "KC", "VDH", "ENCI", "LOF", "RSCE", "CBKC", "CKC", "ANKC", "NZKC"]
+    found_orgs = [org for org in organizations if re.search(rf"\b{re.escape(org)}\b", clean, re.IGNORECASE)]
+    if found_orgs:
+        metadata["organization"] = " / ".join(found_orgs)
+    countries = {
+        "JAPAN": "日本", "UNITED STATES": "アメリカ", "USA": "アメリカ", "GERMANY": "ドイツ",
+        "ITALY": "イタリア", "FRANCE": "フランス", "SPAIN": "スペイン", "PORTUGAL": "ポルトガル",
+        "NETHERLANDS": "オランダ", "POLAND": "ポーランド", "CZECH": "チェコ", "HUNGARY": "ハンガリー",
+        "RUSSIA": "ロシア", "THAILAND": "タイ", "INDONESIA": "インドネシア", "AUSTRALIA": "オーストラリア",
+    }
+    for token, country in countries.items():
+        if token in clean.upper():
+            metadata["country"] = country
+            break
 
     candidates: list[str] = []
+    candidate_titles: list[list[str]] = []
     seen: set[str] = set()
     for line in clean.splitlines():
         value = re.sub(r"^[\d②-⑮()\[\].:：\-\s]+", "", line).strip(" |;,")
@@ -715,11 +770,13 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str]]:
             continue
         if any(word in upper for word in PEDIGREE_EXCLUDE) or re.fullmatch(r"[A-Z]{0,5}[\d\-/ ]+", upper):
             continue
-        normalized = re.sub(r"[^A-Z0-9]", "", upper)
+        name, titles = split_name_titles(value)
+        normalized = re.sub(r"[^A-Z0-9]", "", name.upper())
         if normalized and normalized not in seen:
             seen.add(normalized)
-            candidates.append(value)
-    return metadata, candidates[:15]
+            candidates.append(name)
+            candidate_titles.append(titles)
+    return metadata, candidates[:15], candidate_titles[:15]
 
 
 def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
@@ -869,7 +926,7 @@ def food_create(name: str = Form(...), started_on: str = Form(...), ended_on: st
 
 
 @app.post("/modules/dogs/pedigree/scan", response_class=HTMLResponse)
-async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(require_tenant_user)):
+async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     allowed = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
     suffix = Path(pedigree_file.filename or "").suffix.lower()
@@ -883,17 +940,23 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
             source = Path(tmp) / f"source{suffix}"
             source.write_bytes(content)
             raw_text = extract_pedigree_text(source, pedigree_file.content_type or "")
-        metadata, candidates = pedigree_candidates(raw_text)
-    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        metadata, candidates, detected_titles = pedigree_candidates(raw_text)
+    except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
         return HTMLResponse(layout("読み取りエラー", f'<h1>読み取りできませんでした</h1><p class="error">画像が不鮮明、または対応できないPDFです。撮り直すか別形式でお試しください。</p><p><small>{html.escape(type(exc).__name__)}</small></p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=422)
 
     names = (candidates + [""] * 15)[:15]
+    titles_by_dog = (detected_titles + [[] for _ in range(15)])[:15]
+    def title_select(index: int) -> str:
+        options = "".join(f'<option value="{key}" {"selected" if key in titles_by_dog[index] else ""}>{label[2]}</option>' for key, label in TITLE_LABELS.items())
+        return f'<label>タイトル（複数選択可）</label><select name="title_{index}" multiple size="5">{options}</select>'
     pedigree_fields = "".join(
-        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}></div>'
+        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{title_select(index)}</div>'
         for index, name in enumerate(names)
     )
+    existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
+    existing_options = '<option value="">新しい犬として登録</option>' + "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in existing_dogs)
     body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
-    <form method="post" action="/modules/dogs/pedigree/import"><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div></div><h2>血統名と親子関係</h2><div class="grid">{pedigree_fields}</div><button>確認した内容で一括登録する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    <form method="post" action="/modules/dogs/pedigree/import"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
 
@@ -902,16 +965,23 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
 def pedigree_import(
     call_name: str = Form(...), sex: str = Form(...), category: str = Form("parent"),
     birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
+    existing_dog_id: str = Form(""), pedigree_country: str = Form(""), pedigree_organization: str = Form(""),
     ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
     ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
     ancestor_7: str = Form(""), ancestor_8: str = Form(""), ancestor_9: str = Form(""), ancestor_10: str = Form(""),
     ancestor_11: str = Form(""), ancestor_12: str = Form(""), ancestor_13: str = Form(""), ancestor_14: str = Form(""),
+    title_0: list[str] = Form([]), title_1: list[str] = Form([]), title_2: list[str] = Form([]),
+    title_3: list[str] = Form([]), title_4: list[str] = Form([]), title_5: list[str] = Form([]), title_6: list[str] = Form([]),
+    title_7: list[str] = Form([]), title_8: list[str] = Form([]), title_9: list[str] = Form([]), title_10: list[str] = Form([]),
+    title_11: list[str] = Form([]), title_12: list[str] = Form([]), title_13: list[str] = Form([]), title_14: list[str] = Form([]),
     access=Depends(require_tenant_user), session: Session = Depends(db),
 ):
     user, tenant = access
     if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"}:
         raise HTTPException(status_code=400, detail="犬の情報を確認してください")
     names = [value.strip() for value in [ancestor_0, ancestor_1, ancestor_2, ancestor_3, ancestor_4, ancestor_5, ancestor_6, ancestor_7, ancestor_8, ancestor_9, ancestor_10, ancestor_11, ancestor_12, ancestor_13, ancestor_14]]
+    titles = [title_0, title_1, title_2, title_3, title_4, title_5, title_6, title_7, title_8, title_9, title_10, title_11, title_12, title_13, title_14]
+    titles = [[key for key in values if key in TITLE_LABELS] for values in titles]
     if not names[0]:
         raise HTTPException(status_code=400, detail="登録する犬の血統書名が必要です")
 
@@ -920,7 +990,16 @@ def pedigree_import(
         name = names[index]
         if not name:
             continue
-        existing = session.scalar(select(Dog).where(Dog.tenant_id == tenant.id, func.lower(Dog.registered_name) == name.lower()).limit(1))
+        if index == 0 and existing_dog_id:
+            try:
+                update_id = int(existing_dog_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="更新対象を確認してください")
+            existing = session.scalar(select(Dog).where(Dog.id == update_id, Dog.tenant_id == tenant.id))
+            if not existing:
+                raise HTTPException(status_code=400, detail="更新対象の犬が見つかりません")
+        else:
+            existing = session.scalar(select(Dog).where(Dog.tenant_id == tenant.id, func.lower(Dog.registered_name) == name.lower()).limit(1))
         node_sex = sex if index == 0 else ("male" if index % 2 == 1 else "female")
         if existing:
             node = existing
@@ -928,6 +1007,8 @@ def pedigree_import(
             node = Dog(tenant_id=tenant.id, call_name=call_name.strip() if index == 0 else name, registered_name=name, sex=node_sex, category=category if index == 0 else "external", status="resident" if index == 0 else "transferred")
             session.add(node)
             session.flush()
+        if titles[index] or index == 0:
+            node.titles = ",".join(titles[index]) or None
         sire, dam = nodes.get(2 * index + 1), nodes.get(2 * index + 2)
         if sire:
             node.sire_id = sire.id
@@ -937,6 +1018,7 @@ def pedigree_import(
 
     root = nodes[0]
     root.call_name = call_name.strip()
+    root.registered_name = names[0]
     root.sex = sex
     root.category = category
     root.status = "resident"
@@ -944,6 +1026,9 @@ def pedigree_import(
     root.color = color.strip() or root.color
     root.pedigree_no = pedigree_no.strip() or root.pedigree_no
     root.microchip_no = microchip_no.strip() or root.microchip_no
+    root.pedigree_country = pedigree_country.strip() or None
+    root.pedigree_organization = pedigree_organization.strip() or None
+    root.pedigree_updated_at = datetime.now(timezone.utc)
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
@@ -956,12 +1041,13 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
     dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "female")
     category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
     status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "引渡済", "retired": "引退", "transferred": "譲渡済"}
-    rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{status_labels.get(d.status, d.status)}</td></tr>" for d in dogs)
+    rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td></tr>" for d in dogs)
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
-    <div class="tenant"><h2 style="margin-top:0">血統書から自動登録</h2><p>PDFまたは血統書の写真を読み取り、本人から曾祖父母まで最大15頭を一括登録します。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・HEICを除く一般的な画像／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って確認する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
+    <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
+    <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
     <h2>手入力で犬を登録</h2>
     <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
-    <table><tr><th>呼び名</th><th>区分</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>状態</th></tr>{rows}</table>'''
+    <table><tr><th>呼び名</th><th>タイトル</th><th>区分</th><th>血統書名</th><th>性別</th><th>発行団体・国</th><th>血統書更新日</th><th>状態</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
 
 

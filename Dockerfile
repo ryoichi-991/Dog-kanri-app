@@ -5,6 +5,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-jpn \
+    tesseract-ocr-deu \
+    tesseract-ocr-fra \
+    tesseract-ocr-ita \
+    tesseract-ocr-spa \
+    tesseract-ocr-por \
+    tesseract-ocr-nld \
+    tesseract-ocr-pol \
+    tesseract-ocr-ces \
+    tesseract-ocr-hun \
+    tesseract-ocr-rus \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
