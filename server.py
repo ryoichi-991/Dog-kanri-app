@@ -486,6 +486,90 @@ def calendar_page(access=Depends(require_tenant_user), session: Session = Depend
     return layout("カレンダー", f'<h1>カレンダー</h1><p>今後、ヒート・交配・出産・ワクチン・申請期限も自動表示されます。</p><table><tr><th>日付</th><th>予定</th><th>分類</th><th>状態</th></tr>{rows}</table><a class="button" href="/modules/todo">予定を登録</a>', user)
 
 
+@app.get("/modules/breeding", response_class=HTMLResponse)
+def breeding_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    females = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female", Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    males = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "male", Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    heats = session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id).order_by(HeatCycle.start_date.desc())).all()
+    breedings = session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id).order_by(BreedingRecord.mating_date.desc())).all()
+    female_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in females)
+    male_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in males)
+    heat_rows = ""
+    for heat in heats:
+        dog = session.get(Dog, heat.dog_id)
+        heat_rows += f"<tr><td>{html.escape(dog.call_name)}</td><td>{heat.start_date}</td><td>{heat.start_date + timedelta(days=180)}</td></tr>"
+    breeding_rows = ""
+    for record in breedings:
+        sire, dam = session.get(Dog, record.sire_id), session.get(Dog, record.dam_id)
+        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{record.mating_date}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{html.escape(record.status)}</td></tr>"
+    body = f'''<h1>交配・ヒート管理</h1>
+    <h2>ヒート記録</h2><form method="post" action="/modules/breeding/heat"><div class="grid"><div><label>母犬</label><select name="dog_id" required>{female_options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>ヒートを登録</button></form>
+    <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th></tr>{heat_rows}</table>
+    <h2>交配記録</h2><form method="post" action="/modules/breeding/mating"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{female_options}</select></div><div><label>父犬</label><select name="sire_id" required>{male_options}</select></div><div><label>1回目交配日</label><input name="mating_date" type="date" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>交配を登録</button></form>
+    <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>状態</th></tr>{breeding_rows}</table>'''
+    return layout("交配・ヒート管理", body, user)
+
+
+@app.post("/modules/breeding/heat")
+def heat_create(dog_id: int = Form(...), start_date: str = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    if not dog:
+        raise HTTPException(status_code=400, detail="母犬が見つかりません")
+    started = date.fromisoformat(start_date)
+    session.add(HeatCycle(tenant_id=tenant.id, dog_id=dog.id, start_date=started, notes=notes.strip() or None))
+    session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} 次回ヒート予測", category="breeding", due_date=started + timedelta(days=180)))
+    session.commit()
+    return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.post("/modules/breeding/mating")
+def mating_create(dam_id: int = Form(...), sire_id: int = Form(...), mating_date: str = Form(...), method: str = Form("natural"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dam = session.scalar(select(Dog).where(Dog.id == dam_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    sire = session.scalar(select(Dog).where(Dog.id == sire_id, Dog.tenant_id == tenant.id, Dog.sex == "male"))
+    if not dam or not sire or dam.id == sire.id or method not in {"natural", "artificial"}:
+        raise HTTPException(status_code=400, detail="交配情報を確認してください")
+    mated = date.fromisoformat(mating_date)
+    note = f"交配方法: {'自然交配' if method == 'natural' else '人工授精'}"
+    if notes.strip():
+        note += "\n" + notes.strip()
+    session.add(BreedingRecord(tenant_id=tenant.id, sire_id=sire.id, dam_id=dam.id, mating_date=mated, status="mated", notes=note))
+    session.add(TaskEvent(tenant_id=tenant.id, dog_id=dam.id, title=f"{dam.call_name} 出産予定", category="breeding", due_date=mated + timedelta(days=63)))
+    session.commit()
+    return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.get("/modules/births", response_class=HTMLResponse)
+def births_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dams = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female").order_by(Dog.call_name)).all()
+    options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dams)
+    litters = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id).order_by(Litter.birth_date.desc())).all()
+    rows = ""
+    for litter in litters:
+        dam = session.get(Dog, litter.dam_id)
+        rows += f"<tr><td>{litter.birth_date}</td><td>{html.escape(dam.call_name)}</td><td>{litter.born_count}</td><td>{litter.alive_count}</td><td>{html.escape(litter.notes or '-')}</td></tr>"
+    body = f'''<h1>出産管理</h1><form method="post"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{options}</select></div><div><label>出産日</label><input name="birth_date" type="date" required></div><div><label>出生頭数</label><input name="born_count" type="number" min="0" required></div><div><label>生存頭数</label><input name="alive_count" type="number" min="0" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>出産を登録</button></form><table><tr><th>出産日</th><th>母犬</th><th>出生</th><th>生存</th><th>メモ</th></tr>{rows}</table>'''
+    return layout("出産管理", body, user)
+
+
+@app.post("/modules/births")
+def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_count: int = Form(...), alive_count: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dam = session.scalar(select(Dog).where(Dog.id == dam_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    if not dam or born_count < 0 or alive_count < 0 or alive_count > born_count:
+        raise HTTPException(status_code=400, detail="出産情報を確認してください")
+    born = date.fromisoformat(birth_date)
+    session.add(Litter(tenant_id=tenant.id, dam_id=dam.id, birth_date=born, born_count=born_count, alive_count=alive_count, notes=notes.strip() or None))
+    related = session.scalar(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id, BreedingRecord.dam_id == dam.id, BreedingRecord.mating_date <= born).order_by(BreedingRecord.mating_date.desc()))
+    if related:
+        related.status = "delivered"
+    session.commit()
+    return RedirectResponse("/modules/births", status_code=303)
+
+
 @app.get("/modules/dogs", response_class=HTMLResponse)
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -514,7 +598,7 @@ def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex:
 
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
