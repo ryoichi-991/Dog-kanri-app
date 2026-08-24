@@ -1645,7 +1645,7 @@ def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
         x, y = x_positions[level], y_positions[level][offset]
         positions[index] = (x, y)
         dog = nodes.get(index)
-        label = PEDIGREE_LABELS[index]
+        label = "登録犬" if index == 0 else PEDIGREE_LABELS[index]
         if dog:
             name = html.escape(dog.registered_name or dog.call_name)
             call_name = f'<small>{html.escape(dog.call_name)}</small>' if dog.registered_name and dog.call_name != dog.registered_name else ""
