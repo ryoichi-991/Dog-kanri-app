@@ -1355,7 +1355,8 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
         sale = sales_by_dog.get(d.id)
         buyer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = buyer.name if buyer else sale.customer_name if sale else "-"
-        rows += f"<tr><td>{html.escape(d.call_name)}</td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>編集</a></td></tr>"
+        dog_name = html.escape(d.registered_name or d.call_name)
+        rows += f"<tr><td><a href='/modules/dogs/{d.id}/edit'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>詳細・編集</a></td></tr>"
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
     <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
     <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
@@ -1395,8 +1396,19 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
     )
     category_options = "".join(f'<option value="{key}" {"selected" if dog.category == key else ""}>{label}</option>' for key, label in {"parent":"親犬", "puppy":"子犬", "external":"外部犬"}.items())
     status_options = "".join(f'<option value="{key}" {"selected" if dog.status == key else ""}>{label}</option>' for key, label in {"resident":"在舎中", "reserved":"予約済", "delivered":"販売済", "retired":"引退", "transferred":"譲渡済"}.items())
-    body = f'''<h1>犬の状態・販売先を編集</h1><p><strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>
-    <form method="post"><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
+    sex_options = f'<option value="male" {"selected" if dog.sex == "male" else ""}>牡</option><option value="female" {"selected" if dog.sex == "female" else ""}>牝</option>'
+    possible_parents = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.id != dog.id).order_by(Dog.registered_name, Dog.call_name)).all()
+    sire_options = '<option value="">未登録</option>' + "".join(f'<option value="{parent.id}" {"selected" if dog.sire_id == parent.id else ""}>{html.escape(parent.registered_name or parent.call_name)}</option>' for parent in possible_parents if parent.sex == "male")
+    dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{parent.id}" {"selected" if dog.dam_id == parent.id else ""}>{html.escape(parent.registered_name or parent.call_name)}</option>' for parent in possible_parents if parent.sex == "female")
+    selected_titles = set((dog.titles or "").split(","))
+    title_options = "".join(f'<option value="{key}" {"selected" if key in selected_titles else ""}>{label[2]}（{label[0]}）</option>' for key, label in TITLE_LABELS.items())
+    sire = session.get(Dog, dog.sire_id) if dog.sire_id else None
+    dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
+    grands = [session.get(Dog, parent_id) if parent_id else None for parent_id in [sire.sire_id if sire else None, sire.dam_id if sire else None, dam.sire_id if dam else None, dam.dam_id if dam else None]]
+    pedigree_summary = f'''<div class="tenant"><h2 style="margin-top:0">血統構成</h2><div class="grid"><div><label>本犬</label><strong>{html.escape(dog.registered_name or dog.call_name)}</strong></div><div><label>父犬</label>{html.escape(sire.registered_name or sire.call_name) if sire else "未登録"}</div><div><label>母犬</label>{html.escape(dam.registered_name or dam.call_name) if dam else "未登録"}</div><div><label>父方祖父</label>{html.escape(grands[0].registered_name or grands[0].call_name) if grands[0] else "未登録"}</div><div><label>父方祖母</label>{html.escape(grands[1].registered_name or grands[1].call_name) if grands[1] else "未登録"}</div><div><label>母方祖父</label>{html.escape(grands[2].registered_name or grands[2].call_name) if grands[2] else "未登録"}</div><div><label>母方祖母</label>{html.escape(grands[3].registered_name or grands[3].call_name) if grands[3] else "未登録"}</div></div></div>'''
+    body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{pedigree_summary}
+    <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
+    <label>タイトル（複数選択可）</label><select name="titles" multiple size="8">{title_options}</select><p><small>Macは⌘キー、WindowsはCtrlキーを押しながら選択すると複数指定できます。</small></p>
     <h2>販売先のお客様</h2><label>登録済みのお客様から選択</label><select name="customer_id">{customer_options}</select>
     <details><summary>新しいお客様をここで登録する</summary><div class="grid"><div><label>お客様名</label><input name="customer_name"></div><div><label>電話番号</label><input name="customer_phone"></div><div><label>メールアドレス</label><input type="email" name="customer_email"></div><div><label>住所</label><input name="customer_address"></div></div></details>
     <p><small>新しいお客様名を入力した場合は、登録済みのお客様の選択より優先されます。「販売済」にすると販売管理にも販売完了として反映します。</small></p><button>変更を保存</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>'''
@@ -1406,15 +1418,29 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
 @app.post("/modules/dogs/{dog_id}/edit")
 def dog_edit(
     dog_id: int, call_name: str = Form(...), category: str = Form(...), status_value: str = Form(..., alias="status"),
+    registered_name: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""),
+    pedigree_no: str = Form(""), microchip_no: str = Form(""), pedigree_organization: str = Form(""), pedigree_country: str = Form(""),
+    sire_id: str = Form(""), dam_id: str = Form(""), titles: list[str] = Form([]),
     customer_id: str = Form(""), customer_name: str = Form(""), customer_phone: str = Form(""),
     customer_email: str = Form(""), customer_address: str = Form(""), handover_date: str = Form(""),
     access=Depends(require_tenant_user), session: Session = Depends(db),
 ):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
-    if category not in {"parent", "puppy", "external"} or status_value not in {"resident", "reserved", "delivered", "retired", "transferred"}:
+    if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"} or status_value not in {"resident", "reserved", "delivered", "retired", "transferred"}:
         raise HTTPException(status_code=400, detail="犬の区分・状態を確認してください")
-    dog.call_name, dog.category, dog.status = call_name.strip(), category, status_value
+    sire = tenant_dog(session, tenant.id, int(sire_id)) if sire_id else None
+    dam = tenant_dog(session, tenant.id, int(dam_id)) if dam_id else None
+    if (sire and (sire.sex != "male" or sire.id == dog.id)) or (dam and (dam.sex != "female" or dam.id == dog.id)):
+        raise HTTPException(status_code=400, detail="父犬・母犬を確認してください")
+    dog.call_name, dog.registered_name, dog.sex = call_name.strip(), registered_name.strip() or None, sex
+    dog.category, dog.status = category, status_value
+    dog.birth_date = date.fromisoformat(birth_date) if birth_date else None
+    dog.color, dog.pedigree_no = color.strip() or None, pedigree_no.strip() or None
+    dog.microchip_no = microchip_no.strip() or None
+    dog.pedigree_organization, dog.pedigree_country = pedigree_organization.strip() or None, pedigree_country.strip() or None
+    dog.sire_id, dog.dam_id = sire.id if sire else None, dam.id if dam else None
+    dog.titles = ",".join(key for key in titles if key in TITLE_LABELS) or None
     customer = None
     if customer_name.strip():
         customer = Customer(tenant_id=tenant.id, name=customer_name.strip(), email=normalize_email(customer_email) if customer_email else None, phone=customer_phone.strip() or None, address=customer_address.strip() or None)
