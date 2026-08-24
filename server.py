@@ -825,8 +825,38 @@ def ocr_spatial_lines(image: Image.Image, box: tuple[float, float, float, float]
 def normalize_jkc_number(value: str) -> str:
     value = value.upper().replace("—", "-").replace("–", "-")
     value = re.sub(r"\b(?:IKC|JKO)\b", "JKC", value)
-    match = re.search(r"(?:JKC|KC)\s*[- ]?\s*MS\s*[- ]?\s*(\d{4,6})\s*/\s*(\d{2})", value)
-    return f"JKC-MS-{match.group(1).zfill(5)}/{match.group(2)}" if match else ""
+    match = re.search(r"(?:JKC|KC)\s*[- ]?\s*MS\s*[- ]?\s*(\d{5})\s*/\s*(\d{2})", value)
+    return f"JKC-MS-{match.group(1)}/{match.group(2)}" if match else ""
+
+
+def jkc_root_registration_number(image: Image.Image) -> str:
+    """祖先番号を混ぜないよう、本犬の登録番号欄だけを拡大して認識する。"""
+    width, height = image.size
+    crop = image.crop((int(width * .02), int(height * .17), int(width * .34), int(height * .215)))
+    crop = crop.resize((crop.width * 4, crop.height * 4), Image.Resampling.LANCZOS)
+    value = pytesseract.image_to_string(crop, lang="eng", config="--psm 6", timeout=70)
+    return normalize_jkc_number(value)
+
+
+def jkc_root_sex_birth(image: Image.Image) -> dict[str, str]:
+    """本犬の性別・生年月日欄だけを拡大し、祖先の生年月日混入を防ぐ。"""
+    width, height = image.size
+    crop = image.crop((int(width * .04), int(height * .205), int(width * .33), int(height * .25)))
+    crop = crop.resize((crop.width * 4, crop.height * 4), Image.Resampling.LANCZOS)
+    value = pytesseract.image_to_string(crop, lang="eng", config="--psm 6", timeout=70).upper()
+    result: dict[str, str] = {}
+    if re.search(r"\b(?:FEMALE|REMALE|EMALE)\b", value):
+        result["sex"] = "female"
+    elif re.search(r"\bMALE\b", value):
+        result["sex"] = "male"
+    birth = re.search(r"(20\d{2})\s*4[A-Z0-9]?\s*(1[0-2]|[1-9])\s*[A-Z]?\s*(3[01]|[12]\d|[1-9])", value)
+    if birth:
+        year, month, day = map(int, birth.groups())
+        try:
+            result["birth_date"] = date(year, month, day).isoformat()
+        except ValueError:
+            pass
+    return result
 
 
 def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
@@ -834,6 +864,7 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     lines = ocr_spatial_lines(image, (.02, .08, .68, .28))
     value = "\n".join(lines)
     result = {"organization": "JKC", "country": "日本"}
+    trusted_identity = jkc_root_sex_birth(image)
 
     names = []
     for line in lines:
@@ -845,7 +876,7 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     if names:
         result["registered_name"] = max(names, key=len)
 
-    number = normalize_jkc_number(value)
+    number = jkc_root_registration_number(image) or normalize_jkc_number(value)
     if number:
         result["pedigree_no"] = number
     chip = re.search(r"\bID\s*([0-9 ]{15,20})", value, re.IGNORECASE)
@@ -872,7 +903,7 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
 
     # 日本語ラベル「年・月・日」はOCRで 47/48・A/H・0/H に崩れやすい。
     # 年マーカーの2文字を月に混ぜないJKC専用パターンを最優先する。
-    birth = re.search(r"(20\d{2})\s*(?:年|4\d)\s*(1[0-2]|[1-9])\s*(?:月|[AH])?\s*(3[01]|[12]\d|[1-9])\s*(?:日|[HO0])?", value)
+    birth = re.search(r"(20\d{2})\s*(?:年|4\d?)\s*(1[0-2]|[1-9])\s*(?:月|[AH])?\s*(3[01]|[12]\d|[1-9])\s*(?:日|[HO0])?", value)
     if not birth:
         birth = re.search(r"(20\d{2})\s*年\s*(1[0-2]|[1-9])\s*月\s*(3[01]|[12]\d|[1-9])\s*日", value)
     if birth:
@@ -881,6 +912,7 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
             result["birth_date"] = date(year, month, day).isoformat()
         except ValueError:
             pass
+    result.update(trusted_identity)
     title_keys = extract_title_keys(value)
     if title_keys:
         result["titles"] = ",".join(title_keys)
@@ -1043,8 +1075,17 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
         match = re.search(pattern, clean, re.IGNORECASE)
         if match:
             metadata[key] = match.group(1).strip().replace(".", "-").replace("/", "-") if key == "birth_date" else match.group(1).strip()
+    # "Registered"の末尾など、番号ではない英字だけの誤抽出を破棄する。
+    if "pedigree_no" in metadata and not re.search(r"\d", metadata["pedigree_no"]):
+        metadata.pop("pedigree_no")
+    if "pedigree_no" in metadata and re.search(r"(?:J|I)?KC", metadata["pedigree_no"], re.IGNORECASE):
+        normalized_jkc = normalize_jkc_number(metadata["pedigree_no"])
+        if normalized_jkc:
+            metadata["pedigree_no"] = normalized_jkc
+        else:
+            metadata.pop("pedigree_no")
     if "pedigree_no" not in metadata:
-        match = re.search(r"\b(JKC[-— ]?MS\s*[-—]?\s*\d{3,8}/\d{2})\b", clean, re.IGNORECASE)
+        match = re.search(r"\b(JKC[-— ]?MS\s*[-—]?\s*\d{5}/\d{2})\b", clean, re.IGNORECASE)
         if match:
             metadata["pedigree_no"] = re.sub(r"\s+", "", match.group(1)).replace("—", "-")
     if "microchip_no" not in metadata:
