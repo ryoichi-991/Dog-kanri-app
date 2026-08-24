@@ -863,15 +863,18 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
         result["color"] = "BLACK"
     elif re.search(r"\bWHITE\b", upper_value):
         result["color"] = "WHITE"
-    if re.search(r"\bMALE\b", upper_value):
-        result["sex"] = "male"
-    elif re.search(r"\bFEMALE\b", upper_value):
+    # FEMALEの先頭Fは、罫線や日本語ラベルの影響でR/Eとして誤認されやすい。
+    # MALEより先に判定し、FEMALEの一部を牡と誤判定しない。
+    if re.search(r"\b(?:FEMALE|REMALE|EMALE)\b", upper_value):
         result["sex"] = "female"
+    elif re.search(r"\bMALE\b", upper_value):
+        result["sex"] = "male"
 
-    # 日本語ラベル「年・月・日」はOCRで 48/A/0 に崩れやすい。
-    birth = re.search(r"(20\d{2})\s*(?:年|[#4]8?)\s*(1[0-2]|[1-9])\s*(?:月|A)?\s*(3[01]|[12]\d|[1-9])", value)
+    # 日本語ラベル「年・月・日」はOCRで 47/48・A/H・0/H に崩れやすい。
+    # 年マーカーの2文字を月に混ぜないJKC専用パターンを最優先する。
+    birth = re.search(r"(20\d{2})\s*(?:年|4\d)\s*(1[0-2]|[1-9])\s*(?:月|[AH])?\s*(3[01]|[12]\d|[1-9])\s*(?:日|[HO0])?", value)
     if not birth:
-        birth = re.search(r"(20\d{2})\D{1,3}(1[0-2]|[1-9])\D{0,2}(3[01]|[12]\d|[1-9])", value)
+        birth = re.search(r"(20\d{2})\s*年\s*(1[0-2]|[1-9])\s*月\s*(3[01]|[12]\d|[1-9])\s*日", value)
     if birth:
         year, month, day = map(int, birth.groups())
         try:
@@ -1280,8 +1283,10 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     )
     existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in existing_dogs)
+    sex_value = metadata.get("sex", "")
+    sex_options = f'<option value="" {"selected" if not sex_value else ""}>選択してください</option><option value="male" {"selected" if sex_value == "male" else ""}>牡</option><option value="female" {"selected" if sex_value == "female" else ""}>牝</option>'
     body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
-    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
 
