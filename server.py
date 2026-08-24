@@ -145,13 +145,13 @@ def index(user: User | None = Depends(current_user), session: Session = Depends(
 def setup_page(session: Session = Depends(db)):
     if admin_exists(session):
         return RedirectResponse("/login", status_code=303)
-    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（12文字以上）</label><input name="password" type="password" minlength="12" required><button>初期管理者を登録</button></form>')
+    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>初期管理者を登録</button></form>')
 
 
 @app.post("/setup", response_class=HTMLResponse)
 def setup(name: str = Form(...), email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
-    if len(password) < 12:
-        return layout("初期設定エラー", '<p class="error">管理者パスワードは12文字以上にしてください。</p><a href="/setup">戻る</a>')
+    if len(password) < 8:
+        return layout("初期設定エラー", '<p class="error">管理者パスワードは8文字以上にしてください。</p><a href="/setup">戻る</a>')
     # 同時送信があっても、最初の1人だけを管理者にする。
     session.execute(text("SELECT pg_advisory_xact_lock(20260824)"))
     if admin_exists(session):
