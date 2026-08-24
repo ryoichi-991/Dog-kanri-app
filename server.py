@@ -957,6 +957,9 @@ def jkc_slot_text(image: Image.Image) -> str:
                     title_keys = extract_title_keys("\n".join(retry_lines[:reg_index - 1]))
         # 縦罫線を I と誤認した犬名だけを安全に補正する。
         name = re.sub(r"(?<=[A-Z])\](?=[A-Z])", "I", name.upper())
+        # JKC犬舎名の所有格 JP’S は、細いアポストロフィが °・*・' と
+        # 認識されやすい。意味が一意に定まる JP + 記号 + S だけを正規化する。
+        name = re.sub(r"\bJP\s*[°*'`´’‘]\s*S\b", "JP’S", name, flags=re.IGNORECASE)
         # 同じ血統書内の本犬名に完全一致する語列があれば、OCRで分断された
         # "NI INA" のような空白だけを原表記へ戻す。
         root_name = metadata.get("registered_name", "")
