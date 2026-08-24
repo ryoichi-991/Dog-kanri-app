@@ -703,6 +703,52 @@ def split_name_titles(value: str) -> tuple[str, list[str]]:
     return re.sub(r"\s{2,}", " ", name).strip(" ,-./"), titles
 
 
+def ocr_image(image: Image.Image, psm: int = 11) -> str:
+    available = set(pytesseract.get_languages(config=""))
+    requested = ["eng", "jpn", "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "hun", "rus"]
+    languages = "+".join(code for code in requested if code in available) or "eng"
+    prepared = ImageEnhance.Contrast(image.convert("L")).enhance(1.8).filter(ImageFilter.SHARPEN)
+    return pytesseract.image_to_string(prepared, lang=languages, config=f"--psm {psm}", timeout=70)
+
+
+def jkc_slot_text(image: Image.Image) -> str:
+    """JKCの標準的な3世代血統書を枠ごとにOCRし、祖先番号を保持する。"""
+    boxes = {
+        0: (.28, .07, .72, .20), 1: (.08, .34, .58, .43), 2: (.08, .65, .58, .74),
+        3: (.10, .25, .58, .34), 4: (.10, .43, .58, .52), 5: (.10, .56, .58, .65), 6: (.10, .74, .58, .84),
+        7: (.56, .21, .97, .30), 8: (.56, .29, .97, .38), 9: (.56, .37, .97, .46), 10: (.56, .45, .97, .54),
+        11: (.56, .52, .97, .61), 12: (.56, .60, .97, .69), 13: (.56, .68, .97, .77), 14: (.56, .76, .97, .86),
+    }
+    width, height = image.size
+    results: list[str] = []
+    for index, (left, top, right, bottom) in boxes.items():
+        crop = image.crop((int(width * left), int(height * top), int(width * right), int(height * bottom)))
+        text_value = ocr_image(crop, psm=11)
+        lines = [re.sub(r"\s{2,}", " ", line).strip(" |") for line in text_value.splitlines() if line.strip()]
+        name = ""
+        for position, line in enumerate(lines):
+            if re.search(r"(?:JKC|JKO|IKC)[-— ]?MS", line, re.IGNORECASE):
+                possible: list[str] = []
+                for candidate in lines[max(0, position - 7):position]:
+                    clean_name, _ = split_name_titles(candidate)
+                    upper_name = clean_name.upper()
+                    if len(clean_name) >= 4 and re.search(r"[A-Z]{3}", upper_name) and not any(word in upper_name for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK|MALE|FEMALE)\b", upper_name):
+                        possible.append(clean_name)
+                if possible:
+                    name = max(possible, key=lambda item: (len(re.findall(r"[A-Z]", item.upper())), len(item)))
+                break
+        if index == 0 and not name:
+            for candidate in lines:
+                clean_name, _ = split_name_titles(candidate)
+                if re.search(r"\b(?:OF|JP|KENNEL|LAND|STELLA|STAR)\b", clean_name, re.IGNORECASE) and len(clean_name) >= 5:
+                    name = clean_name
+                    break
+        title_keys = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, text_value, re.IGNORECASE)]
+        if name:
+            results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(title_keys)}")
+    return "\n".join(results)
+
+
 def extract_pedigree_text(path: Path, content_type: str) -> str:
     """PDFまたは写真から文字を抽出する。スキャンPDFは1ページ目を画像化してOCRする。"""
     if content_type == "application/pdf" or path.suffix.lower() == ".pdf":
@@ -712,22 +758,23 @@ def extract_pedigree_text(path: Path, content_type: str) -> str:
                 return text_value
         except Exception:
             pass
-        output_prefix = str(path.with_suffix("")) + "-page"
-        subprocess.run(
-            ["pdftoppm", "-f", "1", "-singlefile", "-jpeg", "-r", "300", str(path), output_prefix],
-            check=True, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        image_path = Path(output_prefix + ".jpg")
+        extract_prefix = str(path.with_suffix("")) + "-embedded"
+        subprocess.run(["pdfimages", "-f", "1", "-l", "1", "-j", str(path), extract_prefix], check=True, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        extracted = sorted(path.parent.glob(Path(extract_prefix).name + "-*"))
+        if extracted:
+            image_path = extracted[0]
+        else:
+            output_prefix = str(path.with_suffix("")) + "-page"
+            subprocess.run(["pdftoppm", "-f", "1", "-singlefile", "-jpeg", "-r", "300", str(path), output_prefix], check=True, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            image_path = Path(output_prefix + ".jpg")
     else:
         image_path = path
     with Image.open(image_path) as source:
-        image = ImageOps.exif_transpose(source).convert("L")
-        image = ImageEnhance.Contrast(image).enhance(1.7)
-        image = image.filter(ImageFilter.SHARPEN)
-        available = set(pytesseract.get_languages(config=""))
-        requested = ["eng", "jpn", "deu", "fra", "ita", "spa", "por", "nld", "pol", "ces", "hun", "rus"]
-        languages = "+".join(code for code in requested if code in available) or "eng"
-        return pytesseract.image_to_string(image, lang=languages, config="--psm 6", timeout=70)
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        full_text = ocr_image(image, psm=11)
+        if re.search(r"JAPAN\s+KENNEL\s+CLUB|JKC[-— ]?MS", full_text, re.IGNORECASE):
+            full_text += "\n" + jkc_slot_text(image)
+        return full_text
 
 
 def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]]]:
@@ -744,6 +791,18 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
         match = re.search(pattern, clean, re.IGNORECASE)
         if match:
             metadata[key] = match.group(1).strip().replace(".", "-").replace("/", "-") if key == "birth_date" else match.group(1).strip()
+    if "pedigree_no" not in metadata:
+        match = re.search(r"\b(JKC[-— ]?MS\s*[-—]?\s*\d{3,8}/\d{2})\b", clean, re.IGNORECASE)
+        if match:
+            metadata["pedigree_no"] = re.sub(r"\s+", "", match.group(1)).replace("—", "-")
+    if "microchip_no" not in metadata:
+        match = re.search(r"\bID\s*([0-9]{15})\b", clean, re.IGNORECASE)
+        if match:
+            metadata["microchip_no"] = match.group(1)
+    if "birth_date" not in metadata:
+        match = re.search(r"(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", clean)
+        if match:
+            metadata["birth_date"] = f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d}"
     organizations = ["JKC", "FCI", "AKC", "KC", "VDH", "ENCI", "LOF", "RSCE", "CBKC", "CKC", "ANKC", "NZKC"]
     found_orgs = [org for org in organizations if re.search(rf"\b{re.escape(org)}\b", clean, re.IGNORECASE)]
     if found_orgs:
@@ -759,10 +818,19 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
             metadata["country"] = country
             break
 
+    slots: dict[int, tuple[str, list[str]]] = {}
+    for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\]\s*(.*?)\s*\|\|\s*([^\n]*)", clean):
+        index = int(match.group(1))
+        if 0 <= index <= 14:
+            title_values = [key for key in match.group(3).split(",") if key in TITLE_LABELS]
+            slots[index] = (match.group(2).strip(), title_values)
+
     candidates: list[str] = []
     candidate_titles: list[list[str]] = []
     seen: set[str] = set()
     for line in clean.splitlines():
+        if line.startswith("[[PEDIGREE_SLOT_"):
+            continue
         value = re.sub(r"^[\d②-⑮()\[\].:：\-\s]+", "", line).strip(" |;,")
         value = re.sub(r"\s{2,}.*$", "", value).strip()
         upper = value.upper()
@@ -776,6 +844,10 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
             seen.add(normalized)
             candidates.append(name)
             candidate_titles.append(titles)
+    if slots:
+        ordered_names = [slots.get(index, ("", []))[0] for index in range(15)]
+        ordered_titles = [slots.get(index, ("", []))[1] for index in range(15)]
+        return metadata, ordered_names, ordered_titles
     return metadata, candidates[:15], candidate_titles[:15]
 
 
