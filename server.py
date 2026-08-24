@@ -377,6 +377,7 @@ def layout(title: str, body: str, user: User | None = None) -> str:
           <p class="nav-label">繁殖・生体</p>
           <a href="/modules/resident-dogs"><span>🐕</span>在籍犬一覧</a>
           <a href="/modules/dog-list/puppy"><span>◌</span>仔犬一覧</a>
+          <a href="/modules/sale-dogs"><span>¥</span>販売犬一覧</a>
           <a href="/modules/dog-list/parent"><span>♙</span>親犬一覧</a>
           <a href="/modules/dog-list/external"><span>◇</span>外部犬一覧</a>
           <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a>
@@ -1440,6 +1441,41 @@ def categorized_dogs_page(category: str, access=Depends(require_tenant_user), se
     description = "血統参照・交配検討のために登録した犬です。" if category == "external" else "登録済みの犬を状態にかかわらず表示しています。"
     body = f'''<h1>{labels[category]}</h1><p>{html.escape(tenant.name)} — {description}</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>生年月日</th><th>毛色</th><th>血統書番号</th><th>父犬</th><th>母犬</th><th>状態</th>{buyer_header}<th>操作</th></tr>{rows or f'<tr><td colspan="{columns}">登録犬はいません。</td></tr>'}</table>'''
     return layout(labels[category], body, user)
+
+
+@app.get("/modules/sale-dogs", response_class=HTMLResponse)
+def sale_dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    puppies = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category == "puppy").order_by(Dog.dam_id, Dog.birth_date.desc(), Dog.call_name)).all()
+    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id).order_by(PuppySale.id)).all()
+    sales_by_dog = {sale.dog_id: sale for sale in sales}
+    dog_states = {"resident":"販売中", "reserved":"予約済", "delivered":"販売済", "retired":"引退", "transferred":"譲渡済"}
+    sale_states = {
+        "inquiry":"問い合わせ", "visit":"見学予定", "consideration":"検討中", "reserved":"予約済み",
+        "contracted":"契約済み", "paid":"入金済み", "handed_over":"販売完了", "cancelled":"キャンセル",
+    }
+    groups: dict[int | None, list[Dog]] = {}
+    for puppy in puppies:
+        groups.setdefault(puppy.dam_id, []).append(puppy)
+    available = sum(puppy.status == "resident" for puppy in puppies)
+    reserved = sum(puppy.status == "reserved" for puppy in puppies)
+    sold = sum(puppy.status == "delivered" for puppy in puppies)
+    planned_total = sum((sales_by_dog.get(puppy.id).price or 0) for puppy in puppies if sales_by_dog.get(puppy.id) and sales_by_dog.get(puppy.id).status != "cancelled")
+    metrics = f'''<div class="grid"><div class="module"><h3>販売中</h3><p><strong style="font-size:28px">{available}</strong>頭</p></div><div class="module"><h3>予約済</h3><p><strong style="font-size:28px">{reserved}</strong>頭</p></div><div class="module"><h3>販売済</h3><p><strong style="font-size:28px">{sold}</strong>頭</p></div><div class="module"><h3>販売登録額</h3><p><strong style="font-size:24px">¥{planned_total:,}</strong></p></div></div>'''
+    sections = ""
+    for dam_id, group in groups.items():
+        dam = session.get(Dog, dam_id) if dam_id else None
+        dam_name = dam.registered_name or dam.call_name if dam else "母犬未登録"
+        rows = ""
+        for puppy in group:
+            sale = sales_by_dog.get(puppy.id)
+            customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
+            buyer = customer.name if customer else sale.customer_name if sale else "-"
+            remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0) if sale else 0
+            rows += f'''<tr><td><a href="/modules/dogs/{puppy.id}/edit"><strong>{html.escape(puppy.call_name)}</strong></a><br><small>{html.escape(puppy.registered_name or "血統名未登録")}</small></td><td>{"牡" if puppy.sex == "male" else "牝"}</td><td>{puppy.birth_date or "-"}</td><td>{html.escape(puppy.color or "-")}</td><td><span class="badge">{dog_states.get(puppy.status, puppy.status)}</span></td><td>{sale_states.get(sale.status, sale.status) if sale else "未登録"}</td><td>{html.escape(buyer)}</td><td>{f'¥{sale.price:,}' if sale and sale.price is not None else "-"}</td><td>{f'¥{remaining:,}' if sale else "-"}</td><td>{sale.handover_date if sale and sale.handover_date else "-"}</td><td><a class="button secondary" href="/modules/dogs/{puppy.id}/edit">犬情報</a> <a class="button" href="/modules/sales">販売管理</a></td></tr>'''
+        sections += f'''<div class="tenant"><h2 style="margin-top:0">母犬：{html.escape(dam_name)} <span class="badge">{len(group)}頭</span></h2><table><tr><th>仔犬</th><th>性別</th><th>生年月日</th><th>毛色</th><th>犬の状態</th><th>商談段階</th><th>販売先</th><th>価格</th><th>残金</th><th>引渡し日</th><th>管理</th></tr>{rows}</table></div>'''
+    body = f'''<h1>販売犬一覧</h1><p>{html.escape(tenant.name)}の仔犬を母犬ごとにまとめ、販売状況とお客様情報を表示しています。</p>{metrics}{sections or '<div class="tenant"><p>販売管理対象の仔犬はまだ登録されていません。</p></div>'}<p><a class="button" href="/modules/sales">顧客・商談・契約・入金を管理する</a></p>'''
+    return layout("販売犬一覧", body, user)
 
 
 @app.post("/modules/dogs")
