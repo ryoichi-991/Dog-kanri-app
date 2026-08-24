@@ -1467,7 +1467,7 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
         buyer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = buyer.name if buyer else sale.customer_name if sale else "-"
         dog_name = html.escape(d.registered_name or d.call_name)
-        rows += f"<tr><td><a href='/modules/dogs/{d.id}/edit'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.breed or '-')}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>詳細・編集</a></td></tr>"
+        rows += f"<tr><td><a href='/modules/dogs/{d.id}'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.breed or '-')}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>編集</a></td></tr>"
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
     <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
     <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
@@ -1514,7 +1514,7 @@ def resident_dogs_page(access=Depends(require_tenant_user), session: Session = D
         state = "予約済" if dog.status == "reserved" else "在舎中"
         lifetime_births = len(birth_dates_by_dam.get(dog.id, set())) if dog.sex == "female" else None
         birth_count = f'''<strong>{lifetime_births}</strong>回''' if lifetime_births is not None else "対象外"
-        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{birth_count}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{birth_count}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
     body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>犬種</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>生涯出産回数</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="12">在籍犬はまだ登録されていません。</td></tr>'}</table>'''
     return layout("在籍犬一覧", body, user)
 
@@ -1537,7 +1537,7 @@ def categorized_dogs_page(category: str, access=Depends(require_tenant_user), se
         sale = session.scalar(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.dog_id == dog.id).order_by(PuppySale.id.desc())) if category == "puppy" else None
         customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = customer.name if customer else sale.customer_name if sale else "-"
-        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{status_labels.get(dog.status, dog.status)}</span></td>{f'<td>{html.escape(buyer_name)}</td>' if category == 'puppy' else ''}<td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{status_labels.get(dog.status, dog.status)}</span></td>{f'<td>{html.escape(buyer_name)}</td>' if category == 'puppy' else ''}<td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
     buyer_header = "<th>販売先</th>" if category == "puppy" else ""
     columns = 12 if category == "puppy" else 11
     metrics = f'''<div class="grid"><div class="module"><h3>登録頭数</h3><p><strong style="font-size:28px">{len(dogs)}</strong>頭</p></div><div class="module"><h3>牡</h3><p><strong style="font-size:28px">{male_count}</strong>頭</p></div><div class="module"><h3>牝</h3><p><strong style="font-size:28px">{female_count}</strong>頭</p></div><div class="module"><h3>在舎・予約中</h3><p><strong style="font-size:28px">{resident_count}</strong>頭</p></div></div>'''
@@ -1587,7 +1587,7 @@ def sale_dogs_page(access=Depends(require_tenant_user), session: Session = Depen
                 customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
                 buyer = customer.name if customer else sale.customer_name if sale else "-"
                 remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0) if sale else 0
-                rows += f'''<tr><td><a href="/modules/dogs/{puppy.id}/edit"><strong>{html.escape(puppy.call_name)}</strong></a><br><small>{html.escape(puppy.registered_name or "血統名未登録")}</small></td><td>{"牡" if puppy.sex == "male" else "牝"}</td><td>{html.escape(puppy.color or "-")}</td><td><span class="badge">{dog_states.get(puppy.status, puppy.status)}</span></td><td>{sale_states.get(sale.status, sale.status) if sale else "未登録"}</td><td>{html.escape(buyer)}</td><td>{f'¥{sale.price:,}' if sale and sale.price is not None else "-"}</td><td>{f'¥{remaining:,}' if sale else "-"}</td><td>{sale.handover_date if sale and sale.handover_date else "-"}</td><td><a class="button secondary" href="/modules/dogs/{puppy.id}/edit">犬情報</a> <a class="button" href="/modules/sales">販売管理</a></td></tr>'''
+                rows += f'''<tr><td><a href="/modules/dogs/{puppy.id}"><strong>{html.escape(puppy.call_name)}</strong></a><br><small>{html.escape(puppy.registered_name or "血統名未登録")}</small></td><td>{"牡" if puppy.sex == "male" else "牝"}</td><td>{html.escape(puppy.color or "-")}</td><td><span class="badge">{dog_states.get(puppy.status, puppy.status)}</span></td><td>{sale_states.get(sale.status, sale.status) if sale else "未登録"}</td><td>{html.escape(buyer)}</td><td>{f'¥{sale.price:,}' if sale and sale.price is not None else "-"}</td><td>{f'¥{remaining:,}' if sale else "-"}</td><td>{sale.handover_date if sale and sale.handover_date else "-"}</td><td><a class="button secondary" href="/modules/dogs/{puppy.id}">詳細</a> <a class="button" href="/modules/sales">販売管理</a></td></tr>'''
             if birth_date:
                 birth_label = f'''第{birth_numbers[birth_date]}回出産　{birth_date.strftime("%Y年%m月%d日")}'''
             else:
@@ -1622,6 +1622,65 @@ def dog_create(call_name: str = Form(...), registered_name: str = Form(""), bree
     session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, breed=breed.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, sire_id=sire.id if sire else None, dam_id=dam.id if dam else None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
+
+
+def pedigree_flow_node(session: Session, tenant_id: int, dog: Dog | None, index: int = 0, depth: int = 0) -> str:
+    """本人から曾祖父母までを、称号付きの分岐フローチャートへ変換する。"""
+    label = PEDIGREE_LABELS[index] if index < len(PEDIGREE_LABELS) else "祖先"
+    if dog:
+        name = html.escape(dog.registered_name or dog.call_name)
+        call_name = f'<small>{html.escape(dog.call_name)}</small>' if dog.registered_name and dog.call_name != dog.registered_name else ""
+        marks = title_marks(dog.titles)
+        card = f'''<a class="pedigree-node" href="/modules/dogs/{dog.id}"><span class="pedigree-role">{label}</span><strong>{name}</strong>{call_name}<span class="pedigree-sex">{"牡" if dog.sex == "male" else "牝"}</span><span class="pedigree-titles">{marks or "称号なし"}</span></a>'''
+    else:
+        card = f'''<div class="pedigree-node missing"><span class="pedigree-role">{label}</span><strong>未登録</strong><span class="pedigree-titles">－</span></div>'''
+    children = ""
+    if depth < 3:
+        sire = session.scalar(select(Dog).where(Dog.id == dog.sire_id, Dog.tenant_id == tenant_id)) if dog and dog.sire_id else None
+        dam = session.scalar(select(Dog).where(Dog.id == dog.dam_id, Dog.tenant_id == tenant_id)) if dog and dog.dam_id else None
+        children = f'''<ul>{pedigree_flow_node(session, tenant_id, sire, index * 2 + 1, depth + 1)}{pedigree_flow_node(session, tenant_id, dam, index * 2 + 2, depth + 1)}</ul>'''
+    return f'''<li>{card}{children}</li>'''
+
+
+@app.get("/modules/dogs/{dog_id}", response_class=HTMLResponse)
+def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    status_labels = {"resident":"在舎中", "reserved":"予約済", "delivered":"販売済", "retired":"引退", "transferred":"譲渡済"}
+    category_labels = {"parent":"親犬", "puppy":"子犬", "external":"外部犬"}
+    sale = session.scalar(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.dog_id == dog.id).order_by(PuppySale.id.desc()))
+    customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
+    buyer = customer.name if customer else sale.customer_name if sale else None
+    uploads = session.scalars(select(PedigreeUpload).where(PedigreeUpload.tenant_id == tenant.id, PedigreeUpload.dog_id == dog.id).order_by(PedigreeUpload.uploaded_at.desc())).all()
+    upload_views = ""
+    for index, item in enumerate(uploads):
+        source = f"/modules/dogs/{dog.id}/pedigree-files/{item.id}"
+        preview = f'<img src="{source}" alt="血統書" style="max-width:100%;max-height:900px;object-fit:contain">' if item.content_type.startswith("image/") else f'<iframe src="{source}" title="血統書PDF" style="width:100%;height:800px;border:1px solid #eadde1;border-radius:10px"></iframe>' if item.content_type == "application/pdf" else ""
+        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
+    document_section = f'''<div class="tenant"><h2 style="margin-top:0">アップロード済み血統書</h2>{upload_views or '<p>血統書原本はまだ保存されていません。</p>'}</div>'''
+    flow = f'''<div class="pedigree-scroll"><div class="pedigree-tree"><ul>{pedigree_flow_node(session, tenant.id, dog)}</ul></div></div>'''
+    info = [
+        ("呼び名", dog.call_name), ("血統書名", dog.registered_name or "－"), ("犬種", dog.breed or "－"),
+        ("性別", "牡" if dog.sex == "male" else "牝"), ("区分", category_labels.get(dog.category, dog.category)),
+        ("状態", status_labels.get(dog.status, dog.status)), ("生年月日", str(dog.birth_date or "－")),
+        ("毛色", dog.color or "－"), ("血統書番号", dog.pedigree_no or "－"),
+        ("マイクロチップ番号", dog.microchip_no or "－"), ("発行団体", dog.pedigree_organization or "－"),
+        ("発行国", dog.pedigree_country or "－"), ("販売先", buyer or "－"),
+    ]
+    info_html = "".join(f'''<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>''' for label, value in info)
+    body = f'''<style>
+    .detail-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:20px}}.detail-head .button{{margin-top:0}}
+    .dog-facts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1px;background:#eadde1;border:1px solid #eadde1;border-radius:14px;overflow:hidden;margin:18px 0 30px}}
+    .dog-facts div{{background:#fff;padding:14px}}.dog-facts dt{{font-size:12px;color:#765f68;font-weight:700}}.dog-facts dd{{margin:5px 0 0;font-weight:650}}
+    .pedigree-scroll{{overflow:auto;padding:10px 0 24px}}.pedigree-tree{{min-width:1120px}}.pedigree-tree ul{{padding-top:24px;position:relative;display:flex;justify-content:center;margin:0;padding-left:0}}
+    .pedigree-tree li{{list-style:none;text-align:center;position:relative;padding:24px 5px 0}}.pedigree-tree li:before,.pedigree-tree li:after{{content:"";position:absolute;top:0;right:50%;width:50%;height:24px;border-top:2px solid #d5aeb9}}
+    .pedigree-tree li:after{{right:auto;left:50%;border-left:2px solid #d5aeb9}}.pedigree-tree li:only-child:before,.pedigree-tree li:only-child:after{{display:none}}.pedigree-tree li:first-child:before,.pedigree-tree li:last-child:after{{border:0}}
+    .pedigree-tree li:last-child:before{{border-right:2px solid #d5aeb9;border-radius:0 8px 0 0}}.pedigree-tree li:first-child:after{{border-radius:8px 0 0 0}}.pedigree-tree ul ul:before{{content:"";position:absolute;top:0;left:50%;height:24px;border-left:2px solid #d5aeb9}}
+    .pedigree-node{{width:132px;min-height:112px;padding:9px 7px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12}}
+    .pedigree-node:hover{{border-color:#b66f7c;background:#fff8fa}}.pedigree-node.missing{{opacity:.55;border-style:dashed}}.pedigree-role{{font-size:10px;color:#9a6d79;font-weight:700}}.pedigree-node strong{{font-size:11px;line-height:1.25;margin:4px 0;overflow-wrap:anywhere}}.pedigree-node small{{font-size:9px;color:#806b72}}.pedigree-sex{{font-size:10px}}.pedigree-titles{{font-size:9px;min-height:22px;margin-top:3px}}.pedigree-titles .title-crown{{font-size:15px;margin:0 2px}}
+    </style><div class="detail-head"><div><h1>{html.escape(dog.call_name)}の詳細</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p></div><a class="button" href="/modules/dogs/{dog.id}/edit">編集する</a></div>
+    <dl class="dog-facts">{info_html}</dl><h2>血統構成フローチャート</h2><p><small>各個体をクリックすると、その犬の詳細ページを開きます。王冠は登録されている称号を表します。</small></p>{flow}{document_section}<p><a class="button secondary" href="/modules/resident-dogs">在籍犬一覧へ戻る</a></p>'''
+    return layout(f"{dog.call_name}の詳細", body, user)
 
 
 @app.get("/modules/dogs/{dog_id}/edit", response_class=HTMLResponse)
