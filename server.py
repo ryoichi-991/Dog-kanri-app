@@ -47,6 +47,7 @@ class Tenant(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(150), unique=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -107,7 +108,7 @@ def require_user(user: User | None = Depends(current_user)) -> User:
 
 
 def accessible_tenants(user: User, session: Session) -> list[Tenant]:
-    query = select(Tenant).where(Tenant.active.is_(True)).order_by(Tenant.name)
+    query = select(Tenant).where(Tenant.active.is_(True), Tenant.deleted.is_(False)).order_by(Tenant.name)
     if not user.platform_admin:
         query = query.join(Membership).where(Membership.user_id == user.id)
     return list(session.scalars(query).all())
@@ -146,7 +147,7 @@ def layout(title: str, body: str, user: User | None = None) -> str:
         platform_link = '<a href="/platform/tenants">テナント管理</a>' if user.platform_admin else ""
         nav = f'<nav><a href="/dashboard">ホーム</a><a href="/admin/users">ユーザー管理</a>{platform_link}<form method="post" action="/logout"><button>ログアウト</button></form></nav>'
     return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
-<style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:850px;margin:45px auto;padding:0 20px}}.card{{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:18px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:#fff;text-decoration:none;cursor:pointer}}.secondary{{background:#68748a}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 850px)/2));display:flex;gap:20px;align-items:center}}nav a,nav button{{color:#fff;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:11px 7px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}.tenant{{padding:16px;background:#eef3fa;border-radius:12px;margin-bottom:24px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
+<style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:950px;margin:45px auto;padding:0 20px}}.card{{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:18px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:#fff;text-decoration:none;cursor:pointer}}.secondary{{background:#68748a}}.danger{{background:#a53232}}.success{{background:#247346}}.inline{{display:inline}}.inline button{{margin:3px;padding:8px 11px}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 950px)/2));display:flex;gap:20px;align-items:center}}nav a,nav button{{color:#fff;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:11px 7px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}.tenant{{padding:16px;background:#eef3fa;border-radius:12px;margin-bottom:24px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
 mcp = FastMCP("Dog-kanri-app")
@@ -166,6 +167,7 @@ def startup():
     # 既存DBへ安全に列を追加してから、新テーブルを作る。
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
     Base.metadata.create_all(engine)
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -295,8 +297,18 @@ def tenant_list(user: User = Depends(require_user), session: Session = Depends(d
     if not user.platform_admin:
         raise HTTPException(status_code=403)
     tenants = session.scalars(select(Tenant).order_by(Tenant.name)).all()
-    rows = "".join(f"<tr><td>{html.escape(t.name)}</td><td>{'有効' if t.active else '停止'}</td></tr>" for t in tenants)
-    return layout("テナント管理", f'<h1>テナント管理</h1><form method="post"><label>新しい会社・犬舎名</label><input name="name" required maxlength="150"><button>作成する</button></form><table><tr><th>名称</th><th>状態</th></tr>{rows}</table>', user)
+    rows = ""
+    for tenant in tenants:
+        if tenant.deleted:
+            state = '<span class="badge">削除済み</span>'
+            actions = f'<form class="inline" method="post" action="/platform/tenants/{tenant.id}/action"><input type="hidden" name="action" value="restore"><button class="success">復元</button></form>'
+        else:
+            state = '<span class="badge">実行中</span>' if tenant.active else '<span class="badge">停止中</span>'
+            switch_action = f'<form class="inline" method="post" action="/platform/tenants/{tenant.id}/action"><input type="hidden" name="action" value="select"><button>表示・実行</button></form>' if tenant.active else ""
+            toggle = ('stop', '停止', 'secondary') if tenant.active else ('start', '再開', 'success')
+            actions = switch_action + f'<form class="inline" method="post" action="/platform/tenants/{tenant.id}/action"><input type="hidden" name="action" value="{toggle[0]}"><button class="{toggle[2]}">{toggle[1]}</button></form><form class="inline" method="post" action="/platform/tenants/{tenant.id}/action" onsubmit="return confirm(\'このテナントを削除扱いにしますか？データは復元できます。\')"><input type="hidden" name="action" value="delete"><button class="danger">削除</button></form>'
+        rows += f"<tr><td>{html.escape(tenant.name)}</td><td>{state}</td><td>{actions}</td></tr>"
+    return layout("テナント管理", f'<h1>テナント管理</h1><form method="post"><label>新しい会社・犬舎名</label><input name="name" required maxlength="150"><button>作成する</button></form><table><tr><th>会社・犬舎</th><th>状態</th><th>操作</th></tr>{rows}</table>', user)
 
 
 @app.post("/platform/tenants")
@@ -306,6 +318,33 @@ def tenant_create(name: str = Form(...), user: User = Depends(require_user), ses
     if session.scalar(select(Tenant).where(Tenant.name == name.strip())):
         return HTMLResponse(layout("エラー", '<p class="error">同じ名前のテナントがあります。</p><a href="/platform/tenants">戻る</a>', user))
     session.add(Tenant(name=name.strip()))
+    session.commit()
+    return RedirectResponse("/platform/tenants", status_code=303)
+
+
+@app.post("/platform/tenants/{tenant_id}/action")
+def tenant_action(tenant_id: int, action: str = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not user.platform_admin:
+        raise HTTPException(status_code=403)
+    tenant = session.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="テナントが見つかりません")
+    if action == "select" and tenant.active and not tenant.deleted:
+        response = RedirectResponse("/dashboard", status_code=303)
+        response.set_cookie("tenant_id", str(tenant.id), httponly=True, secure=COOKIE_SECURE, samesite="lax")
+        return response
+    if action == "stop" and not tenant.deleted:
+        tenant.active = False
+    elif action == "start" and not tenant.deleted:
+        tenant.active = True
+    elif action == "delete":
+        tenant.active = False
+        tenant.deleted = True
+    elif action == "restore":
+        tenant.deleted = False
+        tenant.active = True
+    else:
+        raise HTTPException(status_code=400, detail="無効な操作です")
     session.commit()
     return RedirectResponse("/platform/tenants", status_code=303)
 
