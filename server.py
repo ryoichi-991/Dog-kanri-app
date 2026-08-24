@@ -561,7 +561,7 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
     switcher = f'<div class="tenant"><form method="post" action="/tenant/switch"><label>表示する会社・犬舎</label><select name="tenant_id">{options}</select><button>切り替える</button></form></div>' if tenants else '<p class="error">所属テナントがありません。管理者へ連絡してください。</p>'
     role = tenant_role(user, tenant, session)
     label = "運営管理者" if user.platform_admin else ({Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}.get(role, "未所属"))
-    dog_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id)) if tenant else 0
+    dog_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id, Dog.active.is_(True))) if tenant else 0
     module_cards = ""
     if tenant:
         for key, (title, description) in MODULES.items():
@@ -1491,7 +1491,9 @@ def pedigree_import(
 @app.get("/modules/dogs", response_class=HTMLResponse)
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
-    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    archived_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id, Dog.active.is_(False))) or 0
+    can_archive = tenant_role(user, tenant, session) == Role.admin
     sire_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "male")
     dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "female")
     category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
@@ -1503,14 +1505,56 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
         buyer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = buyer.name if buyer else sale.customer_name if sale else "-"
         dog_name = html.escape(d.registered_name or d.call_name)
-        rows += f"<tr><td><a href='/modules/dogs/{d.id}'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.breed or '-')}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>編集</a></td></tr>"
-    body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
+        archive_link = f" <a class='button danger' href='/modules/dogs/{d.id}/archive-confirm'>登録解除</a>" if can_archive else ""
+        rows += f"<tr><td><a href='/modules/dogs/{d.id}'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.breed or '-')}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>編集</a>{archive_link}</td></tr>"
+    archived_link = f'''<p><a class="button secondary" href="/modules/archived-dogs">登録解除済み一覧（{archived_count}頭）</a></p>''' if can_archive else ""
+    body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の登録中の犬だけが表示されます。</p>{archived_link}
     <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
     <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
     <h2>手入力で犬を登録</h2>
     <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>犬種（自由入力可）</label><input name="breed" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">販売済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><p><small>血統書がないミックス犬も、犬種を任意の名称で入力して登録できます。</small></p><button>犬を登録</button></form>
     <table><tr><th>呼び名</th><th>タイトル</th><th>区分</th><th>犬種</th><th>血統書名</th><th>性別</th><th>発行団体・国</th><th>血統書更新日</th><th>状態</th><th>販売先</th><th>操作</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
+
+
+@app.get("/modules/dogs/{dog_id}/archive-confirm", response_class=HTMLResponse)
+def dog_archive_confirm(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if not dog.active:
+        return RedirectResponse("/modules/archived-dogs", status_code=303)
+    body = f'''<h1>登録解除の確認</h1><div class="tenant"><h2 style="margin-top:0">{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統書名未登録")}</p></div><p class="error">この犬を登録解除すると、通常の犬一覧・在籍犬一覧・仔犬／親犬一覧から非表示になります。</p><p>健康・繁殖・血統・販売などの履歴は削除されず、後から復元できます。</p><form method="post" action="/modules/dogs/{dog.id}/archive"><button class="danger">登録解除する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>'''
+    return layout("登録解除の確認", body, user)
+
+
+@app.post("/modules/dogs/{dog_id}/archive")
+def dog_archive(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    dog.active = False
+    session.commit()
+    return RedirectResponse("/modules/dogs", status_code=303)
+
+
+@app.get("/modules/archived-dogs", response_class=HTMLResponse)
+def archived_dogs_page(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(False)).order_by(Dog.call_name)).all()
+    rows = "".join(
+        f'''<tr><td><strong>{html.escape(dog.call_name)}</strong><br><small>{html.escape(dog.registered_name or "血統書名未登録")}</small></td><td>{html.escape(dog.breed or "-")}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td><form class="inline" method="post" action="/modules/dogs/{dog.id}/restore"><button class="success">復元する</button></form></td></tr>'''
+        for dog in dogs
+    )
+    body = f'''<h1>登録解除済みの犬</h1><p>登録解除した犬を復元できます。関連する健康・繁殖・血統・販売履歴は保持されています。</p><table><tr><th>犬名</th><th>犬種</th><th>性別</th><th>血統書番号</th><th>操作</th></tr>{rows or '<tr><td colspan="5">登録解除済みの犬はいません。</td></tr>'}</table><p><a class="button secondary" href="/modules/dogs">犬・血統書管理へ戻る</a></p>'''
+    return layout("登録解除済みの犬", body, user)
+
+
+@app.post("/modules/dogs/{dog_id}/restore")
+def dog_restore(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    dog.active = True
+    session.commit()
+    return RedirectResponse("/modules/archived-dogs", status_code=303)
 
 
 @app.get("/modules/resident-dogs", response_class=HTMLResponse)
