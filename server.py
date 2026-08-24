@@ -1512,15 +1512,41 @@ def sale_dogs_page(access=Depends(require_tenant_user), session: Session = Depen
     for dam_id, group in groups.items():
         dam = session.get(Dog, dam_id) if dam_id else None
         dam_name = dam.registered_name or dam.call_name if dam else "母犬未登録"
-        rows = ""
+        litters: dict[date | None, list[Dog]] = {}
         for puppy in group:
-            sale = sales_by_dog.get(puppy.id)
-            customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
-            buyer = customer.name if customer else sale.customer_name if sale else "-"
-            remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0) if sale else 0
-            rows += f'''<tr><td><a href="/modules/dogs/{puppy.id}/edit"><strong>{html.escape(puppy.call_name)}</strong></a><br><small>{html.escape(puppy.registered_name or "血統名未登録")}</small></td><td>{"牡" if puppy.sex == "male" else "牝"}</td><td>{puppy.birth_date or "-"}</td><td>{html.escape(puppy.color or "-")}</td><td><span class="badge">{dog_states.get(puppy.status, puppy.status)}</span></td><td>{sale_states.get(sale.status, sale.status) if sale else "未登録"}</td><td>{html.escape(buyer)}</td><td>{f'¥{sale.price:,}' if sale and sale.price is not None else "-"}</td><td>{f'¥{remaining:,}' if sale else "-"}</td><td>{sale.handover_date if sale and sale.handover_date else "-"}</td><td><a class="button secondary" href="/modules/dogs/{puppy.id}/edit">犬情報</a> <a class="button" href="/modules/sales">販売管理</a></td></tr>'''
-        sections += f'''<div class="tenant"><h2 style="margin-top:0">母犬：{html.escape(dam_name)} <span class="badge">{len(group)}頭</span></h2><table><tr><th>仔犬</th><th>性別</th><th>生年月日</th><th>毛色</th><th>犬の状態</th><th>商談段階</th><th>販売先</th><th>価格</th><th>残金</th><th>引渡し日</th><th>管理</th></tr>{rows}</table></div>'''
-    body = f'''<h1>販売犬一覧</h1><p>{html.escape(tenant.name)}の仔犬を母犬ごとにまとめ、販売状況とお客様情報を表示しています。</p>{metrics}{sections or '<div class="tenant"><p>販売管理対象の仔犬はまだ登録されていません。</p></div>'}<p><a class="button" href="/modules/sales">顧客・商談・契約・入金を管理する</a></p>'''
+            litters.setdefault(puppy.birth_date, []).append(puppy)
+        known_birth_dates = sorted((birth_date for birth_date in litters if birth_date is not None))
+        birth_numbers = {birth_date: index for index, birth_date in enumerate(known_birth_dates, start=1)}
+        litter_panels = ""
+        ordered_birth_dates = sorted(known_birth_dates, reverse=True) + ([None] if None in litters else [])
+        for birth_date in ordered_birth_dates:
+            litter = litters[birth_date]
+            rows = ""
+            litter_sold = sum(puppy.status == "delivered" for puppy in litter)
+            litter_reserved = sum(puppy.status == "reserved" for puppy in litter)
+            litter_available = sum(puppy.status == "resident" for puppy in litter)
+            for puppy in litter:
+                sale = sales_by_dog.get(puppy.id)
+                customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
+                buyer = customer.name if customer else sale.customer_name if sale else "-"
+                remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0) if sale else 0
+                rows += f'''<tr><td><a href="/modules/dogs/{puppy.id}/edit"><strong>{html.escape(puppy.call_name)}</strong></a><br><small>{html.escape(puppy.registered_name or "血統名未登録")}</small></td><td>{"牡" if puppy.sex == "male" else "牝"}</td><td>{html.escape(puppy.color or "-")}</td><td><span class="badge">{dog_states.get(puppy.status, puppy.status)}</span></td><td>{sale_states.get(sale.status, sale.status) if sale else "未登録"}</td><td>{html.escape(buyer)}</td><td>{f'¥{sale.price:,}' if sale and sale.price is not None else "-"}</td><td>{f'¥{remaining:,}' if sale else "-"}</td><td>{sale.handover_date if sale and sale.handover_date else "-"}</td><td><a class="button secondary" href="/modules/dogs/{puppy.id}/edit">犬情報</a> <a class="button" href="/modules/sales">販売管理</a></td></tr>'''
+            if birth_date:
+                birth_label = f'''第{birth_numbers[birth_date]}回出産　{birth_date.strftime("%Y年%m月%d日")}'''
+            else:
+                birth_label = "出産日未登録"
+            state_summary = f'''販売中 {litter_available}頭／予約済 {litter_reserved}頭／販売済 {litter_sold}頭'''
+            litter_panels += f'''<details class="litter-panel"><summary><span><strong>{birth_label}</strong><span class="badge">{len(litter)}頭</span></span><small>{state_summary}　クリックして詳細を表示</small></summary><div class="litter-table"><table><tr><th>仔犬</th><th>性別</th><th>毛色</th><th>犬の状態</th><th>商談段階</th><th>販売先</th><th>価格</th><th>残金</th><th>引渡し日</th><th>管理</th></tr>{rows}</table></div></details>'''
+        sections += f'''<div class="tenant dam-section"><h2 style="margin-top:0">母犬：{html.escape(dam_name)}</h2><p class="dam-summary">出産 {len(known_birth_dates)}回・登録仔犬 {len(group)}頭</p>{litter_panels}</div>'''
+    body = f'''<style>
+    .dam-section{{margin-bottom:22px}} .dam-summary{{color:#765f68;margin-top:-8px}}
+    .litter-panel{{border:1px solid #ead9df;border-radius:12px;margin:10px 0;background:#fff}}
+    .litter-panel summary{{cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;list-style:none;background:#fbf3f6;border-radius:12px}}
+    .litter-panel summary::-webkit-details-marker{{display:none}} .litter-panel summary:after{{content:"＋";font-size:22px;color:#a85f76}}
+    .litter-panel[open] summary:after{{content:"−"}} .litter-panel summary span{{display:flex;align-items:center;gap:10px}}
+    .litter-panel summary small{{margin-left:auto;color:#765f68;text-align:right}} .litter-table{{padding:8px 14px 14px;overflow-x:auto}}
+    @media(max-width:760px){{.litter-panel summary{{align-items:flex-start;flex-direction:column}}.litter-panel summary small{{margin-left:0;text-align:left}}}}
+    </style><h1>販売犬一覧</h1><p>{html.escape(tenant.name)}の販売犬を、母犬・出産回ごとに整理しています。出産回をクリックすると仔犬と販売情報を確認できます。</p>{metrics}{sections or '<div class="tenant"><p>販売管理対象の仔犬はまだ登録されていません。</p></div>'}<p><a class="button" href="/modules/sales">顧客・商談・契約・入金を管理する</a></p>'''
     return layout("販売犬一覧", body, user)
 
 
