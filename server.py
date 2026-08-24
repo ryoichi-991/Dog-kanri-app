@@ -376,6 +376,9 @@ def layout(title: str, body: str, user: User | None = None) -> str:
           <a href="/modules/calendar"><span>▦</span>カレンダー</a>
           <p class="nav-label">繁殖・生体</p>
           <a href="/modules/resident-dogs"><span>🐕</span>在籍犬一覧</a>
+          <a href="/modules/dog-list/puppy"><span>◌</span>仔犬一覧</a>
+          <a href="/modules/dog-list/parent"><span>♙</span>親犬一覧</a>
+          <a href="/modules/dog-list/external"><span>◇</span>外部犬一覧</a>
           <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a>
           <a href="/modules/births"><span>✦</span>出産管理</a>
           <a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a>
@@ -1410,6 +1413,33 @@ def resident_dogs_page(access=Depends(require_tenant_user), session: Session = D
         rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
     body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="10">在籍犬はまだ登録されていません。</td></tr>'}</table>'''
     return layout("在籍犬一覧", body, user)
+
+
+@app.get("/modules/dog-list/{category}", response_class=HTMLResponse)
+def categorized_dogs_page(category: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    labels = {"puppy": "仔犬一覧", "parent": "親犬一覧", "external": "外部犬一覧"}
+    if category not in labels:
+        raise HTTPException(status_code=404)
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category == category).order_by(Dog.birth_date.desc(), Dog.registered_name, Dog.call_name)).all()
+    status_labels = {"resident":"在舎中", "reserved":"予約済", "delivered":"販売済", "retired":"引退", "transferred":"譲渡済"}
+    male_count = sum(dog.sex == "male" for dog in dogs)
+    female_count = sum(dog.sex == "female" for dog in dogs)
+    resident_count = sum(dog.status in {"resident", "reserved"} for dog in dogs)
+    rows = ""
+    for dog in dogs:
+        sire = session.get(Dog, dog.sire_id) if dog.sire_id else None
+        dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
+        sale = session.scalar(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.dog_id == dog.id).order_by(PuppySale.id.desc())) if category == "puppy" else None
+        customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
+        buyer_name = customer.name if customer else sale.customer_name if sale else "-"
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{status_labels.get(dog.status, dog.status)}</span></td>{f'<td>{html.escape(buyer_name)}</td>' if category == 'puppy' else ''}<td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
+    buyer_header = "<th>販売先</th>" if category == "puppy" else ""
+    columns = 11 if category == "puppy" else 10
+    metrics = f'''<div class="grid"><div class="module"><h3>登録頭数</h3><p><strong style="font-size:28px">{len(dogs)}</strong>頭</p></div><div class="module"><h3>牡</h3><p><strong style="font-size:28px">{male_count}</strong>頭</p></div><div class="module"><h3>牝</h3><p><strong style="font-size:28px">{female_count}</strong>頭</p></div><div class="module"><h3>在舎・予約中</h3><p><strong style="font-size:28px">{resident_count}</strong>頭</p></div></div>'''
+    description = "血統参照・交配検討のために登録した犬です。" if category == "external" else "登録済みの犬を状態にかかわらず表示しています。"
+    body = f'''<h1>{labels[category]}</h1><p>{html.escape(tenant.name)} — {description}</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>生年月日</th><th>毛色</th><th>血統書番号</th><th>父犬</th><th>母犬</th><th>状態</th>{buyer_header}<th>操作</th></tr>{rows or f'<tr><td colspan="{columns}">登録犬はいません。</td></tr>'}</table>'''
+    return layout(labels[category], body, user)
 
 
 @app.post("/modules/dogs")
