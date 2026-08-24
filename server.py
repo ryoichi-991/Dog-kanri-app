@@ -86,6 +86,7 @@ class Dog(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     call_name: Mapped[str] = mapped_column(String(100))
     registered_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    breed: Mapped[str | None] = mapped_column(String(150), nullable=True)
     sex: Mapped[str] = mapped_column(String(10))
     birth_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     color: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -427,6 +428,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_country VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_organization VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_updated_at TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS breed VARCHAR(150)"))
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL"))
@@ -859,12 +861,47 @@ def jkc_root_sex_birth(image: Image.Image) -> dict[str, str]:
     return result
 
 
+def jkc_root_breed(image: Image.Image) -> str:
+    """JKC本犬欄の犬種だけを拡大し、途中で切れた全面OCRより優先する。"""
+    width, height = image.size
+    crop = image.crop((int(width * .02), int(height * .13), int(width * .45), int(height * .20)))
+    crop = crop.resize((crop.width * 4, crop.height * 4), Image.Resampling.LANCZOS)
+    value = pytesseract.image_to_string(crop, lang="eng", config="--psm 6", timeout=70).upper()
+    # 小さな英字ラベル Breed は BRE / PEE / EU に崩れやすい。一方、右側の
+    # 犬種名は大きく明瞭なため、JKCの犬種専用領域内に限って各崩れを許容する。
+    match = re.search(r"(?:BRE(?:ED|EDS)?|PEE|EU)[^A-Z\n]{0,8}([A-Z][A-Z .'-]{2,60})", value)
+    if not match:
+        # MINIATUREは細い活字のためMINIATU!/MINTAT等へ分割されやすい。
+        # SCHNAUZERとの組み合わせを確認できる場合のみ公式表記へ補正する。
+        spatial_value = " ".join(ocr_spatial_lines(image, (.02, .12, .42, .20))).upper()
+        combined = value + " " + spatial_value
+        if "SCHNAUZER" in combined and re.search(r"MINI|MINT", combined):
+            return "MINIATURE SCHNAUZER"
+        return ""
+    breed = re.sub(r"\s{2,}", " ", match.group(1)).strip(" .-")
+    parts = breed.split()
+    # 左隣の日本語ラベルの断片が単独1文字（例: "S MINIATURE ..."）で
+    # 混ざることがあるため、犬種本体が複数語ある場合だけ除去する。
+    if len(parts) >= 3 and len(parts[0]) == 1:
+        breed = " ".join(parts[1:])
+    return breed if breed not in {"BREED", "NAME OF DOG"} else ""
+
+
 def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     """本犬欄だけを読み、祖先欄の番号や団体名を混入させない。"""
     lines = ocr_spatial_lines(image, (.02, .08, .68, .28))
     value = "\n".join(lines)
     result = {"organization": "JKC", "country": "日本"}
     trusted_identity = jkc_root_sex_birth(image)
+
+    trusted_breed = jkc_root_breed(image)
+    breed_match = re.search(r"(?:^|\n)\s*(?:BREED|犬種)\s*[:：]?\s*([A-Z][A-Z .'-]{2,60})", value, re.IGNORECASE)
+    if trusted_breed:
+        result["breed"] = trusted_breed
+    elif breed_match:
+        breed = re.sub(r"\s{2,}", " ", breed_match.group(1)).strip(" .-").upper()
+        if breed not in {"BREED", "NAME OF DOG"}:
+            result["breed"] = breed
 
     names = []
     for line in lines:
@@ -1066,6 +1103,7 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
         except (json.JSONDecodeError, TypeError):
             trusted_metadata = {}
     patterns = {
+        "breed": r"(?:BREED|犬種)\s*[:：]?\s*([A-Z][A-Z .'-]{2,60})",
         "pedigree_no": r"(?:REG(?:ISTRATION)?\.?\s*(?:NO\.?|NUMBER)?|登録番号)\s*[:：]?\s*([A-Z0-9\-/]+)",
         "microchip_no": r"(?:MICROCHIP|マイクロチップ)\s*(?:NO\.?)?\s*[:：]?\s*([0-9]{10,20})",
         "birth_date": r"(?:DATE OF BIRTH|BORN|生年月日)\s*[:：]?\s*(\d{4}[./-]\d{1,2}[./-]\d{1,2})",
@@ -1326,8 +1364,8 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in existing_dogs)
     sex_value = metadata.get("sex", "")
     sex_options = f'<option value="" {"selected" if not sex_value else ""}>選択してください</option><option value="male" {"selected" if sex_value == "male" else ""}>牡</option><option value="female" {"selected" if sex_value == "female" else ""}>牝</option>'
-    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
-    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
+    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
 
@@ -1336,7 +1374,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
 def pedigree_import(
     call_name: str = Form(...), sex: str = Form(...), category: str = Form("parent"),
     upload_id: int = Form(...),
-    birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
+    breed: str = Form(""), birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
     existing_dog_id: str = Form(""), pedigree_country: str = Form(""), pedigree_organization: str = Form(""),
     ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
     ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
@@ -1376,11 +1414,13 @@ def pedigree_import(
         if existing:
             node = existing
         else:
-            node = Dog(tenant_id=tenant.id, call_name=call_name.strip() if index == 0 else name, registered_name=name, sex=node_sex, category=category if index == 0 else "external", status="resident" if index == 0 else "transferred")
+            node = Dog(tenant_id=tenant.id, call_name=call_name.strip() if index == 0 else name, registered_name=name, breed=breed.strip() or None, sex=node_sex, category=category if index == 0 else "external", status="resident" if index == 0 else "transferred")
             session.add(node)
             session.flush()
         if titles[index] or index == 0:
             node.titles = ",".join(titles[index]) or None
+        if breed.strip() and not node.breed:
+            node.breed = breed.strip()
         sire, dam = nodes.get(2 * index + 1), nodes.get(2 * index + 2)
         if sire:
             node.sire_id = sire.id
@@ -1391,6 +1431,7 @@ def pedigree_import(
     root = nodes[0]
     root.call_name = call_name.strip()
     root.registered_name = names[0]
+    root.breed = breed.strip() or root.breed
     root.sex = sex
     root.category = category
     # 血統書の上書き更新で「販売済」「譲渡済」などの運用状態を在舎中へ戻さない。
@@ -1426,13 +1467,13 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
         buyer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = buyer.name if buyer else sale.customer_name if sale else "-"
         dog_name = html.escape(d.registered_name or d.call_name)
-        rows += f"<tr><td><a href='/modules/dogs/{d.id}/edit'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>詳細・編集</a></td></tr>"
+        rows += f"<tr><td><a href='/modules/dogs/{d.id}/edit'><strong>{dog_name}</strong></a><br><small>{html.escape(d.call_name)}</small></td><td>{title_marks(d.titles) or '-'}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.breed or '-')}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{html.escape(d.pedigree_organization or '-')}<br><small>{html.escape(d.pedigree_country or '')}</small></td><td>{d.pedigree_updated_at.date() if d.pedigree_updated_at else '-'}</td><td>{status_labels.get(d.status, d.status)}</td><td>{html.escape(buyer_name)}</td><td><a class='button secondary' href='/modules/dogs/{d.id}/edit'>詳細・編集</a></td></tr>"
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
     <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
     <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
     <h2>手入力で犬を登録</h2>
-    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">販売済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
-    <table><tr><th>呼び名</th><th>タイトル</th><th>区分</th><th>血統書名</th><th>性別</th><th>発行団体・国</th><th>血統書更新日</th><th>状態</th><th>販売先</th><th>操作</th></tr>{rows}</table>'''
+    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>犬種（自由入力可）</label><input name="breed" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">販売済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><p><small>血統書がないミックス犬も、犬種を任意の名称で入力して登録できます。</small></p><button>犬を登録</button></form>
+    <table><tr><th>呼び名</th><th>タイトル</th><th>区分</th><th>犬種</th><th>血統書名</th><th>性別</th><th>発行団体・国</th><th>血統書更新日</th><th>状態</th><th>販売先</th><th>操作</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
 
 
@@ -1440,6 +1481,20 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
 def resident_dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.status.in_(["resident", "reserved"]), Dog.category != "external").order_by(Dog.birth_date.desc(), Dog.call_name)).all()
+    # 出産管理の記録と、母犬に紐づく仔犬の誕生日を統合する。同じ日付は
+    # 同一の出産として数えるため、両方に登録されていても二重計上しない。
+    birth_dates_by_dam: dict[int, set[date]] = {}
+    litter_records = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id)).all()
+    for litter in litter_records:
+        birth_dates_by_dam.setdefault(litter.dam_id, set()).add(litter.birth_date)
+    registered_puppies = session.scalars(select(Dog).where(
+        Dog.tenant_id == tenant.id,
+        Dog.category == "puppy",
+        Dog.dam_id.is_not(None),
+        Dog.birth_date.is_not(None),
+    )).all()
+    for puppy in registered_puppies:
+        birth_dates_by_dam.setdefault(puppy.dam_id, set()).add(puppy.birth_date)
     males = sum(dog.sex == "male" for dog in dogs)
     females = sum(dog.sex == "female" for dog in dogs)
     parents = sum(dog.category == "parent" for dog in dogs)
@@ -1457,8 +1512,10 @@ def resident_dogs_page(access=Depends(require_tenant_user), session: Session = D
         dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
         category = {"parent":"親犬", "puppy":"子犬"}.get(dog.category, dog.category)
         state = "予約済" if dog.status == "reserved" else "在舎中"
-        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
-    body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="10">在籍犬はまだ登録されていません。</td></tr>'}</table>'''
+        lifetime_births = len(birth_dates_by_dam.get(dog.id, set())) if dog.sex == "female" else None
+        birth_count = f'''<strong>{lifetime_births}</strong>回''' if lifetime_births is not None else "対象外"
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{birth_count}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
+    body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>犬種</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>生涯出産回数</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="12">在籍犬はまだ登録されていません。</td></tr>'}</table>'''
     return layout("在籍犬一覧", body, user)
 
 
@@ -1480,12 +1537,12 @@ def categorized_dogs_page(category: str, access=Depends(require_tenant_user), se
         sale = session.scalar(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.dog_id == dog.id).order_by(PuppySale.id.desc())) if category == "puppy" else None
         customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
         buyer_name = customer.name if customer else sale.customer_name if sale else "-"
-        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{status_labels.get(dog.status, dog.status)}</span></td>{f'<td>{html.escape(buyer_name)}</td>' if category == 'puppy' else ''}<td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}/edit"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(dog.pedigree_no or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td><span class="badge">{status_labels.get(dog.status, dog.status)}</span></td>{f'<td>{html.escape(buyer_name)}</td>' if category == 'puppy' else ''}<td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">詳細・編集</a></td></tr>'''
     buyer_header = "<th>販売先</th>" if category == "puppy" else ""
-    columns = 11 if category == "puppy" else 10
+    columns = 12 if category == "puppy" else 11
     metrics = f'''<div class="grid"><div class="module"><h3>登録頭数</h3><p><strong style="font-size:28px">{len(dogs)}</strong>頭</p></div><div class="module"><h3>牡</h3><p><strong style="font-size:28px">{male_count}</strong>頭</p></div><div class="module"><h3>牝</h3><p><strong style="font-size:28px">{female_count}</strong>頭</p></div><div class="module"><h3>在舎・予約中</h3><p><strong style="font-size:28px">{resident_count}</strong>頭</p></div></div>'''
     description = "血統参照・交配検討のために登録した犬です。" if category == "external" else "登録済みの犬を状態にかかわらず表示しています。"
-    body = f'''<h1>{labels[category]}</h1><p>{html.escape(tenant.name)} — {description}</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>生年月日</th><th>毛色</th><th>血統書番号</th><th>父犬</th><th>母犬</th><th>状態</th>{buyer_header}<th>操作</th></tr>{rows or f'<tr><td colspan="{columns}">登録犬はいません。</td></tr>'}</table>'''
+    body = f'''<h1>{labels[category]}</h1><p>{html.escape(tenant.name)} — {description}</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>犬種</th><th>生年月日</th><th>毛色</th><th>血統書番号</th><th>父犬</th><th>母犬</th><th>状態</th>{buyer_header}<th>操作</th></tr>{rows or f'<tr><td colspan="{columns}">登録犬はいません。</td></tr>'}</table>'''
     return layout(labels[category], body, user)
 
 
@@ -1551,7 +1608,7 @@ def sale_dogs_page(access=Depends(require_tenant_user), session: Session = Depen
 
 
 @app.post("/modules/dogs")
-def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), category: str = Form("parent"), status: str = Form("resident"), birth_date: str = Form(""), color: str = Form(""), sire_id: str = Form(""), dam_id: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def dog_create(call_name: str = Form(...), registered_name: str = Form(""), breed: str = Form(""), sex: str = Form(...), category: str = Form("parent"), status: str = Form("resident"), birth_date: str = Form(""), color: str = Form(""), sire_id: str = Form(""), dam_id: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     if sex not in {"male", "female"}:
         raise HTTPException(status_code=400)
@@ -1562,7 +1619,7 @@ def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex:
     dam = tenant_dog(session, tenant.id, int(dam_id)) if dam_id else None
     if (sire and sire.sex != "male") or (dam and dam.sex != "female"):
         raise HTTPException(status_code=400, detail="父犬・母犬を確認してください")
-    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, sire_id=sire.id if sire else None, dam_id=dam.id if dam else None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
+    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, breed=breed.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, sire_id=sire.id if sire else None, dam_id=dam.id if dam else None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
@@ -1598,7 +1655,7 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
         upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
     document_section = f'<div class="tenant"><h2 style="margin-top:0">アップロードした血統書原本</h2>{upload_views or "<p>この犬には原本ファイルがまだ保存されていません。次回の血統書読み込みから自動保存されます。</p>"}</div>'
     body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{document_section}{pedigree_summary}
-    <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
+    <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(dog.breed or '')}" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
     <label>タイトル（複数選択可）</label><select name="titles" multiple size="8">{title_options}</select><p><small>Macは⌘キー、WindowsはCtrlキーを押しながら選択すると複数指定できます。</small></p>
     <h2>販売先のお客様</h2><label>登録済みのお客様から選択</label><select name="customer_id">{customer_options}</select>
     <details><summary>新しいお客様をここで登録する</summary><div class="grid"><div><label>お客様名</label><input name="customer_name"></div><div><label>電話番号</label><input name="customer_phone"></div><div><label>メールアドレス</label><input type="email" name="customer_email"></div><div><label>住所</label><input name="customer_address"></div></div></details>
@@ -1619,7 +1676,7 @@ def pedigree_file(dog_id: int, upload_id: int, access=Depends(require_tenant_use
 @app.post("/modules/dogs/{dog_id}/edit")
 def dog_edit(
     dog_id: int, call_name: str = Form(...), category: str = Form(...), status_value: str = Form(..., alias="status"),
-    registered_name: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""),
+    registered_name: str = Form(""), breed: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""),
     pedigree_no: str = Form(""), microchip_no: str = Form(""), pedigree_organization: str = Form(""), pedigree_country: str = Form(""),
     sire_id: str = Form(""), dam_id: str = Form(""), titles: list[str] = Form([]),
     customer_id: str = Form(""), customer_name: str = Form(""), customer_phone: str = Form(""),
@@ -1635,6 +1692,7 @@ def dog_edit(
     if (sire and (sire.sex != "male" or sire.id == dog.id)) or (dam and (dam.sex != "female" or dam.id == dog.id)):
         raise HTTPException(status_code=400, detail="父犬・母犬を確認してください")
     dog.call_name, dog.registered_name, dog.sex = call_name.strip(), registered_name.strip() or None, sex
+    dog.breed = breed.strip() or None
     dog.category, dog.status = category, status_value
     dog.birth_date = date.fromisoformat(birth_date) if birth_date else None
     dog.color, dog.pedigree_no = color.strip() or None, pedigree_no.strip() or None
