@@ -1,5 +1,6 @@
 import hashlib
 import html
+import json
 import os
 import re
 import secrets
@@ -708,7 +709,7 @@ PEDIGREE_EXCLUDE = {
     "BREED", "SEX", "COLOR", "DATE OF BIRTH", "OWNER", "BREEDER", "REGISTRATION",
 }
 TITLE_PATTERNS = [
-    ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?)\b"),
+    ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?|CIB-J)\b"),
     ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+CHAMPION|C\.?I\.?B\.?)\b"),
     ("junior_champion", r"\b(?:J\.?\s*CH\.?|JR\.?\s*CH\.?|JUNIOR\s+CHAMPION)\b"),
     ("grand_champion", r"\b(?:GCH|GR\.?\s*CH\.?|GRAND\s+CHAMPION)\b"),
@@ -746,39 +747,136 @@ def ocr_image(image: Image.Image, psm: int = 11) -> str:
     return pytesseract.image_to_string(prepared, lang=languages, config=f"--psm {psm}", timeout=70)
 
 
-def jkc_slot_text(image: Image.Image) -> str:
-    """JKCの標準的な3世代血統書を枠ごとにOCRし、祖先番号を保持する。"""
-    boxes = {
-        0: (.28, .07, .72, .20), 1: (.08, .34, .58, .43), 2: (.08, .65, .58, .74),
-        3: (.10, .25, .58, .34), 4: (.10, .43, .58, .52), 5: (.10, .56, .58, .65), 6: (.10, .74, .58, .84),
-        7: (.56, .21, .97, .30), 8: (.56, .29, .97, .38), 9: (.56, .37, .97, .46), 10: (.56, .45, .97, .54),
-        11: (.56, .52, .97, .61), 12: (.56, .60, .97, .69), 13: (.56, .68, .97, .77), 14: (.56, .76, .97, .86),
-    }
+def ocr_spatial_records(image: Image.Image, box: tuple[float, float, float, float] = (0, 0, 1, 1)) -> list[tuple[float, float, str]]:
+    """全面OCRの座標を保ったまま、指定範囲内の行を返す。"""
+    available = set(pytesseract.get_languages(config=""))
+    languages = "+".join(code for code in ["eng", "jpn"] if code in available) or "eng"
+    data = pytesseract.image_to_data(image, lang=languages, config="--psm 11", output_type=pytesseract.Output.DICT, timeout=70)
     width, height = image.size
-    results: list[str] = []
-    for index, (left, top, right, bottom) in boxes.items():
-        crop = image.crop((int(width * left), int(height * top), int(width * right), int(height * bottom)))
-        text_value = ocr_image(crop, psm=11)
-        lines = [re.sub(r"\s{2,}", " ", line).strip(" |") for line in text_value.splitlines() if line.strip()]
-        name = ""
-        for position, line in enumerate(lines):
-            if re.search(r"(?:JKC|JKO|IKC)[-— ]?MS", line, re.IGNORECASE):
-                possible: list[str] = []
-                for candidate in lines[max(0, position - 7):position]:
-                    clean_name, _ = split_name_titles(candidate)
-                    upper_name = clean_name.upper()
-                    if len(clean_name) >= 4 and re.search(r"[A-Z]{3}", upper_name) and not any(word in upper_name for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK|MALE|FEMALE)\b", upper_name):
-                        possible.append(clean_name)
-                if possible:
-                    name = max(possible, key=lambda item: (len(re.findall(r"[A-Z]", item.upper())), len(item)))
-                break
-        if index == 0 and not name:
-            for candidate in lines:
-                clean_name, _ = split_name_titles(candidate)
-                if re.search(r"\b(?:OF|JP|KENNEL|LAND|STELLA|STAR)\b", clean_name, re.IGNORECASE) and len(clean_name) >= 5:
-                    name = clean_name
-                    break
-        title_keys = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, text_value, re.IGNORECASE)]
+    left, top, right, bottom = box
+    grouped: dict[tuple[int, int, int], list[tuple[int, int, str]]] = {}
+    for index, word in enumerate(data["text"]):
+        word = word.strip()
+        if not word:
+            continue
+        x, y, w, h = data["left"][index], data["top"][index], data["width"][index], data["height"][index]
+        center_x, center_y = (x + w / 2) / width, (y + h / 2) / height
+        if left <= center_x <= right and top <= center_y <= bottom:
+            key = (data["block_num"][index], data["par_num"][index], data["line_num"][index])
+            grouped.setdefault(key, []).append((x, y, word))
+    records = []
+    for words in grouped.values():
+        ordered = sorted(words)
+        first_x = ordered[0][0] / width
+        text_value = " ".join(word for _, _, word in ordered)
+        line_y = min(item[1] for item in ordered) / height
+        records.append((first_x, line_y, text_value))
+    return sorted(records, key=lambda item: (item[1], item[0]))
+
+
+def ocr_spatial_lines(image: Image.Image, box: tuple[float, float, float, float]) -> list[str]:
+    return [record[2] for record in ocr_spatial_records(image, box)]
+
+
+def normalize_jkc_number(value: str) -> str:
+    value = value.upper().replace("—", "-").replace("–", "-")
+    value = re.sub(r"\b(?:IKC|JKO)\b", "JKC", value)
+    match = re.search(r"JKC\s*[- ]?\s*MS\s*[- ]?\s*(\d{4,6})\s*/\s*(\d{2})", value)
+    return f"JKC-MS-{match.group(1).zfill(5)}/{match.group(2)}" if match else ""
+
+
+def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
+    """本犬欄だけを読み、祖先欄の番号や団体名を混入させない。"""
+    lines = ocr_spatial_lines(image, (.02, .08, .68, .28))
+    value = "\n".join(lines)
+    result = {"organization": "JKC", "country": "日本"}
+
+    names = []
+    for line in lines:
+        upper = line.upper()
+        if re.search(r"\bOF\b.*\bJP\b|\bJP\b.*\bOF\b", upper) and "NAME OF DOG" not in upper:
+            cleaned = re.sub(r"^[^A-Z0-9]+|[^A-Z0-9') -]+$", "", upper)
+            if len(cleaned) >= 8:
+                names.append(cleaned)
+    if names:
+        result["registered_name"] = max(names, key=len)
+
+    number = normalize_jkc_number(value)
+    if number:
+        result["pedigree_no"] = number
+    chip = re.search(r"\bID\s*([0-9 ]{15,20})", value, re.IGNORECASE)
+    if chip:
+        digits = re.sub(r"\D", "", chip.group(1))
+        if len(digits) == 15:
+            result["microchip_no"] = digits
+
+    upper_value = value.upper()
+    if re.search(r"SALT\s*&\s*PEPPER|SLT\s*PPR", upper_value):
+        result["color"] = "SALT & PEPPER"
+    elif re.search(r"BLACK\s*&\s*SILVER|BLK\s*SLVR", upper_value):
+        result["color"] = "BLACK & SILVER"
+    elif re.search(r"\bBLACK\b|\bBLK\b", upper_value):
+        result["color"] = "BLACK"
+    elif re.search(r"\bWHITE\b", upper_value):
+        result["color"] = "WHITE"
+    if re.search(r"\bMALE\b", upper_value):
+        result["sex"] = "male"
+    elif re.search(r"\bFEMALE\b", upper_value):
+        result["sex"] = "female"
+
+    birth = re.search(r"(20\d{2})\s*(?:年|[#48])?\s*(\d{1,2})\s*(?:月|[A])?\s*(\d{1,2})\s*(?:日|[O0])?", value)
+    if birth:
+        year, month, day = map(int, birth.groups())
+        try:
+            result["birth_date"] = date(year, month, day).isoformat()
+        except ValueError:
+            pass
+    title_keys = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, value, re.IGNORECASE)]
+    if title_keys:
+        result["titles"] = ",".join(title_keys)
+    return result
+
+
+def jkc_slot_text(image: Image.Image) -> str:
+    """登録番号の座標から3世代の列を動的に復元し、撮影余白の違いに追従する。"""
+    metadata = jkc_root_metadata(image)
+    results: list[str] = [f"[[PEDIGREE_META]] {json.dumps(metadata, ensure_ascii=False)}"]
+    records = ocr_spatial_records(image)
+    registration_lines = [(x, y, value) for x, y, value in records if normalize_jkc_number(value)]
+    root_lines = [record for record in registration_lines if record[1] < .30]
+    ancestor_lines = [record for record in registration_lines if record[1] >= .30]
+    right = sorted((record for record in ancestor_lines if record[0] >= .48), key=lambda item: item[1])[:8]
+    left = [record for record in ancestor_lines if record[0] < .48]
+    parents = sorted(sorted(left, key=lambda item: item[0])[:2], key=lambda item: item[1])
+    parent_ids = {id(record) for record in parents}
+    grandparents = sorted((record for record in left if id(record) not in parent_ids), key=lambda item: item[1])[:4]
+    assigned = {}
+    for index, record in zip([1, 2], parents):
+        assigned[index] = record
+    for index, record in zip([3, 4, 5, 6], grandparents):
+        assigned[index] = record
+    for index, record in zip(range(7, 15), right):
+        assigned[index] = record
+
+    def details_for(registration: tuple[float, float, str]) -> tuple[str, list[str]]:
+        reg_x, reg_y, _ = registration
+        same_column = [record for record in records if 0 < reg_y - record[1] < .055 and ((reg_x >= .48 and record[0] >= .48) or (reg_x < .48 and record[0] < .48))]
+        possible = []
+        for _, candidate_y, candidate in same_column:
+            clean_name, _ = split_name_titles(candidate)
+            upper = clean_name.upper()
+            if len(clean_name) >= 5 and re.search(r"[A-Z]{4}", upper) and not any(word in upper for word in PEDIGREE_EXCLUDE) and not re.search(r"\b(?:SIRE|DAM|CDI?|DNA|SLT|PPR|BLK|MALE|FEMALE)\b", upper) and not re.fullmatch(r"[A-Z. ]*CH[A-Z0-9/., ()-]*", upper):
+                possible.append((candidate_y, clean_name))
+        name = max(possible, key=lambda item: (len(re.findall(r"[A-Z]", item[1].upper())), item[0]))[1] if possible else ""
+        context = "\n".join(record[2] for record in same_column)
+        titles = [key for key, pattern in TITLE_PATTERNS if re.search(pattern, context, re.IGNORECASE)]
+        return name, titles
+
+    if metadata.get("registered_name"):
+        root_titles = [key for key in metadata.get("titles", "").split(",") if key in TITLE_LABELS]
+        results.append(f"[[PEDIGREE_SLOT_0]] {metadata['registered_name']} || {','.join(root_titles)}")
+    for index, registration in assigned.items():
+        name, title_keys = details_for(registration)
         if name:
             results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(title_keys)}")
     return "\n".join(results)
@@ -816,6 +914,13 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
     """OCR結果から本人情報と血統名候補を作る。最終確定前に必ず編集画面を表示する。"""
     clean = re.sub(r"[\t ]+", " ", raw_text.replace("\r", "\n"))
     metadata: dict[str, str] = {}
+    trusted_metadata: dict[str, str] = {}
+    trusted_match = re.search(r"\[\[PEDIGREE_META\]\]\s*(\{[^\n]+\})", clean)
+    if trusted_match:
+        try:
+            trusted_metadata = {str(key): str(value) for key, value in json.loads(trusted_match.group(1)).items()}
+        except (json.JSONDecodeError, TypeError):
+            trusted_metadata = {}
     patterns = {
         "pedigree_no": r"(?:REG(?:ISTRATION)?\.?\s*(?:NO\.?|NUMBER)?|登録番号)\s*[:：]?\s*([A-Z0-9\-/]+)",
         "microchip_no": r"(?:MICROCHIP|マイクロチップ)\s*(?:NO\.?)?\s*[:：]?\s*([0-9]{10,20})",
@@ -852,6 +957,7 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
         if token in clean.upper():
             metadata["country"] = country
             break
+    metadata.update({key: value for key, value in trusted_metadata.items() if key != "registered_name" and key != "titles"})
 
     slots: dict[int, tuple[str, list[str]]] = {}
     for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\]\s*(.*?)\s*\|\|\s*([^\n]*)", clean):
