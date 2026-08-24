@@ -169,6 +169,38 @@ class GeneticTest(Base):
     laboratory: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
 
+class Medication(Base):
+    __tablename__ = "medications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    medicine_name: Mapped[str] = mapped_column(String(150))
+    administered_on: Mapped[date] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class DiseaseHistory(Base):
+    __tablename__ = "disease_histories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id"))
+    disease_name: Mapped[str] = mapped_column(String(150))
+    diagnosed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    treatment_started_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    treatment_ended_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class FoodHistory(Base):
+    __tablename__ = "food_histories"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    started_on: Mapped[date] = mapped_column(Date)
+    ended_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class PuppySale(Base):
     __tablename__ = "puppy_sales"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -570,6 +602,95 @@ def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_cou
     return RedirectResponse("/modules/births", status_code=303)
 
 
+def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
+    dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant_id))
+    if not dog:
+        raise HTTPException(status_code=400, detail="対象犬が見つかりません")
+    return dog
+
+
+@app.get("/modules/health", response_class=HTMLResponse)
+def health_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs)
+    health = session.scalars(select(HealthRecord).where(HealthRecord.tenant_id == tenant.id).order_by(HealthRecord.record_date.desc()).limit(30)).all()
+    vaccines = session.scalars(select(Vaccination).where(Vaccination.tenant_id == tenant.id).order_by(Vaccination.administered_on.desc()).limit(30)).all()
+    medications = session.scalars(select(Medication).where(Medication.tenant_id == tenant.id).order_by(Medication.administered_on.desc()).limit(30)).all()
+    diseases = session.scalars(select(DiseaseHistory).where(DiseaseHistory.tenant_id == tenant.id).order_by(DiseaseHistory.diagnosed_on.desc()).limit(30)).all()
+    foods = session.scalars(select(FoodHistory).where(FoodHistory.tenant_id == tenant.id).order_by(FoodHistory.started_on.desc())).all()
+    health_rows = "".join(f"<tr><td>{r.record_date}</td><td>{html.escape(session.get(Dog,r.dog_id).call_name)}</td><td>{html.escape(r.category)}</td><td>{r.weight_kg or '-'}</td><td>{html.escape(r.notes or '-')}</td></tr>" for r in health)
+    vaccine_rows = "".join(f"<tr><td>{v.administered_on}</td><td>{html.escape(session.get(Dog,v.dog_id).call_name)}</td><td>{html.escape(v.vaccine_name)}</td><td>{v.next_due_on or '-'}</td></tr>" for v in vaccines)
+    medication_rows = "".join(f"<tr><td>{m.administered_on}</td><td>{html.escape(session.get(Dog,m.dog_id).call_name)}</td><td>{html.escape(m.medicine_name)}</td><td>{html.escape(m.notes or '-')}</td></tr>" for m in medications)
+    disease_rows = "".join(f"<tr><td>{d.diagnosed_on or '-'}</td><td>{html.escape(session.get(Dog,d.dog_id).call_name)}</td><td>{html.escape(d.disease_name)}</td><td>{html.escape(d.details or '-')}</td></tr>" for d in diseases)
+    food_rows = "".join(f"<tr><td>{html.escape(f.name)}</td><td>{f.started_on}</td><td>{f.ended_on or '-'}</td></tr>" for f in foods)
+    body = f'''<h1>健康管理</h1>
+    <h2>体重・健康診断</h2><form method="post" action="/modules/health/record"><div class="grid"><div><label>対象犬</label><select name="dog_id">{options}</select></div><div><label>記録日</label><input type="date" name="record_date" required></div><div><label>種類</label><select name="category"><option value="weight">体重</option><option value="checkup">健康診断</option><option value="treatment">診療</option></select></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0" name="weight_kg"></div><div><label>動物病院</label><input name="clinic"></div></div><label>結果・メモ</label><textarea name="notes"></textarea><button>記録する</button></form><table><tr><th>日付</th><th>犬</th><th>種類</th><th>体重kg</th><th>メモ</th></tr>{health_rows}</table>
+    <h2>ワクチン</h2><form method="post" action="/modules/health/vaccine"><div class="grid"><div><label>対象犬</label><select name="dog_id">{options}</select></div><div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>接種日</label><input type="date" name="administered_on" required></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>証明書番号</label><input name="certificate_no"></div></div><button>接種を記録</button></form><table><tr><th>接種日</th><th>犬</th><th>ワクチン</th><th>次回予定</th></tr>{vaccine_rows}</table>
+    <h2>投薬</h2><form method="post" action="/modules/health/medication"><div class="grid"><div><label>対象犬</label><select name="dog_id">{options}</select></div><div><label>薬剤名</label><input name="medicine_name" required></div><div><label>投薬日</label><input type="date" name="administered_on" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>投薬を記録</button></form><table><tr><th>日付</th><th>犬</th><th>薬剤</th><th>メモ</th></tr>{medication_rows}</table>
+    <h2>病歴</h2><form method="post" action="/modules/health/disease"><div class="grid"><div><label>対象犬</label><select name="dog_id">{options}</select></div><div><label>疾患名</label><input name="disease_name" required></div><div><label>診断日</label><input type="date" name="diagnosed_on"></div><div><label>治療開始日</label><input type="date" name="treatment_started_on"></div><div><label>治療終了日</label><input type="date" name="treatment_ended_on"></div></div><label>診断・治療内容</label><textarea name="details"></textarea><button>病歴を登録</button></form><table><tr><th>診断日</th><th>犬</th><th>疾患</th><th>内容</th></tr>{disease_rows}</table>
+    <h2>フード履歴</h2><form method="post" action="/modules/health/food"><div class="grid"><div><label>フード名</label><input name="name" required></div><div><label>利用開始日</label><input type="date" name="started_on" required></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div><button>フードを登録</button></form><table><tr><th>フード</th><th>開始</th><th>終了</th></tr>{food_rows}</table>'''
+    return layout("健康管理", body, user)
+
+
+@app.post("/modules/health/record")
+def health_create(dog_id: int = Form(...), record_date: str = Form(...), category: str = Form(...), weight_kg: str = Form(""), clinic: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if category not in {"weight", "checkup", "treatment"}:
+        raise HTTPException(status_code=400)
+    weight = float(weight_kg) if weight_kg else None
+    session.add(HealthRecord(tenant_id=tenant.id, dog_id=dog.id, record_date=date.fromisoformat(record_date), category=category, weight_kg=weight, clinic=clinic.strip() or None, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/health", status_code=303)
+
+
+@app.post("/modules/health/vaccine")
+def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...), administered_on: str = Form(...), next_due_on: str = Form(""), certificate_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    next_due = date.fromisoformat(next_due_on) if next_due_on else None
+    session.add(Vaccination(tenant_id=tenant.id, dog_id=dog.id, vaccine_name=vaccine_name.strip(), administered_on=date.fromisoformat(administered_on), next_due_on=next_due, certificate_no=certificate_no.strip() or None))
+    if next_due:
+        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} {vaccine_name.strip()}接種予定", category="health", due_date=next_due))
+    session.commit()
+    return RedirectResponse("/modules/health", status_code=303)
+
+
+@app.post("/modules/health/medication")
+def medication_create(dog_id: int = Form(...), medicine_name: str = Form(...), administered_on: str = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    session.add(Medication(tenant_id=tenant.id, dog_id=dog.id, medicine_name=medicine_name.strip(), administered_on=date.fromisoformat(administered_on), notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/health", status_code=303)
+
+
+@app.post("/modules/health/disease")
+def disease_create(dog_id: int = Form(...), disease_name: str = Form(...), diagnosed_on: str = Form(""), treatment_started_on: str = Form(""), treatment_ended_on: str = Form(""), details: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    parse = lambda value: date.fromisoformat(value) if value else None
+    started, ended = parse(treatment_started_on), parse(treatment_ended_on)
+    if started and ended and ended < started:
+        raise HTTPException(status_code=400, detail="治療終了日は開始日以降にしてください")
+    session.add(DiseaseHistory(tenant_id=tenant.id, dog_id=dog.id, disease_name=disease_name.strip(), diagnosed_on=parse(diagnosed_on), treatment_started_on=started, treatment_ended_on=ended, details=details.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/health", status_code=303)
+
+
+@app.post("/modules/health/food")
+def food_create(name: str = Form(...), started_on: str = Form(...), ended_on: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    started = date.fromisoformat(started_on)
+    ended = date.fromisoformat(ended_on) if ended_on else None
+    if ended and ended < started:
+        raise HTTPException(status_code=400, detail="利用終了日は開始日以降にしてください")
+    session.add(FoodHistory(tenant_id=tenant.id, name=name.strip(), started_on=started, ended_on=ended))
+    session.commit()
+    return RedirectResponse("/modules/health", status_code=303)
+
+
 @app.get("/modules/dogs", response_class=HTMLResponse)
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -598,7 +719,7 @@ def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex:
 
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
