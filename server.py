@@ -19,6 +19,8 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 passwords = CryptContext(schemes=["argon2"], deprecated="auto")
 MODULES = {
+    "todo": ("Todoリスト", "日々の作業、期限、完了状況"),
+    "calendar": ("カレンダー", "繁殖・健康・申請・販売の予定"),
     "legal": ("法令・行政書類", "定期報告、開始・更新・変更申請、法定帳簿"),
     "dogs": ("犬・血統書管理", "個体、マイクロチップ、血統書、親子関係"),
     "breeding": ("交配・近親交配率", "交配計画、係数計算、組み合わせ提案"),
@@ -80,9 +82,23 @@ class Dog(Base):
     color: Mapped[str | None] = mapped_column(String(100), nullable=True)
     microchip_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     pedigree_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    category: Mapped[str] = mapped_column(String(20), default="parent")
+    status: Mapped[str] = mapped_column(String(30), default="resident")
     sire_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     dam_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TaskEvent(Base):
+    __tablename__ = "task_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    category: Mapped[str] = mapped_column(String(30), default="general")
+    due_date: Mapped[date] = mapped_column(Date, index=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BreedingRecord(Base):
@@ -293,6 +309,8 @@ def startup():
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'resident'"))
     Base.metadata.create_all(engine)
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -426,31 +444,77 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
     return layout("ホーム", body, user)
 
 
+@app.get("/modules/todo", response_class=HTMLResponse)
+def todo_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id).order_by(TaskEvent.completed, TaskEvent.due_date)).all()
+    category_labels = {"general": "一般", "care": "お世話", "customer": "お客様対応", "breeding": "繁殖", "health": "健康", "legal": "申請"}
+    rows = ""
+    for task in tasks:
+        state = "完了" if task.completed else "未実施"
+        rows += f'<tr><td>{task.due_date}</td><td>{html.escape(task.title)}</td><td>{category_labels.get(task.category, task.category)}</td><td>{state}</td><td><form class="inline" method="post" action="/modules/todo/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了"}</button></form></td></tr>'
+    body = f'''<h1>Todoリスト</h1><form method="post"><div class="grid"><div><label>予定日</label><input type="date" name="due_date" required></div><div><label>タイトル</label><input name="title" required></div><div><label>カテゴリー</label><select name="category"><option value="general">一般</option><option value="care">お世話</option><option value="customer">お客様対応</option><option value="breeding">繁殖</option><option value="health">健康</option><option value="legal">申請</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を追加</button></form><table><tr><th>日付</th><th>内容</th><th>分類</th><th>状態</th><th>操作</th></tr>{rows}</table>'''
+    return layout("Todoリスト", body, user)
+
+
+@app.post("/modules/todo")
+def todo_create(title: str = Form(...), due_date: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if category not in {"general", "care", "customer", "breeding", "health", "legal"}:
+        raise HTTPException(status_code=400)
+    session.add(TaskEvent(tenant_id=tenant.id, title=title.strip(), due_date=date.fromisoformat(due_date), category=category, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/todo", status_code=303)
+
+
+@app.post("/modules/todo/{task_id}/toggle")
+def todo_toggle(task_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    task = session.scalar(select(TaskEvent).where(TaskEvent.id == task_id, TaskEvent.tenant_id == tenant.id))
+    if not task:
+        raise HTTPException(status_code=404)
+    task.completed = not task.completed
+    session.commit()
+    return RedirectResponse("/modules/todo", status_code=303)
+
+
+@app.get("/modules/calendar", response_class=HTMLResponse)
+def calendar_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id).order_by(TaskEvent.due_date)).all()
+    rows = "".join(f'<tr><td>{t.due_date}</td><td>{html.escape(t.title)}</td><td>{html.escape(t.category)}</td><td>{"完了" if t.completed else "予定"}</td></tr>' for t in tasks)
+    return layout("カレンダー", f'<h1>カレンダー</h1><p>今後、ヒート・交配・出産・ワクチン・申請期限も自動表示されます。</p><table><tr><th>日付</th><th>予定</th><th>分類</th><th>状態</th></tr>{rows}</table><a class="button" href="/modules/todo">予定を登録</a>', user)
+
+
 @app.get("/modules/dogs", response_class=HTMLResponse)
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
-    rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{html.escape(d.pedigree_no or '-')}</td></tr>" for d in dogs)
+    category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
+    status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "引渡済", "retired": "引退", "transferred": "譲渡済"}
+    rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{status_labels.get(d.status, d.status)}</td></tr>" for d in dogs)
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
-    <form method="post"><div class="grid"><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
-    <table><tr><th>呼び名</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>血統書番号</th></tr>{rows}</table>'''
+    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
+    <table><tr><th>呼び名</th><th>区分</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>状態</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
 
 
 @app.post("/modules/dogs")
-def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), category: str = Form("parent"), status: str = Form("resident"), birth_date: str = Form(""), color: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     if sex not in {"male", "female"}:
         raise HTTPException(status_code=400)
     parsed_birth = date.fromisoformat(birth_date) if birth_date else None
-    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, birth_date=parsed_birth, color=color.strip() or None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
+    if category not in {"parent", "puppy", "external"} or status not in {"resident", "reserved", "delivered", "retired", "transferred"}:
+        raise HTTPException(status_code=400)
+    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
 
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key == "dogs":
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
