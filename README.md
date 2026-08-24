@@ -19,6 +19,7 @@ INITIAL_ADMIN_NAME=管理者名
 INITIAL_ADMIN_EMAIL=admin@example.com
 INITIAL_ADMIN_PASSWORD=十分に長く推測されにくいパスワード
 COOKIE_SECURE=false
+BOOTSTRAP_TOKEN=推測されにくい一度限りのセットアップキー
 ```
 
 ```bash
@@ -27,9 +28,16 @@ docker compose up --build
 
 ブラウザで `http://localhost:8080` を開きます。本番のHTTPS環境では `COOKIE_SECURE=true` にしてください。
 
+管理者が1人もいない場合は `/setup` に移動します。上記の
+`BOOTSTRAP_TOKEN` と、管理者名・メールアドレス・12文字以上の
+パスワードを入力してください。最初の管理者が作成されると
+`/setup` は自動的に無効になります。登録後はサーバーから
+`BOOTSTRAP_TOKEN` を削除してください。
+
 ## 主なURL
 
 - `/login` ログイン
+- `/setup` 初回のみの管理者登録
 - `/register` お客様登録
 - `/dashboard` 権限別ホーム
 - `/admin/users` 管理者専用ユーザー管理

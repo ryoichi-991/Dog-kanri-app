@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "7"))
+BOOTSTRAP_TOKEN = os.environ.get("BOOTSTRAP_TOKEN", "")
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 passwords = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -60,6 +61,10 @@ def normalize_email(value: str) -> str:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def admin_exists(session: Session) -> bool:
+    return session.scalar(select(User.id).where(User.role == Role.admin).limit(1)) is not None
 
 
 def current_user(request: Request, session: Session = Depends(db)) -> User | None:
@@ -129,10 +134,41 @@ def startup():
 
 
 @app.get("/", response_class=HTMLResponse)
-def index(user: User | None = Depends(current_user)):
+def index(user: User | None = Depends(current_user), session: Session = Depends(db)):
     if user:
         return RedirectResponse("/dashboard", status_code=303)
+    if not admin_exists(session):
+        return RedirectResponse("/setup", status_code=303)
     return layout("Dog管理アプリ", '<h1>Dog管理アプリ</h1><p>犬舎・従業員・お客様をつなぐ管理システムです。</p><a class="button" href="/login">ログイン</a>　<a href="/register">お客様登録</a>')
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page(session: Session = Depends(db)):
+    if admin_exists(session):
+        return RedirectResponse("/login", status_code=303)
+    if not BOOTSTRAP_TOKEN:
+        return layout("初期設定", '<h1>初期設定が必要です</h1><p class="error">サーバーに BOOTSTRAP_TOKEN が設定されていません。環境変数を設定して再起動してください。</p>')
+    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（12文字以上）</label><input name="password" type="password" minlength="12" required><label>セットアップキー</label><input name="bootstrap_token" type="password" required autocomplete="off"><button>初期管理者を登録</button></form>')
+
+
+@app.post("/setup", response_class=HTMLResponse)
+def setup(name: str = Form(...), email: str = Form(...), password: str = Form(...), bootstrap_token: str = Form(...), session: Session = Depends(db)):
+    if not BOOTSTRAP_TOKEN or not secrets.compare_digest(bootstrap_token, BOOTSTRAP_TOKEN):
+        return layout("初期設定エラー", '<p class="error">セットアップキーが違います。</p><a href="/setup">戻る</a>')
+    if len(password) < 12:
+        return layout("初期設定エラー", '<p class="error">管理者パスワードは12文字以上にしてください。</p><a href="/setup">戻る</a>')
+    # 同時送信があっても、最初の1人だけを管理者にする。
+    session.execute(text("SELECT pg_advisory_xact_lock(20260824)"))
+    if admin_exists(session):
+        session.rollback()
+        return RedirectResponse("/login", status_code=303)
+    email = normalize_email(email)
+    if session.scalar(select(User).where(User.email == email)):
+        session.rollback()
+        return layout("初期設定エラー", '<p class="error">このメールアドレスは既にお客様として登録されています。別のメールアドレスを使用してください。</p><a href="/setup">戻る</a>')
+    session.add(User(name=name.strip(), email=email, password_hash=passwords.hash(password), role=Role.admin))
+    session.commit()
+    return RedirectResponse("/login?setup=1", status_code=303)
 
 
 @app.get("/register", response_class=HTMLResponse)
@@ -153,8 +189,8 @@ def register(name: str = Form(...), email: str = Form(...), password: str = Form
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page(registered: int = 0):
-    notice = "<p>登録が完了しました。ログインしてください。</p>" if registered else ""
+def login_page(registered: int = 0, setup: int = 0):
+    notice = "<p>初期管理者の登録が完了しました。ログインしてください。</p>" if setup else ("<p>登録が完了しました。ログインしてください。</p>" if registered else "")
     return layout("ログイン", f'<h1>ログイン</h1>{notice}<form method="post"><label>メールアドレス</label><input name="email" type="email" required autofocus><label>パスワード</label><input name="password" type="password" required><button>ログイン</button></form><p>お客様は <a href="/register">新規登録</a> できます。</p>')
 
 

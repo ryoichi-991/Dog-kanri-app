@@ -9,6 +9,7 @@ services:
       INITIAL_ADMIN_NAME: ${INITIAL_ADMIN_NAME:-管理者}
       INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
       INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
     depends_on:
       db:
         condition: service_healthy
