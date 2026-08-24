@@ -7,10 +7,10 @@ from enum import Enum
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
-from passlib.context import CryptContext
-from sqlalchemy import Boolean, DateTime, Enum as SQLEnum, ForeignKey, String, create_engine, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 from mcp.server.fastmcp import FastMCP
+from passlib.context import CryptContext
+from sqlalchemy import Boolean, DateTime, Enum as SQLEnum, ForeignKey, String, UniqueConstraint, create_engine, select, text
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
@@ -36,9 +36,27 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(100))
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[Role] = mapped_column(SQLEnum(Role), default=Role.customer)
+    role: Mapped[Role] = mapped_column(SQLEnum(Role), default=Role.customer)  # 旧DB互換
+    platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(150), unique=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Membership(Base):
+    __tablename__ = "tenant_memberships"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[Role] = mapped_column(SQLEnum(Role, name="membership_role"))
 
 
 class LoginSession(Base):
@@ -62,8 +80,8 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def admin_exists(session: Session) -> bool:
-    return session.scalar(select(User.id).where(User.role == Role.admin).limit(1)) is not None
+def platform_admin_exists(session: Session) -> bool:
+    return session.scalar(select(User.id).where(User.platform_admin.is_(True)).limit(1)) is not None
 
 
 def current_user(request: Request, session: Session = Depends(db)) -> User | None:
@@ -88,27 +106,50 @@ def require_user(user: User | None = Depends(current_user)) -> User:
     return user
 
 
-def require_admin(user: User = Depends(require_user)) -> User:
-    if user.role != Role.admin:
-        raise HTTPException(status_code=403, detail="管理者のみ利用できます")
-    return user
+def accessible_tenants(user: User, session: Session) -> list[Tenant]:
+    query = select(Tenant).where(Tenant.active.is_(True)).order_by(Tenant.name)
+    if not user.platform_admin:
+        query = query.join(Membership).where(Membership.user_id == user.id)
+    return list(session.scalars(query).all())
+
+
+def selected_tenant(request: Request, user: User, session: Session) -> Tenant | None:
+    tenants = accessible_tenants(user, session)
+    if not tenants:
+        return None
+    try:
+        requested = int(request.cookies.get("tenant_id", "0"))
+    except ValueError:
+        requested = 0
+    return next((t for t in tenants if t.id == requested), tenants[0])
+
+
+def tenant_role(user: User, tenant: Tenant | None, session: Session) -> Role | None:
+    if user.platform_admin:
+        return Role.admin
+    if not tenant:
+        return None
+    membership = session.scalar(select(Membership).where(Membership.user_id == user.id, Membership.tenant_id == tenant.id))
+    return membership.role if membership else None
+
+
+def require_tenant_admin(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
+    tenant = selected_tenant(request, user, session)
+    if not tenant or tenant_role(user, tenant, session) != Role.admin:
+        raise HTTPException(status_code=403, detail="このテナントの管理権限がありません")
+    return user, tenant
 
 
 def layout(title: str, body: str, user: User | None = None) -> str:
     nav = ""
     if user:
-        admin_link = '<a href="/admin/users">ユーザー管理</a>' if user.role == Role.admin else ""
-        nav = f'<nav><a href="/dashboard">ホーム</a>{admin_link}<form method="post" action="/logout"><button>ログアウト</button></form></nav>'
-    return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
-    <style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:760px;margin:48px auto;padding:0 20px}}.card{{background:white;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:20px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:white;text-decoration:none;font-size:15px;cursor:pointer}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 760px)/2));display:flex;gap:22px;align-items:center}}nav a,nav button{{color:white;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:12px 8px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
+        platform_link = '<a href="/platform/tenants">テナント管理</a>' if user.platform_admin else ""
+        nav = f'<nav><a href="/dashboard">ホーム</a><a href="/admin/users">ユーザー管理</a>{platform_link}<form method="post" action="/logout"><button>ログアウト</button></form></nav>'
+    return f'''<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(title)}</title>
+<style>body{{margin:0;background:#f6f7fb;color:#24304a;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}main{{max-width:850px;margin:45px auto;padding:0 20px}}.card{{background:#fff;padding:32px;border-radius:18px;box-shadow:0 8px 30px #18233b12}}h1{{margin-top:0}}label{{display:block;margin:16px 0 6px}}input,select{{box-sizing:border-box;width:100%;padding:12px;border:1px solid #cfd5e2;border-radius:10px;font-size:16px}}button,.button{{display:inline-block;margin-top:18px;padding:12px 20px;border:0;border-radius:10px;background:#244b86;color:#fff;text-decoration:none;cursor:pointer}}.secondary{{background:#68748a}}.error{{background:#fff0f0;color:#9d2020;padding:12px;border-radius:8px}}nav{{background:#182b4b;padding:14px max(20px,calc((100% - 850px)/2));display:flex;gap:20px;align-items:center}}nav a,nav button{{color:#fff;background:none;margin:0;padding:0}}nav form{{margin-left:auto}}table{{width:100%;border-collapse:collapse;margin-top:20px}}th,td{{text-align:left;padding:11px 7px;border-bottom:1px solid #e7eaf0}}.badge{{padding:4px 8px;border-radius:99px;background:#e8eef8;font-size:12px}}.tenant{{padding:16px;background:#eef3fa;border-radius:12px;margin-bottom:24px}}</style></head><body>{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
 mcp = FastMCP("Dog-kanri-app")
-
-
-@mcp.tool()
-def add(a: int, b: int) -> int:
-    return a + b
 
 
 @mcp.tool()
@@ -122,62 +163,75 @@ app = FastAPI(title="Dog-kanri-app")
 
 @app.on_event("startup")
 def startup():
+    # 既存DBへ安全に列を追加してから、新テーブルを作る。
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
     Base.metadata.create_all(engine)
-    email = normalize_email(os.environ.get("INITIAL_ADMIN_EMAIL", ""))
-    password = os.environ.get("INITIAL_ADMIN_PASSWORD", "")
-    if email and password:
-        with SessionLocal() as session:
-            if not session.scalar(select(User).where(User.email == email)):
-                session.add(User(name=os.environ.get("INITIAL_ADMIN_NAME", "管理者"), email=email, password_hash=passwords.hash(password), role=Role.admin))
+    with SessionLocal() as session:
+        # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
+        if not platform_admin_exists(session):
+            legacy = session.scalar(select(User).where(User.role == Role.admin).order_by(User.id).limit(1))
+            if legacy:
+                legacy.platform_admin = True
                 session.commit()
+        # 旧ユーザーを消さず、初期テナントへ所属させる。
+        users = list(session.scalars(select(User)).all())
+        if users and not session.scalar(select(Tenant.id).limit(1)):
+            tenant = Tenant(name="初期テナント")
+            session.add(tenant)
+            session.flush()
+            for user in users:
+                session.add(Membership(tenant_id=tenant.id, user_id=user.id, role=user.role))
+            session.commit()
 
 
 @app.get("/", response_class=HTMLResponse)
 def index(user: User | None = Depends(current_user), session: Session = Depends(db)):
     if user:
         return RedirectResponse("/dashboard", status_code=303)
-    if not admin_exists(session):
+    if not platform_admin_exists(session):
         return RedirectResponse("/setup", status_code=303)
-    return layout("Dog管理アプリ", '<h1>Dog管理アプリ</h1><p>犬舎・従業員・お客様をつなぐ管理システムです。</p><a class="button" href="/login">ログイン</a>　<a href="/register">お客様登録</a>')
+    return layout("Dog管理アプリ", '<h1>Dog管理アプリ</h1><p>複数の会社・犬舎を安全に管理します。</p><a class="button" href="/login">ログイン</a>　<a href="/register">お客様登録</a>')
 
 
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page(session: Session = Depends(db)):
-    if admin_exists(session):
+    if platform_admin_exists(session):
         return RedirectResponse("/login", status_code=303)
-    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>初期管理者を登録</button></form>')
+    return layout("初期設定", '<h1>初期運営管理者登録</h1><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>最初の会社・犬舎名</label><input name="tenant_name" required maxlength="150"><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>登録する</button></form>')
 
 
 @app.post("/setup", response_class=HTMLResponse)
-def setup(name: str = Form(...), email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
+def setup(name: str = Form(...), email: str = Form(...), tenant_name: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
     if len(password) < 8:
-        return layout("初期設定エラー", '<p class="error">管理者パスワードは8文字以上にしてください。</p><a href="/setup">戻る</a>')
-    # 同時送信があっても、最初の1人だけを管理者にする。
+        return layout("エラー", '<p class="error">パスワードは8文字以上にしてください。</p><a href="/setup">戻る</a>')
     session.execute(text("SELECT pg_advisory_xact_lock(20260824)"))
-    if admin_exists(session):
+    if platform_admin_exists(session):
         session.rollback()
         return RedirectResponse("/login", status_code=303)
     email = normalize_email(email)
     if session.scalar(select(User).where(User.email == email)):
         session.rollback()
-        return layout("初期設定エラー", '<p class="error">このメールアドレスは既にお客様として登録されています。別のメールアドレスを使用してください。</p><a href="/setup">戻る</a>')
-    session.add(User(name=name.strip(), email=email, password_hash=passwords.hash(password), role=Role.admin))
+        return layout("エラー", '<p class="error">このメールアドレスは既に登録されています。</p>')
+    user = User(name=name.strip(), email=email, password_hash=passwords.hash(password), role=Role.admin, platform_admin=True)
+    tenant = Tenant(name=tenant_name.strip())
+    session.add_all([user, tenant])
+    session.flush()
+    session.add(Membership(tenant_id=tenant.id, user_id=user.id, role=Role.admin))
     session.commit()
     return RedirectResponse("/login?setup=1", status_code=303)
 
 
 @app.get("/register", response_class=HTMLResponse)
 def register_page():
-    return layout("お客様登録", '<h1>お客様登録</h1><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>登録する</button></form><p><a href="/login">ログインへ戻る</a></p>')
+    return layout("お客様登録", '<h1>お客様登録</h1><p>登録後、テナント管理者から所属追加を受けてください。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>登録する</button></form>')
 
 
 @app.post("/register", response_class=HTMLResponse)
 def register(name: str = Form(...), email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
     email = normalize_email(email)
-    if len(password) < 8:
-        return layout("登録エラー", '<p class="error">パスワードは8文字以上にしてください。</p><a href="/register">戻る</a>')
-    if session.scalar(select(User).where(User.email == email)):
-        return layout("登録エラー", '<p class="error">このメールアドレスは既に登録されています。</p><a href="/login">ログインする</a>')
+    if len(password) < 8 or session.scalar(select(User).where(User.email == email)):
+        return layout("登録エラー", '<p class="error">メールアドレスの重複、またはパスワードの長さを確認してください。</p><a href="/register">戻る</a>')
     session.add(User(name=name.strip(), email=email, password_hash=passwords.hash(password), role=Role.customer))
     session.commit()
     return RedirectResponse("/login?registered=1", status_code=303)
@@ -185,64 +239,100 @@ def register(name: str = Form(...), email: str = Form(...), password: str = Form
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(registered: int = 0, setup: int = 0):
-    notice = "<p>初期管理者の登録が完了しました。ログインしてください。</p>" if setup else ("<p>登録が完了しました。ログインしてください。</p>" if registered else "")
-    return layout("ログイン", f'<h1>ログイン</h1>{notice}<form method="post"><label>メールアドレス</label><input name="email" type="email" required autofocus><label>パスワード</label><input name="password" type="password" required><button>ログイン</button></form><p>お客様は <a href="/register">新規登録</a> できます。</p>')
+    notice = "<p>初期設定が完了しました。</p>" if setup else ("<p>登録が完了しました。</p>" if registered else "")
+    return layout("ログイン", f'<h1>ログイン</h1>{notice}<form method="post"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード</label><input name="password" type="password" required><button>ログイン</button></form>')
 
 
-@app.post("/login", response_class=HTMLResponse)
+@app.post("/login")
 def login(email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
     user = session.scalar(select(User).where(User.email == normalize_email(email)))
     if not user or not user.active or not passwords.verify(password, user.password_hash):
-        return layout("ログイン", '<h1>ログイン</h1><p class="error">メールアドレスまたはパスワードが違います。</p><a href="/login">もう一度入力する</a>')
-    raw_token = secrets.token_urlsafe(32)
-    session.add(LoginSession(token_hash=token_hash(raw_token), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)))
+        return HTMLResponse(layout("ログイン", '<p class="error">メールアドレスまたはパスワードが違います。</p><a href="/login">戻る</a>'))
+    raw = secrets.token_urlsafe(32)
+    session.add(LoginSession(token_hash=token_hash(raw), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)))
     session.commit()
     response = RedirectResponse("/dashboard", status_code=303)
-    response.set_cookie("dog_session", raw_token, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=SESSION_DAYS * 86400)
+    response.set_cookie("dog_session", raw, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=SESSION_DAYS * 86400)
     return response
 
 
 @app.post("/logout")
 def logout(request: Request, session: Session = Depends(db)):
-    token = request.cookies.get("dog_session")
-    if token:
-        login = session.scalar(select(LoginSession).where(LoginSession.token_hash == token_hash(token)))
-        if login:
-            session.delete(login)
+    raw = request.cookies.get("dog_session")
+    if raw:
+        login_session = session.scalar(select(LoginSession).where(LoginSession.token_hash == token_hash(raw)))
+        if login_session:
+            session.delete(login_session)
             session.commit()
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie("dog_session")
+    response.delete_cookie("tenant_id")
+    return response
+
+
+@app.post("/tenant/switch")
+def switch_tenant(tenant_id: int = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not any(t.id == tenant_id for t in accessible_tenants(user, session)):
+        raise HTTPException(status_code=403, detail="このテナントへ切り替える権限がありません")
+    response = RedirectResponse("/dashboard", status_code=303)
+    response.set_cookie("tenant_id", str(tenant_id), httponly=True, secure=COOKIE_SECURE, samesite="lax")
     return response
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(user: User = Depends(require_user)):
-    labels = {Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}
-    descriptions = {Role.admin: "全ユーザーの登録・権限・利用状態を管理できます。", Role.employee: "担当業務とお客様・犬の情報を管理する画面です。", Role.customer: "ご自身の犬の情報や記録を確認する画面です。"}
-    return layout("ホーム", f'<h1>{html.escape(user.name)}さん、こんにちは</h1><p><span class="badge">{labels[user.role]}</span></p><p>{descriptions[user.role]}</p>', user)
+def dashboard(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
+    tenants = accessible_tenants(user, session)
+    tenant = selected_tenant(request, user, session)
+    options = "".join(f'<option value="{t.id}" {"selected" if tenant and t.id == tenant.id else ""}>{html.escape(t.name)}</option>' for t in tenants)
+    switcher = f'<div class="tenant"><form method="post" action="/tenant/switch"><label>表示する会社・犬舎</label><select name="tenant_id">{options}</select><button>切り替える</button></form></div>' if tenants else '<p class="error">所属テナントがありません。管理者へ連絡してください。</p>'
+    role = tenant_role(user, tenant, session)
+    label = "運営管理者" if user.platform_admin else ({Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}.get(role, "未所属"))
+    return layout("ホーム", f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>', user)
+
+
+@app.get("/platform/tenants", response_class=HTMLResponse)
+def tenant_list(user: User = Depends(require_user), session: Session = Depends(db)):
+    if not user.platform_admin:
+        raise HTTPException(status_code=403)
+    tenants = session.scalars(select(Tenant).order_by(Tenant.name)).all()
+    rows = "".join(f"<tr><td>{html.escape(t.name)}</td><td>{'有効' if t.active else '停止'}</td></tr>" for t in tenants)
+    return layout("テナント管理", f'<h1>テナント管理</h1><form method="post"><label>新しい会社・犬舎名</label><input name="name" required maxlength="150"><button>作成する</button></form><table><tr><th>名称</th><th>状態</th></tr>{rows}</table>', user)
+
+
+@app.post("/platform/tenants")
+def tenant_create(name: str = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not user.platform_admin:
+        raise HTTPException(status_code=403)
+    if session.scalar(select(Tenant).where(Tenant.name == name.strip())):
+        return HTMLResponse(layout("エラー", '<p class="error">同じ名前のテナントがあります。</p><a href="/platform/tenants">戻る</a>', user))
+    session.add(Tenant(name=name.strip()))
+    session.commit()
+    return RedirectResponse("/platform/tenants", status_code=303)
 
 
 @app.get("/admin/users", response_class=HTMLResponse)
-def user_list(admin: User = Depends(require_admin), session: Session = Depends(db)):
-    users = session.scalars(select(User).order_by(User.created_at.desc())).all()
-    labels = {Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}
-    rows = "".join(f"<tr><td>{html.escape(u.name)}</td><td>{html.escape(u.email)}</td><td>{labels[u.role]}</td><td>{'有効' if u.active else '停止'}</td></tr>" for u in users)
-    body = f'<h1>ユーザー管理</h1><a class="button" href="/admin/users/new">ユーザーを追加</a><table><thead><tr><th>名前</th><th>メール</th><th>権限</th><th>状態</th></tr></thead><tbody>{rows}</tbody></table>'
-    return layout("ユーザー管理", body, admin)
+def user_list(request: Request, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    memberships = session.scalars(select(Membership).where(Membership.tenant_id == tenant.id)).all()
+    rows = ""
+    for member in memberships:
+        account = session.get(User, member.user_id)
+        rows += f"<tr><td>{html.escape(account.name)}</td><td>{html.escape(account.email)}</td><td>{member.role.value}</td></tr>"
+    body = f'<h1>{html.escape(tenant.name)}のユーザー</h1><form method="post"><label>登録済みユーザーのメールアドレス</label><input name="email" type="email" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>所属を追加</button></form><table><tr><th>名前</th><th>メール</th><th>権限</th></tr>{rows}</table>'
+    return layout("ユーザー管理", body, user)
 
 
-@app.get("/admin/users/new", response_class=HTMLResponse)
-def new_user_page(admin: User = Depends(require_admin)):
-    body = '<h1>ユーザー追加</h1><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>初期パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>追加する</button></form>'
-    return layout("ユーザー追加", body, admin)
-
-
-@app.post("/admin/users/new", response_class=HTMLResponse)
-def new_user(name: str = Form(...), email: str = Form(...), password: str = Form(...), role: Role = Form(...), admin: User = Depends(require_admin), session: Session = Depends(db)):
-    email = normalize_email(email)
-    if len(password) < 8 or session.scalar(select(User).where(User.email == email)):
-        return layout("追加エラー", '<p class="error">入力内容を確認してください。メールアドレスは重複できず、パスワードは8文字以上必要です。</p><a href="/admin/users/new">戻る</a>', admin)
-    session.add(User(name=name.strip(), email=email, password_hash=passwords.hash(password), role=role))
+@app.post("/admin/users")
+def membership_add(email: str = Form(...), role: Role = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    account = session.scalar(select(User).where(User.email == normalize_email(email)))
+    if not account:
+        return HTMLResponse(layout("エラー", '<p class="error">先にお客様登録またはユーザー登録をしてください。</p><a href="/admin/users">戻る</a>', user))
+    member = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == account.id))
+    if member:
+        member.role = role
+    else:
+        session.add(Membership(tenant_id=tenant.id, user_id=account.id, role=role))
     session.commit()
     return RedirectResponse("/admin/users", status_code=303)
 
