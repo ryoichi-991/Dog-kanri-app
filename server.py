@@ -1,16 +1,24 @@
 import hashlib
 import html
 import os
+import re
 import secrets
+import subprocess
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
 from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from pypdf import PdfReader
+import pytesseract
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
@@ -647,6 +655,73 @@ def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_cou
     return RedirectResponse("/modules/births", status_code=303)
 
 
+PEDIGREE_LABELS = [
+    "登録する犬", "父犬", "母犬", "父方祖父", "父方祖母", "母方祖父", "母方祖母",
+    "父方祖父の父", "父方祖父の母", "父方祖母の父", "父方祖母の母",
+    "母方祖父の父", "母方祖父の母", "母方祖母の父", "母方祖母の母",
+]
+PEDIGREE_EXCLUDE = {
+    "PEDIGREE", "CERTIFICATE", "JAPAN KENNEL CLUB", "MINIATURE SCHNAUZER",
+    "BREED", "SEX", "COLOR", "DATE OF BIRTH", "OWNER", "BREEDER", "REGISTRATION",
+}
+
+
+def extract_pedigree_text(path: Path, content_type: str) -> str:
+    """PDFまたは写真から文字を抽出する。スキャンPDFは1ページ目を画像化してOCRする。"""
+    if content_type == "application/pdf" or path.suffix.lower() == ".pdf":
+        try:
+            text_value = "\n".join(page.extract_text() or "" for page in PdfReader(str(path)).pages[:2])
+            if len(text_value.strip()) >= 80:
+                return text_value
+        except Exception:
+            pass
+        output_prefix = str(path.with_suffix("")) + "-page"
+        subprocess.run(
+            ["pdftoppm", "-f", "1", "-singlefile", "-jpeg", "-r", "300", str(path), output_prefix],
+            check=True, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        image_path = Path(output_prefix + ".jpg")
+    else:
+        image_path = path
+    with Image.open(image_path) as source:
+        image = ImageOps.exif_transpose(source).convert("L")
+        image = ImageEnhance.Contrast(image).enhance(1.7)
+        image = image.filter(ImageFilter.SHARPEN)
+        return pytesseract.image_to_string(image, lang="eng+jpn", config="--psm 6", timeout=50)
+
+
+def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str]]:
+    """OCR結果から本人情報と血統名候補を作る。最終確定前に必ず編集画面を表示する。"""
+    clean = re.sub(r"[\t ]+", " ", raw_text.replace("\r", "\n"))
+    metadata: dict[str, str] = {}
+    patterns = {
+        "pedigree_no": r"(?:REG(?:ISTRATION)?\.?\s*(?:NO\.?|NUMBER)?|登録番号)\s*[:：]?\s*([A-Z0-9\-/]+)",
+        "microchip_no": r"(?:MICROCHIP|マイクロチップ)\s*(?:NO\.?)?\s*[:：]?\s*([0-9]{10,20})",
+        "birth_date": r"(?:DATE OF BIRTH|BORN|生年月日)\s*[:：]?\s*(\d{4}[./-]\d{1,2}[./-]\d{1,2})",
+        "color": r"(?:COLOR|COLOUR|毛色)\s*[:：]?\s*([A-Z& ]{3,30})",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, clean, re.IGNORECASE)
+        if match:
+            metadata[key] = match.group(1).strip().replace(".", "-").replace("/", "-") if key == "birth_date" else match.group(1).strip()
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for line in clean.splitlines():
+        value = re.sub(r"^[\d②-⑮()\[\].:：\-\s]+", "", line).strip(" |;,")
+        value = re.sub(r"\s{2,}.*$", "", value).strip()
+        upper = value.upper()
+        if not (4 <= len(value) <= 80) or not re.search(r"[A-Z]{3}", upper):
+            continue
+        if any(word in upper for word in PEDIGREE_EXCLUDE) or re.fullmatch(r"[A-Z]{0,5}[\d\-/ ]+", upper):
+            continue
+        normalized = re.sub(r"[^A-Z0-9]", "", upper)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            candidates.append(value)
+    return metadata, candidates[:15]
+
+
 def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
     dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant_id))
     if not dog:
@@ -793,6 +868,86 @@ def food_create(name: str = Form(...), started_on: str = Form(...), ended_on: st
     return RedirectResponse("/modules/health", status_code=303)
 
 
+@app.post("/modules/dogs/pedigree/scan", response_class=HTMLResponse)
+async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(require_tenant_user)):
+    user, tenant = access
+    allowed = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
+    suffix = Path(pedigree_file.filename or "").suffix.lower()
+    if pedigree_file.content_type not in allowed or suffix not in {".pdf", ".jpg", ".jpeg", ".png", ".webp"}:
+        return HTMLResponse(layout("読み取りエラー", '<h1>読み取りできませんでした</h1><p class="error">PDF・JPG・PNG・WebPのいずれかを選択してください。</p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=400)
+    content = await pedigree_file.read(15 * 1024 * 1024 + 1)
+    if not content or len(content) > 15 * 1024 * 1024:
+        return HTMLResponse(layout("読み取りエラー", '<h1>読み取りできませんでした</h1><p class="error">ファイルは15MB以下にしてください。</p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=400)
+    try:
+        with tempfile.TemporaryDirectory(prefix="pedigree-") as tmp:
+            source = Path(tmp) / f"source{suffix}"
+            source.write_bytes(content)
+            raw_text = extract_pedigree_text(source, pedigree_file.content_type or "")
+        metadata, candidates = pedigree_candidates(raw_text)
+    except (subprocess.SubprocessError, OSError, ValueError) as exc:
+        return HTMLResponse(layout("読み取りエラー", f'<h1>読み取りできませんでした</h1><p class="error">画像が不鮮明、または対応できないPDFです。撮り直すか別形式でお試しください。</p><p><small>{html.escape(type(exc).__name__)}</small></p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=422)
+
+    names = (candidates + [""] * 15)[:15]
+    pedigree_fields = "".join(
+        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}></div>'
+        for index, name in enumerate(names)
+    )
+    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
+    <form method="post" action="/modules/dogs/pedigree/import"><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div></div><h2>血統名と親子関係</h2><div class="grid">{pedigree_fields}</div><button>確認した内容で一括登録する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
+    return layout("血統書読み取り確認", body, user)
+
+
+@app.post("/modules/dogs/pedigree/import")
+def pedigree_import(
+    call_name: str = Form(...), sex: str = Form(...), category: str = Form("parent"),
+    birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
+    ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
+    ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
+    ancestor_7: str = Form(""), ancestor_8: str = Form(""), ancestor_9: str = Form(""), ancestor_10: str = Form(""),
+    ancestor_11: str = Form(""), ancestor_12: str = Form(""), ancestor_13: str = Form(""), ancestor_14: str = Form(""),
+    access=Depends(require_tenant_user), session: Session = Depends(db),
+):
+    user, tenant = access
+    if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"}:
+        raise HTTPException(status_code=400, detail="犬の情報を確認してください")
+    names = [value.strip() for value in [ancestor_0, ancestor_1, ancestor_2, ancestor_3, ancestor_4, ancestor_5, ancestor_6, ancestor_7, ancestor_8, ancestor_9, ancestor_10, ancestor_11, ancestor_12, ancestor_13, ancestor_14]]
+    if not names[0]:
+        raise HTTPException(status_code=400, detail="登録する犬の血統書名が必要です")
+
+    nodes: dict[int, Dog] = {}
+    for index in range(14, -1, -1):
+        name = names[index]
+        if not name:
+            continue
+        existing = session.scalar(select(Dog).where(Dog.tenant_id == tenant.id, func.lower(Dog.registered_name) == name.lower()).limit(1))
+        node_sex = sex if index == 0 else ("male" if index % 2 == 1 else "female")
+        if existing:
+            node = existing
+        else:
+            node = Dog(tenant_id=tenant.id, call_name=call_name.strip() if index == 0 else name, registered_name=name, sex=node_sex, category=category if index == 0 else "external", status="resident" if index == 0 else "transferred")
+            session.add(node)
+            session.flush()
+        sire, dam = nodes.get(2 * index + 1), nodes.get(2 * index + 2)
+        if sire:
+            node.sire_id = sire.id
+        if dam:
+            node.dam_id = dam.id
+        nodes[index] = node
+
+    root = nodes[0]
+    root.call_name = call_name.strip()
+    root.sex = sex
+    root.category = category
+    root.status = "resident"
+    root.birth_date = date.fromisoformat(birth_date) if birth_date else root.birth_date
+    root.color = color.strip() or root.color
+    root.pedigree_no = pedigree_no.strip() or root.pedigree_no
+    root.microchip_no = microchip_no.strip() or root.microchip_no
+    session.commit()
+    return RedirectResponse("/modules/dogs", status_code=303)
+
+
 @app.get("/modules/dogs", response_class=HTMLResponse)
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -803,6 +958,8 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
     status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "引渡済", "retired": "引退", "transferred": "譲渡済"}
     rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{status_labels.get(d.status, d.status)}</td></tr>" for d in dogs)
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
+    <div class="tenant"><h2 style="margin-top:0">血統書から自動登録</h2><p>PDFまたは血統書の写真を読み取り、本人から曾祖父母まで最大15頭を一括登録します。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・HEICを除く一般的な画像／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って確認する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
+    <h2>手入力で犬を登録</h2>
     <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
     <table><tr><th>呼び名</th><th>区分</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>状態</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
