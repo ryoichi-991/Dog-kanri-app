@@ -15,7 +15,6 @@ from mcp.server.fastmcp import FastMCP
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "7"))
-BOOTSTRAP_TOKEN = os.environ.get("BOOTSTRAP_TOKEN", "")
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 passwords = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -146,15 +145,11 @@ def index(user: User | None = Depends(current_user), session: Session = Depends(
 def setup_page(session: Session = Depends(db)):
     if admin_exists(session):
         return RedirectResponse("/login", status_code=303)
-    if not BOOTSTRAP_TOKEN:
-        return layout("初期設定", '<h1>初期設定が必要です</h1><p class="error">サーバーに BOOTSTRAP_TOKEN が設定されていません。環境変数を設定して再起動してください。</p>')
-    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（12文字以上）</label><input name="password" type="password" minlength="12" required><label>セットアップキー</label><input name="bootstrap_token" type="password" required autocomplete="off"><button>初期管理者を登録</button></form>')
+    return layout("初期管理者登録", '<h1>初期管理者登録</h1><p>管理者がまだ登録されていません。最初の管理者を作成します。</p><form method="post"><label>お名前</label><input name="name" required maxlength="100"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード（12文字以上）</label><input name="password" type="password" minlength="12" required><button>初期管理者を登録</button></form>')
 
 
 @app.post("/setup", response_class=HTMLResponse)
-def setup(name: str = Form(...), email: str = Form(...), password: str = Form(...), bootstrap_token: str = Form(...), session: Session = Depends(db)):
-    if not BOOTSTRAP_TOKEN or not secrets.compare_digest(bootstrap_token, BOOTSTRAP_TOKEN):
-        return layout("初期設定エラー", '<p class="error">セットアップキーが違います。</p><a href="/setup">戻る</a>')
+def setup(name: str = Form(...), email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
     if len(password) < 12:
         return layout("初期設定エラー", '<p class="error">管理者パスワードは12文字以上にしてください。</p><a href="/setup">戻る</a>')
     # 同時送信があっても、最初の1人だけを管理者にする。
