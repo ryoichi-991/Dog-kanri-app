@@ -534,12 +534,14 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     breeding_rows = ""
     for record in breedings:
         sire, dam = session.get(Dog, record.sire_id), session.get(Dog, record.dam_id)
-        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{record.mating_date}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{html.escape(record.status)}</td></tr>"
+        coefficient = f"{record.coefficient:.2f}%" if record.coefficient is not None else "-"
+        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{record.mating_date}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{coefficient}</td><td>{html.escape(record.status)}</td></tr>"
     body = f'''<h1>交配・ヒート管理</h1>
     <h2>ヒート記録</h2><form method="post" action="/modules/breeding/heat"><div class="grid"><div><label>母犬</label><select name="dog_id" required>{female_options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>ヒートを登録</button></form>
     <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th></tr>{heat_rows}</table>
     <h2>交配記録</h2><form method="post" action="/modules/breeding/mating"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{female_options}</select></div><div><label>父犬</label><select name="sire_id" required>{male_options}</select></div><div><label>1回目交配日</label><input name="mating_date" type="date" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>交配を登録</button></form>
-    <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>状態</th></tr>{breeding_rows}</table>'''
+    <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>近親交配率</th><th>状態</th></tr>{breeding_rows}</table>
+    <h2>交配シミュレーション</h2><form method="post" action="/modules/breeding/simulation"><div class="grid"><div><label>母犬</label><select name="dam_id">{female_options}</select></div><div><label>父犬</label><select name="sire_id">{male_options}</select></div></div><button>近親交配率と遺伝病リスクを計算</button></form>'''
     return layout("交配・ヒート管理", body, user)
 
 
@@ -567,10 +569,26 @@ def mating_create(dam_id: int = Form(...), sire_id: int = Form(...), mating_date
     note = f"交配方法: {'自然交配' if method == 'natural' else '人工授精'}"
     if notes.strip():
         note += "\n" + notes.strip()
-    session.add(BreedingRecord(tenant_id=tenant.id, sire_id=sire.id, dam_id=dam.id, mating_date=mated, status="mated", notes=note))
+    coefficient = offspring_coefficient(session, tenant.id, sire.id, dam.id) * 100
+    session.add(BreedingRecord(tenant_id=tenant.id, sire_id=sire.id, dam_id=dam.id, mating_date=mated, coefficient=coefficient, status="mated", notes=note))
     session.add(TaskEvent(tenant_id=tenant.id, dog_id=dam.id, title=f"{dam.call_name} 出産予定", category="breeding", due_date=mated + timedelta(days=63)))
     session.commit()
     return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.post("/modules/breeding/simulation", response_class=HTMLResponse)
+def breeding_simulation(dam_id: int = Form(...), sire_id: int = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dam = tenant_dog(session, tenant.id, dam_id)
+    sire = tenant_dog(session, tenant.id, sire_id)
+    if dam.sex != "female" or sire.sex != "male":
+        raise HTTPException(status_code=400)
+    coefficient = offspring_coefficient(session, tenant.id, sire.id, dam.id) * 100
+    risks = genetic_risks(session, tenant.id, sire.id, dam.id)
+    risk_html = "".join(f"<li>{html.escape(message)}</li>" for message in risks) or "<li>両親で共通する遺伝子検査情報がありません。</li>"
+    level = "比較的低い" if coefficient < 6.25 else ("注意が必要" if coefficient < 12.5 else "高い")
+    body = f'<h1>交配シミュレーション結果</h1><p>{html.escape(sire.call_name)} × {html.escape(dam.call_name)}</p><div class="tenant"><h2>予定仔犬の近親交配率：{coefficient:.2f}%</h2><p>判定：{level}</p></div><h2>遺伝病リスク</h2><ul>{risk_html}</ul><p>血統や検査情報が未登録の場合、結果は過小評価される可能性があります。最終判断には獣医師・遺伝学の専門家への確認が必要です。</p><a class="button secondary" href="/modules/breeding">戻る</a>'
+    return layout("交配シミュレーション", body, user)
 
 
 @app.get("/modules/births", response_class=HTMLResponse)
@@ -607,6 +625,63 @@ def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
     if not dog:
         raise HTTPException(status_code=400, detail="対象犬が見つかりません")
     return dog
+
+
+def pedigree_relationship(session: Session, tenant_id: int, first_id: int, second_id: int) -> float:
+    dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant_id)).all()}
+    memo: dict[tuple[int, int], float] = {}
+    visiting: set[tuple[int, int]] = set()
+
+    def relationship(a_id: int | None, b_id: int | None) -> float:
+        if not a_id or not b_id or a_id not in dogs or b_id not in dogs:
+            return 0.0
+        key = tuple(sorted((a_id, b_id)))
+        if key in memo:
+            return memo[key]
+        if key in visiting:
+            return 0.0
+        visiting.add(key)
+        a, b = dogs[a_id], dogs[b_id]
+        if a_id == b_id:
+            value = 1.0 + (0.5 * relationship(a.sire_id, a.dam_id) if a.sire_id and a.dam_id else 0.0)
+        elif a.sire_id or a.dam_id:
+            value = 0.5 * relationship(a.sire_id, b_id) + 0.5 * relationship(a.dam_id, b_id)
+        elif b.sire_id or b.dam_id:
+            value = 0.5 * relationship(a_id, b.sire_id) + 0.5 * relationship(a_id, b.dam_id)
+        else:
+            value = 0.0
+        visiting.discard(key)
+        memo[key] = value
+        return value
+
+    return relationship(first_id, second_id)
+
+
+def offspring_coefficient(session: Session, tenant_id: int, sire_id: int, dam_id: int) -> float:
+    return 0.5 * pedigree_relationship(session, tenant_id, sire_id, dam_id)
+
+
+def genetic_risks(session: Session, tenant_id: int, sire_id: int, dam_id: int) -> list[str]:
+    tests = session.scalars(select(GeneticTest).where(GeneticTest.tenant_id == tenant_id, GeneticTest.dog_id.in_([sire_id, dam_id]))).all()
+    by_test: dict[str, dict[int, str]] = {}
+    for test in tests:
+        by_test.setdefault(test.test_name, {})[test.dog_id] = test.result
+    messages = []
+    for name, results in by_test.items():
+        sire, dam = results.get(sire_id), results.get(dam_id)
+        if not sire or not dam:
+            messages.append(f"{name}: 片親の検査情報が不足")
+        elif sire == "carrier" and dam == "carrier":
+            messages.append(f"{name}: アフェクテッド25%・キャリア50%の可能性")
+        elif "affected" in {sire, dam} and "carrier" in {sire, dam}:
+            messages.append(f"{name}: アフェクテッド50%の可能性")
+        elif sire == "affected" and dam == "affected":
+            messages.append(f"{name}: アフェクテッド100%の可能性")
+        elif "affected" in {sire, dam}:
+            messages.append(f"{name}: 全頭キャリアとなる可能性")
+        else:
+            messages.append(f"{name}: アフェクテッド発症リスクは低い組み合わせ")
+    return messages
 
 
 @app.get("/modules/health", response_class=HTMLResponse)
@@ -695,31 +770,60 @@ def food_create(name: str = Form(...), started_on: str = Form(...), ended_on: st
 def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    sire_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "male")
+    dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "female")
     category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
     status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "引渡済", "retired": "引退", "transferred": "譲渡済"}
     rows = "".join(f"<tr><td>{html.escape(d.call_name)}</td><td>{category_labels.get(d.category, d.category)}</td><td>{html.escape(d.registered_name or '-')}</td><td>{'牡' if d.sex == 'male' else '牝'}</td><td>{d.birth_date or '-'}</td><td>{status_labels.get(d.status, d.status)}</td></tr>" for d in dogs)
     body = f'''<h1>犬・血統書管理</h1><p>{html.escape(tenant.name)}の犬だけが表示されます。</p>
-    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
+    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
     <table><tr><th>呼び名</th><th>区分</th><th>血統書名</th><th>性別</th><th>生年月日</th><th>状態</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
 
 
 @app.post("/modules/dogs")
-def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), category: str = Form("parent"), status: str = Form("resident"), birth_date: str = Form(""), color: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def dog_create(call_name: str = Form(...), registered_name: str = Form(""), sex: str = Form(...), category: str = Form("parent"), status: str = Form("resident"), birth_date: str = Form(""), color: str = Form(""), sire_id: str = Form(""), dam_id: str = Form(""), microchip_no: str = Form(""), pedigree_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     if sex not in {"male", "female"}:
         raise HTTPException(status_code=400)
     parsed_birth = date.fromisoformat(birth_date) if birth_date else None
     if category not in {"parent", "puppy", "external"} or status not in {"resident", "reserved", "delivered", "retired", "transferred"}:
         raise HTTPException(status_code=400)
-    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
+    sire = tenant_dog(session, tenant.id, int(sire_id)) if sire_id else None
+    dam = tenant_dog(session, tenant.id, int(dam_id)) if dam_id else None
+    if (sire and sire.sex != "male") or (dam and dam.sex != "female"):
+        raise HTTPException(status_code=400, detail="父犬・母犬を確認してください")
+    session.add(Dog(tenant_id=tenant.id, call_name=call_name.strip(), registered_name=registered_name.strip() or None, sex=sex, category=category, status=status, birth_date=parsed_birth, color=color.strip() or None, sire_id=sire.id if sire else None, dam_id=dam.id if dam else None, microchip_no=microchip_no.strip() or None, pedigree_no=pedigree_no.strip() or None))
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
 
+@app.get("/modules/genetics", response_class=HTMLResponse)
+def genetics_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs)
+    tests = session.scalars(select(GeneticTest).where(GeneticTest.tenant_id == tenant.id).order_by(GeneticTest.tested_on.desc())).all()
+    labels = {"clear": "クリア", "carrier": "キャリア", "affected": "アフェクテッド", "unknown": "不明"}
+    rows = "".join(f"<tr><td>{html.escape(session.get(Dog,t.dog_id).call_name)}</td><td>{html.escape(t.test_name)}</td><td>{labels.get(t.result,t.result)}</td><td>{t.tested_on or '-'}</td><td>{html.escape(t.laboratory or '-')}</td></tr>" for t in tests)
+    body = f'''<h1>遺伝子検査・遺伝病管理</h1><form method="post"><div class="grid"><div><label>対象犬</label><select name="dog_id">{options}</select></div><div><label>検査名・遺伝病名</label><input name="test_name" required></div><div><label>結果</label><select name="result"><option value="clear">クリア</option><option value="carrier">キャリア</option><option value="affected">アフェクテッド</option><option value="unknown">不明</option></select></div><div><label>検査日</label><input type="date" name="tested_on"></div><div><label>検査機関</label><input name="laboratory"></div></div><button>検査結果を登録</button></form><table><tr><th>犬</th><th>検査</th><th>結果</th><th>検査日</th><th>検査機関</th></tr>{rows}</table>'''
+    return layout("遺伝子検査", body, user)
+
+
+@app.post("/modules/genetics")
+def genetics_create(dog_id: int = Form(...), test_name: str = Form(...), result: str = Form(...), tested_on: str = Form(""), laboratory: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if result not in {"clear", "carrier", "affected", "unknown"}:
+        raise HTTPException(status_code=400)
+    session.add(GeneticTest(tenant_id=tenant.id, dog_id=dog.id, test_name=test_name.strip(), result=result, tested_on=date.fromisoformat(tested_on) if tested_on else None, laboratory=laboratory.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/genetics", status_code=303)
+
+
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
