@@ -1327,7 +1327,7 @@ def pedigree_import(
     root.registered_name = names[0]
     root.sex = sex
     root.category = category
-    # 血統書の上書き更新で「引渡済」「譲渡済」などの運用状態を在舎中へ戻さない。
+    # 血統書の上書き更新で「販売済」「譲渡済」などの運用状態を在舎中へ戻さない。
     if not existing_dog_id:
         root.status = "resident"
     root.birth_date = date.fromisoformat(birth_date) if birth_date else root.birth_date
@@ -1348,7 +1348,7 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
     sire_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "male")
     dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "female")
     category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
-    status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "引渡済", "retired": "引退", "transferred": "譲渡済"}
+    status_labels = {"resident": "在舎中", "reserved": "予約済", "delivered": "販売済", "retired": "引退", "transferred": "譲渡済"}
     sales_by_dog = {sale.dog_id: sale for sale in session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id).order_by(PuppySale.id)).all()}
     rows = ""
     for d in dogs:
@@ -1360,7 +1360,7 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
     <div class="tenant"><h2 style="margin-top:0">国内・海外血統書から自動登録／更新</h2><p>JKC・FCI・AKC・KC・VDHなどのPDFまたは写真を多言語で読み取り、本人から曾祖父母まで最大15頭を登録します。新しい血統書を読み込めば、既存犬を選んで上書き更新できます。</p><form method="post" action="/modules/dogs/pedigree/scan" enctype="multipart/form-data"><label>血統書ファイル（PDF・JPG・PNG・WebP／15MBまで）</label><input type="file" name="pedigree_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>読み取って登録・更新する</button></form><p><small>写真は真上から、影や反射が入らないように撮影すると精度が上がります。登録前に必ず読み取り結果をご確認ください。</small></p></div>
     <p>{title_marks('champion')}チャンピオン　{title_marks('international_champion')}インターチャンピオン　{title_marks('junior_champion')}Jr.チャンピオン　{title_marks('junior_international_champion')}Jr.インターチャンピオン　{title_marks('grand_champion')}グランドチャンピオン</p>
     <h2>手入力で犬を登録</h2>
-    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">引渡済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
+    <form method="post"><div class="grid"><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>呼び名</label><input name="call_name" required></div><div><label>血統書名</label><input name="registered_name"></div><div><label>性別</label><select name="sex"><option value="male">牡</option><option value="female">牝</option></select></div><div><label>状態</label><select name="status"><option value="resident">在舎中</option><option value="reserved">予約済</option><option value="delivered">販売済</option><option value="retired">引退</option><option value="transferred">譲渡済</option></select></div><div><label>生年月日</label><input name="birth_date" type="date"></div><div><label>毛色</label><input name="color"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>マイクロチップ番号</label><input name="microchip_no"></div><div><label>血統書番号</label><input name="pedigree_no"></div></div><button>犬を登録</button></form>
     <table><tr><th>呼び名</th><th>タイトル</th><th>区分</th><th>血統書名</th><th>性別</th><th>発行団体・国</th><th>血統書更新日</th><th>状態</th><th>販売先</th><th>操作</th></tr>{rows}</table>'''
     return layout("犬・血統書管理", body, user)
 
@@ -1394,12 +1394,12 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
         for customer in customers
     )
     category_options = "".join(f'<option value="{key}" {"selected" if dog.category == key else ""}>{label}</option>' for key, label in {"parent":"親犬", "puppy":"子犬", "external":"外部犬"}.items())
-    status_options = "".join(f'<option value="{key}" {"selected" if dog.status == key else ""}>{label}</option>' for key, label in {"resident":"在舎中", "reserved":"予約済", "delivered":"引渡済", "retired":"引退", "transferred":"譲渡済"}.items())
+    status_options = "".join(f'<option value="{key}" {"selected" if dog.status == key else ""}>{label}</option>' for key, label in {"resident":"在舎中", "reserved":"予約済", "delivered":"販売済", "retired":"引退", "transferred":"譲渡済"}.items())
     body = f'''<h1>犬の状態・販売先を編集</h1><p><strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>
     <form method="post"><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
     <h2>販売先のお客様</h2><label>登録済みのお客様から選択</label><select name="customer_id">{customer_options}</select>
     <details><summary>新しいお客様をここで登録する</summary><div class="grid"><div><label>お客様名</label><input name="customer_name"></div><div><label>電話番号</label><input name="customer_phone"></div><div><label>メールアドレス</label><input type="email" name="customer_email"></div><div><label>住所</label><input name="customer_address"></div></div></details>
-    <p><small>新しいお客様名を入力した場合は、登録済みのお客様の選択より優先されます。「引渡済」にすると販売管理にも引渡し完了として反映します。</small></p><button>変更を保存</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>'''
+    <p><small>新しいお客様名を入力した場合は、登録済みのお客様の選択より優先されます。「販売済」にすると販売管理にも販売完了として反映します。</small></p><button>変更を保存</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>'''
     return layout("犬の編集", body, user)
 
 
@@ -1469,7 +1469,7 @@ def genetics_create(dog_id: int = Form(...), test_name: str = Form(...), result:
 
 SALE_STAGES = {
     "inquiry": "問い合わせ", "visit": "見学予定", "consideration": "検討中", "reserved": "予約済み",
-    "contracted": "契約済み", "paid": "入金済み", "handed_over": "引渡し完了", "cancelled": "キャンセル",
+    "contracted": "契約済み", "paid": "入金済み", "handed_over": "販売完了", "cancelled": "キャンセル",
 }
 
 
