@@ -887,6 +887,21 @@ def jkc_root_breed(image: Image.Image) -> str:
     return breed if breed not in {"BREED", "NAME OF DOG"} else ""
 
 
+def normalize_pedigree_color(value: str) -> str:
+    """血統書の正式表記・略記・OCRの空白揺れを管理用表記へ統一する。"""
+    upper = re.sub(r"[|_]", " ", value.upper())
+    upper = re.sub(r"\s+", " ", upper)
+    if re.search(r"SALT\s*(?:&|AND)?\s*PEPPER|SLT\s*PPR|PPR\s*SLT", upper):
+        return "SALT & PEPPER"
+    if re.search(r"BLACK\s*(?:&|AND)?\s*SILVER|BLK\s*SLV[ER]*|SLV[ER]*\s*BLK", upper):
+        return "BLACK & SILVER"
+    if re.search(r"\bBLACK\b|\bBLK\b", upper):
+        return "BLACK"
+    if re.search(r"\bWHITE\b|\bWHT\b", upper):
+        return "WHITE"
+    return ""
+
+
 def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     """本犬欄だけを読み、祖先欄の番号や団体名を混入させない。"""
     lines = ocr_spatial_lines(image, (.02, .08, .68, .28))
@@ -923,14 +938,9 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
             result["microchip_no"] = digits
 
     upper_value = value.upper()
-    if re.search(r"SALT\s*&\s*PEPPER|SLT\s*PPR", upper_value):
-        result["color"] = "SALT & PEPPER"
-    elif re.search(r"BLACK\s*&\s*SILVER|BLK\s*SLVR", upper_value):
-        result["color"] = "BLACK & SILVER"
-    elif re.search(r"\bBLACK\b|\bBLK\b", upper_value):
-        result["color"] = "BLACK"
-    elif re.search(r"\bWHITE\b", upper_value):
-        result["color"] = "WHITE"
+    root_color = normalize_pedigree_color(upper_value)
+    if root_color:
+        result["color"] = root_color
     # FEMALEの先頭Fは、罫線や日本語ラベルの影響でR/Eとして誤認されやすい。
     # MALEより先に判定し、FEMALEの一部を牡と誤判定しない。
     if re.search(r"\b(?:FEMALE|REMALE|EMALE)\b", upper_value):
@@ -971,11 +981,11 @@ def jkc_slot_text(image: Image.Image) -> str:
         prepared = ImageEnhance.Contrast(crop.convert("L")).enhance(1.8).filter(ImageFilter.SHARPEN)
         return pytesseract.image_to_string(prepared, lang="eng", config=f"--psm {psm}", timeout=70)
 
-    def details_from_text(value: str) -> tuple[str, list[str]]:
+    def details_from_text(value: str) -> tuple[str, list[str], str]:
         lines = [re.sub(r"\s{2,}", " ", line).strip(" |") for line in value.splitlines() if line.strip()]
         reg_index = next((i for i, line in enumerate(lines) if normalize_jkc_number(line)), None)
         if reg_index is None:
-            return "", []
+            return "", [], normalize_pedigree_color(value)
         possible = []
         for candidate in lines[max(0, reg_index - 3):reg_index]:
             candidate = candidate.rsplit("|", 1)[-1]
@@ -992,18 +1002,20 @@ def jkc_slot_text(image: Image.Image) -> str:
             direct = re.search(r"(?:^|\n)[^A-Z\n]*([A-Z][A-Z0-9'’* .-]{4,})\n[^\n]*(?:JKC|KC)\s*-?\s*MS", compact)
             if direct:
                 name = direct.group(1).strip(" .-")
-        return name, extract_title_keys(title_context)
+        return name, extract_title_keys(title_context), normalize_pedigree_color(value)
 
-    def details_for(box: tuple[float, float, float, float]) -> tuple[str, list[str]]:
+    def details_for(box: tuple[float, float, float, float]) -> tuple[str, list[str], str]:
         left, top, right, bottom = box
         local = [record for record in records if left <= record[0] <= right and top <= record[1] <= bottom]
         registration_lines = [record for record in local if normalize_jkc_number(record[2])]
         if registration_lines:
             reg_y = registration_lines[0][1]
             before_registration = [record for record in local if record[1] < reg_y]
+            color_records = [record[2] for record in local if record[1] > reg_y]
         else:
             # 登録番号だけが読めない場合も、欄上部の犬名は回収する。
             before_registration = [record for record in local if record[1] < top + (bottom - top) * .58]
+            color_records = [record[2] for record in local]
         possible = []
         for _, candidate_y, candidate in before_registration:
             candidate = candidate.rsplit("|", 1)[-1]
@@ -1016,19 +1028,23 @@ def jkc_slot_text(image: Image.Image) -> str:
         name_y = max((item[0] for item in possible), default=bottom)
         title_context = "\n".join(record[2] for record in local if record[1] < name_y)
         titles = extract_title_keys(title_context)
-        fallback_name, fallback_titles = details_from_text(crop_text(box))
+        cropped_text = crop_text(box)
+        fallback_name, fallback_titles, fallback_color = details_from_text(cropped_text)
         if not name:
             name = fallback_name
         for key in fallback_titles:
             if key not in titles:
                 titles.append(key)
-        return name, titles
+        # 前の世代欄の毛色が矩形上端へ入る場合があるため、本犬の登録番号より
+        # 下にある毛色を優先し、隣接犬の色を取り込まない。
+        local_color = normalize_pedigree_color("\n".join(color_records))
+        return name, titles, local_color or fallback_color
 
     if metadata.get("registered_name"):
         root_titles = [key for key in metadata.get("titles", "").split(",") if key in TITLE_LABELS]
-        results.append(f"[[PEDIGREE_SLOT_0]] {metadata['registered_name']} || {','.join(root_titles)}")
+        results.append(f"[[PEDIGREE_SLOT_0]] {metadata['registered_name']} || {','.join(root_titles)} || {metadata.get('color', '')}")
     for index, box in JKC_SLOT_BOXES.items():
-        name, title_keys = details_for(box)
+        name, title_keys, dog_color = details_for(box)
         if not name:
             retry = crop_text(box, psm=11)
             retry_lines = [line.strip() for line in retry.upper().splitlines() if line.strip()]
@@ -1059,7 +1075,7 @@ def jkc_slot_text(image: Image.Image) -> str:
                 name = candidate
                 break
         if name:
-            results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(title_keys)}")
+            results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(title_keys)} || {dog_color}")
     return "\n".join(results)
 
 
@@ -1091,7 +1107,7 @@ def extract_pedigree_text(path: Path, content_type: str) -> str:
         return full_text
 
 
-def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]]]:
+def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]], list[str]]:
     """OCR結果から本人情報と血統名候補を作る。最終確定前に必ず編集画面を表示する。"""
     clean = re.sub(r"[\t ]+", " ", raw_text.replace("\r", "\n"))
     metadata: dict[str, str] = {}
@@ -1150,15 +1166,19 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
             break
     metadata.update({key: value for key, value in trusted_metadata.items() if key != "registered_name" and key != "titles"})
 
-    slots: dict[int, tuple[str, list[str]]] = {}
-    for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\][ \t]*(.*?)[ \t]*\|\|[ \t]*([^\n]*)", clean):
+    slots: dict[int, tuple[str, list[str], str]] = {}
+    for match in re.finditer(r"\[\[PEDIGREE_SLOT_(\d{1,2})\]\][ \t]*([^\n]*)", clean):
         index = int(match.group(1))
         if 0 <= index <= 14:
-            title_values = [key for key in match.group(3).split(",") if key in TITLE_LABELS]
-            slots[index] = (match.group(2).strip(), title_values)
+            parts = [part.strip() for part in match.group(2).split("||", 2)]
+            name = parts[0] if parts else ""
+            title_values = [key for key in (parts[1].split(",") if len(parts) > 1 else []) if key in TITLE_LABELS]
+            dog_color = normalize_pedigree_color(parts[2]) if len(parts) > 2 else ""
+            slots[index] = (name, title_values, dog_color)
 
     candidates: list[str] = []
     candidate_titles: list[list[str]] = []
+    candidate_colors: list[str] = []
     seen: set[str] = set()
     for line in clean.splitlines():
         if line.startswith("[[PEDIGREE_SLOT_"):
@@ -1176,11 +1196,13 @@ def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[
             seen.add(normalized)
             candidates.append(name)
             candidate_titles.append(titles)
+            candidate_colors.append("")
     if slots:
-        ordered_names = [slots.get(index, ("", []))[0] for index in range(15)]
-        ordered_titles = [slots.get(index, ("", []))[1] for index in range(15)]
-        return metadata, ordered_names, ordered_titles
-    return metadata, candidates[:15], candidate_titles[:15]
+        ordered_names = [slots.get(index, ("", [], ""))[0] for index in range(15)]
+        ordered_titles = [slots.get(index, ("", [], ""))[1] for index in range(15)]
+        ordered_colors = [slots.get(index, ("", [], ""))[2] for index in range(15)]
+        return metadata, ordered_names, ordered_titles, ordered_colors
+    return metadata, candidates[:15], candidate_titles[:15], candidate_colors[:15]
 
 
 def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
@@ -1344,7 +1366,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
             source = Path(tmp) / f"source{suffix}"
             source.write_bytes(content)
             raw_text = extract_pedigree_text(source, pedigree_file.content_type or "")
-        metadata, candidates, detected_titles = pedigree_candidates(raw_text)
+        metadata, candidates, detected_titles, detected_colors = pedigree_candidates(raw_text)
     except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
         return HTMLResponse(layout("読み取りエラー", f'<h1>読み取りできませんでした</h1><p class="error">画像が不鮮明、または対応できないPDFです。撮り直すか別形式でお試しください。</p><p><small>{html.escape(type(exc).__name__)}</small></p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=422)
 
@@ -1353,18 +1375,19 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     session.commit()
     names = (candidates + [""] * 15)[:15]
     titles_by_dog = (detected_titles + [[] for _ in range(15)])[:15]
+    colors_by_dog = (detected_colors + [""] * 15)[:15]
     def title_select(index: int) -> str:
         options = "".join(f'<option value="{key}" {"selected" if key in titles_by_dog[index] else ""}>{label[2]}</option>' for key, label in TITLE_LABELS.items())
         return f'<label>タイトル（複数選択可）</label><select name="title_{index}" multiple size="5">{options}</select>'
     pedigree_fields = "".join(
-        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{title_select(index)}</div>'
+        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{f"<label>毛色</label><input name=\"ancestor_color_{index}\" value=\"{html.escape(colors_by_dog[index])}\" maxlength=\"100\" placeholder=\"例：SALT &amp; PEPPER\">" if index else ""}{title_select(index)}</div>'
         for index, name in enumerate(names)
     )
     existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in existing_dogs)
     sex_value = metadata.get("sex", "")
     sex_options = f'<option value="" {"selected" if not sex_value else ""}>選択してください</option><option value="male" {"selected" if sex_value == "male" else ""}>牡</option><option value="female" {"selected" if sex_value == "female" else ""}>牝</option>'
-    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前と父母の位置を修正してください。空欄の祖先は登録されません。</p>
+    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前・毛色と父母の位置を修正してください。空欄の祖先は登録されません。</p>
     <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label>登録方法</label><select name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
@@ -1380,6 +1403,11 @@ def pedigree_import(
     ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
     ancestor_7: str = Form(""), ancestor_8: str = Form(""), ancestor_9: str = Form(""), ancestor_10: str = Form(""),
     ancestor_11: str = Form(""), ancestor_12: str = Form(""), ancestor_13: str = Form(""), ancestor_14: str = Form(""),
+    ancestor_color_1: str = Form(""), ancestor_color_2: str = Form(""), ancestor_color_3: str = Form(""),
+    ancestor_color_4: str = Form(""), ancestor_color_5: str = Form(""), ancestor_color_6: str = Form(""),
+    ancestor_color_7: str = Form(""), ancestor_color_8: str = Form(""), ancestor_color_9: str = Form(""),
+    ancestor_color_10: str = Form(""), ancestor_color_11: str = Form(""), ancestor_color_12: str = Form(""),
+    ancestor_color_13: str = Form(""), ancestor_color_14: str = Form(""),
     title_0: list[str] = Form([]), title_1: list[str] = Form([]), title_2: list[str] = Form([]),
     title_3: list[str] = Form([]), title_4: list[str] = Form([]), title_5: list[str] = Form([]), title_6: list[str] = Form([]),
     title_7: list[str] = Form([]), title_8: list[str] = Form([]), title_9: list[str] = Form([]), title_10: list[str] = Form([]),
@@ -1390,6 +1418,8 @@ def pedigree_import(
     if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"}:
         raise HTTPException(status_code=400, detail="犬の情報を確認してください")
     names = [value.strip() for value in [ancestor_0, ancestor_1, ancestor_2, ancestor_3, ancestor_4, ancestor_5, ancestor_6, ancestor_7, ancestor_8, ancestor_9, ancestor_10, ancestor_11, ancestor_12, ancestor_13, ancestor_14]]
+    raw_colors = [color, ancestor_color_1, ancestor_color_2, ancestor_color_3, ancestor_color_4, ancestor_color_5, ancestor_color_6, ancestor_color_7, ancestor_color_8, ancestor_color_9, ancestor_color_10, ancestor_color_11, ancestor_color_12, ancestor_color_13, ancestor_color_14]
+    colors = [normalize_pedigree_color(value) or value.strip() for value in raw_colors]
     titles = [title_0, title_1, title_2, title_3, title_4, title_5, title_6, title_7, title_8, title_9, title_10, title_11, title_12, title_13, title_14]
     titles = [[key for key in values if key in TITLE_LABELS] for values in titles]
     if not names[0]:
@@ -1421,6 +1451,8 @@ def pedigree_import(
             node.titles = ",".join(titles[index]) or None
         if breed.strip() and not node.breed:
             node.breed = breed.strip()
+        if colors[index]:
+            node.color = colors[index]
         sire, dam = nodes.get(2 * index + 1), nodes.get(2 * index + 2)
         if sire:
             node.sire_id = sire.id
@@ -1438,7 +1470,7 @@ def pedigree_import(
     if not existing_dog_id:
         root.status = "resident"
     root.birth_date = date.fromisoformat(birth_date) if birth_date else root.birth_date
-    root.color = color.strip() or root.color
+    root.color = colors[0] or root.color
     root.pedigree_no = pedigree_no.strip() or root.pedigree_no
     root.microchip_no = microchip_no.strip() or root.microchip_no
     root.pedigree_country = pedigree_country.strip() or None
