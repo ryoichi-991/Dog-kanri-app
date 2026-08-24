@@ -1624,22 +1624,47 @@ def dog_create(call_name: str = Form(...), registered_name: str = Form(""), bree
     return RedirectResponse("/modules/dogs", status_code=303)
 
 
-def pedigree_flow_node(session: Session, tenant_id: int, dog: Dog | None, index: int = 0, depth: int = 0) -> str:
-    """本人から曾祖父母までを、称号付きの分岐フローチャートへ変換する。"""
-    label = PEDIGREE_LABELS[index] if index < len(PEDIGREE_LABELS) else "祖先"
-    if dog:
-        name = html.escape(dog.registered_name or dog.call_name)
-        call_name = f'<small>{html.escape(dog.call_name)}</small>' if dog.registered_name and dog.call_name != dog.registered_name else ""
-        marks = title_marks(dog.titles)
-        card = f'''<a class="pedigree-node" href="/modules/dogs/{dog.id}"><span class="pedigree-role">{label}</span><strong>{name}</strong>{call_name}<span class="pedigree-sex">{"牡" if dog.sex == "male" else "牝"}</span><span class="pedigree-titles">{marks or "称号なし"}</span></a>'''
-    else:
-        card = f'''<div class="pedigree-node missing"><span class="pedigree-role">{label}</span><strong>未登録</strong><span class="pedigree-titles">－</span></div>'''
-    children = ""
-    if depth < 3:
-        sire = session.scalar(select(Dog).where(Dog.id == dog.sire_id, Dog.tenant_id == tenant_id)) if dog and dog.sire_id else None
-        dam = session.scalar(select(Dog).where(Dog.id == dog.dam_id, Dog.tenant_id == tenant_id)) if dog and dog.dam_id else None
-        children = f'''<ul>{pedigree_flow_node(session, tenant_id, sire, index * 2 + 1, depth + 1)}{pedigree_flow_node(session, tenant_id, dam, index * 2 + 2, depth + 1)}</ul>'''
-    return f'''<li>{card}{children}</li>'''
+def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
+    """4世代15頭を固定グリッドへ配置し、親子関係をSVG線で結ぶ。"""
+    nodes: dict[int, Dog | None] = {0: root}
+    for index in range(7):
+        node = nodes.get(index)
+        nodes[index * 2 + 1] = session.scalar(select(Dog).where(Dog.id == node.sire_id, Dog.tenant_id == tenant_id)) if node and node.sire_id else None
+        nodes[index * 2 + 2] = session.scalar(select(Dog).where(Dog.id == node.dam_id, Dog.tenant_id == tenant_id)) if node and node.dam_id else None
+
+    x_positions = {0: 15, 1: 260, 2: 505, 3: 750}
+    y_positions = {
+        0: [390], 1: [170, 610], 2: [60, 280, 500, 720],
+        3: [5, 115, 225, 335, 445, 555, 665, 775],
+    }
+    positions: dict[int, tuple[int, int]] = {}
+    cards = ""
+    for index in range(15):
+        level = 0 if index == 0 else 1 if index <= 2 else 2 if index <= 6 else 3
+        offset = index - (2 ** level - 1)
+        x, y = x_positions[level], y_positions[level][offset]
+        positions[index] = (x, y)
+        dog = nodes.get(index)
+        label = PEDIGREE_LABELS[index]
+        if dog:
+            name = html.escape(dog.registered_name or dog.call_name)
+            call_name = f'<small>{html.escape(dog.call_name)}</small>' if dog.registered_name and dog.call_name != dog.registered_name else ""
+            marks = title_marks(dog.titles)
+            card = f'''<a class="pedigree-node" style="left:{x}px;top:{y}px" href="/modules/dogs/{dog.id}"><span class="pedigree-role">{label}</span><strong>{name}</strong>{call_name}<span class="pedigree-sex">{"牡" if dog.sex == "male" else "牝"}</span><span class="pedigree-titles">{marks or "称号なし"}</span></a>'''
+        else:
+            card = f'''<div class="pedigree-node missing" style="left:{x}px;top:{y}px"><span class="pedigree-role">{label}</span><strong>未登録</strong><span class="pedigree-titles">－</span></div>'''
+        cards += card
+
+    lines = ""
+    for parent_index in range(7):
+        x1, y1 = positions[parent_index]
+        for ancestor_index in (parent_index * 2 + 1, parent_index * 2 + 2):
+            x2, y2 = positions[ancestor_index]
+            start_x, start_y = x1 + 205, y1 + 50
+            end_x, end_y = x2, y2 + 50
+            middle_x = (start_x + end_x) // 2
+            lines += f'''<path d="M {start_x} {start_y} H {middle_x} V {end_y} H {end_x}"/>'''
+    return f'''<div class="pedigree-scroll"><div class="pedigree-canvas"><svg class="pedigree-lines" viewBox="0 0 970 885" aria-hidden="true">{lines}</svg>{cards}</div></div>'''
 
 
 @app.get("/modules/dogs/{dog_id}", response_class=HTMLResponse)
@@ -1658,7 +1683,7 @@ def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: S
         preview = f'<img src="{source}" alt="血統書" style="max-width:100%;max-height:900px;object-fit:contain">' if item.content_type.startswith("image/") else f'<iframe src="{source}" title="血統書PDF" style="width:100%;height:800px;border:1px solid #eadde1;border-radius:10px"></iframe>' if item.content_type == "application/pdf" else ""
         upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
     document_section = f'''<div class="tenant"><h2 style="margin-top:0">アップロード済み血統書</h2>{upload_views or '<p>血統書原本はまだ保存されていません。</p>'}</div>'''
-    flow = f'''<div class="pedigree-scroll"><div class="pedigree-tree"><ul>{pedigree_flow_node(session, tenant.id, dog)}</ul></div></div>'''
+    flow = pedigree_flow_chart(session, tenant.id, dog)
     info = [
         ("呼び名", dog.call_name), ("血統書名", dog.registered_name or "－"), ("犬種", dog.breed or "－"),
         ("性別", "牡" if dog.sex == "male" else "牝"), ("区分", category_labels.get(dog.category, dog.category)),
@@ -1672,12 +1697,11 @@ def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: S
     .detail-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:20px}}.detail-head .button{{margin-top:0}}
     .dog-facts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1px;background:#eadde1;border:1px solid #eadde1;border-radius:14px;overflow:hidden;margin:18px 0 30px}}
     .dog-facts div{{background:#fff;padding:14px}}.dog-facts dt{{font-size:12px;color:#765f68;font-weight:700}}.dog-facts dd{{margin:5px 0 0;font-weight:650}}
-    .pedigree-scroll{{overflow:auto;padding:10px 0 24px}}.pedigree-tree{{min-width:1120px}}.pedigree-tree ul{{padding-top:24px;position:relative;display:flex;justify-content:center;margin:0;padding-left:0}}
-    .pedigree-tree li{{list-style:none;text-align:center;position:relative;padding:24px 5px 0}}.pedigree-tree li:before,.pedigree-tree li:after{{content:"";position:absolute;top:0;right:50%;width:50%;height:24px;border-top:2px solid #d5aeb9}}
-    .pedigree-tree li:after{{right:auto;left:50%;border-left:2px solid #d5aeb9}}.pedigree-tree li:only-child:before,.pedigree-tree li:only-child:after{{display:none}}.pedigree-tree li:first-child:before,.pedigree-tree li:last-child:after{{border:0}}
-    .pedigree-tree li:last-child:before{{border-right:2px solid #d5aeb9;border-radius:0 8px 0 0}}.pedigree-tree li:first-child:after{{border-radius:8px 0 0 0}}.pedigree-tree ul ul:before{{content:"";position:absolute;top:0;left:50%;height:24px;border-left:2px solid #d5aeb9}}
-    .pedigree-node{{width:132px;min-height:112px;padding:9px 7px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12}}
-    .pedigree-node:hover{{border-color:#b66f7c;background:#fff8fa}}.pedigree-node.missing{{opacity:.55;border-style:dashed}}.pedigree-role{{font-size:10px;color:#9a6d79;font-weight:700}}.pedigree-node strong{{font-size:11px;line-height:1.25;margin:4px 0;overflow-wrap:anywhere}}.pedigree-node small{{font-size:9px;color:#806b72}}.pedigree-sex{{font-size:10px}}.pedigree-titles{{font-size:9px;min-height:22px;margin-top:3px}}.pedigree-titles .title-crown{{font-size:15px;margin:0 2px}}
+    .pedigree-scroll{{overflow-x:auto;overflow-y:hidden;padding:10px 0 24px;width:100%}}.pedigree-canvas{{position:relative;width:970px;height:885px;min-width:970px;margin:0 auto;background:linear-gradient(90deg,#fff 0%,#fffafc 100%);border:1px solid #f0e1e5;border-radius:16px}}
+    .pedigree-lines{{position:absolute;inset:0;width:970px;height:885px;pointer-events:none}}.pedigree-lines path{{fill:none;stroke:#c990a0;stroke-width:2;vector-effect:non-scaling-stroke}}
+    .pedigree-node{{position:absolute;width:205px;height:100px;padding:8px 9px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12;overflow:hidden;text-align:center}}
+    .pedigree-node:hover{{border-color:#b66f7c;background:#fff8fa}}.pedigree-node.missing{{opacity:.55;border-style:dashed}}.pedigree-role{{font-size:10px;color:#9a6d79;font-weight:700}}.pedigree-node strong{{font-size:11px;line-height:1.25;margin:3px 0;overflow-wrap:anywhere;max-width:100%}}.pedigree-node small{{font-size:9px;color:#806b72}}.pedigree-sex{{font-size:10px}}.pedigree-titles{{font-size:9px;min-height:20px;margin-top:2px;white-space:nowrap}}.pedigree-titles .title-crown{{font-size:15px;margin:0 2px}}
+    @media(max-width:1100px){{.pedigree-canvas{{margin:0}}}}
     </style><div class="detail-head"><div><h1>{html.escape(dog.call_name)}の詳細</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p></div><a class="button" href="/modules/dogs/{dog.id}/edit">編集する</a></div>
     <dl class="dog-facts">{info_html}</dl><h2>血統構成フローチャート</h2><p><small>各個体をクリックすると、その犬の詳細ページを開きます。王冠は登録されている称号を表します。</small></p>{flow}{document_section}<p><a class="button secondary" href="/modules/resident-dogs">在籍犬一覧へ戻る</a></p>'''
     return layout(f"{dog.call_name}の詳細", body, user)
