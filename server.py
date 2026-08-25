@@ -340,6 +340,8 @@ class OwnerProfile(Base):
     show_prefecture: Mapped[bool] = mapped_column(Boolean, default=False)
     show_bio: Mapped[bool] = mapped_column(Boolean, default=False)
     show_photo: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_dogs: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_parents: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -533,6 +535,8 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS explanation_completed BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS microchip_transfer_completed BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS notes TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_dogs BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_parents BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dog_transfers ADD COLUMN IF NOT EXISTS amount INTEGER"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -2627,6 +2631,10 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_bio" value="true" {checked(profile.show_bio)}> 自己紹介を公開する</label>
     <label>プロフィール写真（JPG・PNG・WebP／8MBまで）</label><input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_photo" value="true" {checked(profile.show_photo)}> プロフィール写真を公開する</label>
+    <h2>愛犬・血統の公開設定</h2>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_dogs" value="true" {checked(profile.show_dogs)}> 連携されている愛犬を公開する</label>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_parents" value="true" {checked(profile.show_parents)}> 愛犬の父犬・母犬も公開する</label>
+    <p><small>父母を公開しても、血統書番号・マイクロチップ番号・所有者情報は表示されません。</small></p>
     <div class="tenant"><label style="font-size:16px"><input style="width:auto" type="checkbox" name="profile_public" value="true" {checked(profile.profile_public)}> プロフィール全体をFAMILYメンバーへ公開する</label>
     <p><small>ここをオフにすると、各項目がオンでもプロフィール全体が非公開になります。</small></p></div>
     <button>設定を保存</button></form>
@@ -2638,7 +2646,8 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
 async def family_profile_save(
     nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
     profile_public: bool = Form(False), show_nickname: bool = Form(False), show_prefecture: bool = Form(False),
-    show_bio: bool = Form(False), show_photo: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db),
+    show_bio: bool = Form(False), show_photo: bool = Form(False), show_dogs: bool = Form(False), show_parents: bool = Form(False),
+    user: User = Depends(require_user), session: Session = Depends(db),
 ):
     if prefecture and prefecture not in PREFECTURES:
         raise HTTPException(status_code=400, detail="都道府県を確認してください")
@@ -2676,6 +2685,7 @@ async def family_profile_save(
     profile.bio = bio.strip() or None
     profile.profile_public, profile.show_nickname = profile_public, show_nickname
     profile.show_prefecture, profile.show_bio, profile.show_photo = show_prefecture, show_bio, show_photo
+    profile.show_dogs, profile.show_parents = show_dogs, show_parents and show_dogs
     profile.updated_at = datetime.now(timezone.utc)
     session.commit()
     return RedirectResponse("/family/profile", status_code=303)
@@ -2722,7 +2732,34 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
     photo = f'<img src="/family/members/{profile.public_id}/photo" alt="プロフィール写真" style="width:180px;height:180px;object-fit:cover;border-radius:50%;border:5px solid #ead0d5">' if profile.show_photo and profile.photo_data else ""
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
     bio = f'<div class="tenant" style="white-space:pre-wrap">{html.escape(profile.bio)}</div>' if profile.show_bio and profile.bio else ""
-    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}
+    dogs_section = ""
+    if profile.show_dogs:
+        records = session.execute(
+            select(DogOwnership, Dog, Tenant).join(Dog, Dog.id == DogOwnership.dog_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+            .where(DogOwnership.user_id == profile.user_id, DogOwnership.active.is_(True), Dog.active.is_(True), Tenant.active.is_(True), Tenant.deleted.is_(False))
+            .order_by(Dog.call_name)
+        ).all()
+        dog_cards = ""
+        for ownership, dog, tenant in records:
+            sex = {"male": "牡", "female": "牝"}.get(dog.sex, dog.sex)
+            relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+            parent_html = ""
+            if profile.show_parents:
+                parent_cards = ""
+                for label, parent_id in (("父犬", dog.sire_id), ("母犬", dog.dam_id)):
+                    parent = session.get(Dog, parent_id) if parent_id else None
+                    if parent and parent.tenant_id == dog.tenant_id:
+                        parent_name = parent.registered_name or parent.call_name
+                        parent_cards += f'''<div class="tenant" style="margin:0"><strong>{label}</strong><p>{html.escape(parent_name)}</p>
+                        <p>{title_marks(parent.titles) or "称号なし"}</p><p><small>毛色：{html.escape(parent.color or "未登録")}</small></p></div>'''
+                    else:
+                        parent_cards += f'<div class="tenant" style="margin:0"><strong>{label}</strong><p>未登録</p></div>'
+                parent_html = f'<h3 style="margin-top:18px">父母</h3><div class="grid">{parent_cards}</div>'
+            dog_cards += f'''<section class="tenant"><p><span class="badge">{relation}</span> <small>{html.escape(tenant.name)}</small></p>
+            <h2 style="margin-top:8px">{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
+            <p>{title_marks(dog.titles) or "称号なし"}</p><p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(sex)} ／ {html.escape(dog.color or "毛色未登録")}</p>{parent_html}</section>'''
+        dogs_section = f'<h2>愛犬</h2>{dog_cards or "<p>公開できる愛犬はまだ登録されていません。</p>"}'
+    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
     return layout(f"{title}｜FAMILY", body, user)
 
