@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run phase 5 quality checks
+      - name: Run production quality checks
         run: |
           python -m py_compile server.py
           python -m unittest discover -s tests -v
@@ -63,6 +63,8 @@ jobs:
               OPENAPI=$(curl -fsS --max-time 10 http://127.0.0.1:8091/openapi.json || true)
               if [ "$LOGIN_CODE" != "200" ] || [ "$API_CODE" != "401" ] || [ "$WORKER_CODE" != "200" ] \
                  || ! echo "$OPENAPI" | grep -q 'family/backups/download' \
+                 || ! echo "$OPENAPI" | grep -q 'family/backups/verify' \
+                 || ! echo "$OPENAPI" | grep -q 'admin/operations' \
                  || ! echo "$OPENAPI" | grep -q 'api/v1/auth/token' \
                  || ! echo "$HEALTH_BODY" | grep -q '"push_ready":true'; then
                 echo "[SMOKE] FAILED login=$LOGIN_CODE api=$API_CODE worker=$WORKER_CODE"

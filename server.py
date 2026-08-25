@@ -744,6 +744,17 @@ class AuthThrottle(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class OperationEvent(Base):
+    __tablename__ = "operation_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    summary: Mapped[str] = mapped_column(String(300))
+    details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class EmailDelivery(Base):
     __tablename__ = "email_deliveries"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -858,8 +869,13 @@ def deliver_email(delivery: EmailDelivery, session: Session) -> bool:
     error = send_email_content(delivery.recipient, delivery.subject, delivery.body)
     if error:
         delivery.status, delivery.error = ("pending" if not smtp_ready() else "failed"), error
+        if smtp_ready():
+            record_operation(session, "email", "failed", "メール配信に失敗しました", delivery.tenant_id,
+                f"delivery={delivery.id} purpose={delivery.purpose} error={error}")
         return False
     delivery.status, delivery.error, delivery.sent_at = "sent", None, datetime.now(timezone.utc)
+    record_operation(session, "email", "success", "メールを配信しました", delivery.tenant_id,
+        f"delivery={delivery.id} purpose={delivery.purpose}")
     return True
 
 
@@ -912,6 +928,12 @@ def push_ready() -> bool:
     return bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and VAPID_SUBJECT)
 
 
+def record_operation(session: Session, category: str, status_value: str, summary: str,
+                     tenant_id: int | None = None, details: str | None = None) -> None:
+    session.add(OperationEvent(tenant_id=tenant_id, category=category[:40], status=status_value[:20],
+        summary=summary[:300], details=(details or "")[:1000] or None))
+
+
 def send_web_push(user_id: int, category: str, title: str, body: str, url: str, dedupe_key: str, session: Session) -> int:
     setting = session.scalar(select(FamilyNotificationSetting).where(FamilyNotificationSetting.user_id == user_id))
     if not setting or not setting.push_enabled or not getattr(setting, category, False) or not push_ready():
@@ -939,7 +961,12 @@ def send_web_push(user_id: int, category: str, title: str, body: str, url: str, 
             response = getattr(exc, "response", None)
             if response is not None and getattr(response, "status_code", 0) in {404, 410}:
                 subscription.active = False
+            record_operation(session, "push", "failed", "ブラウザ通知の配信に失敗しました",
+                details=f"user={user_id} endpoint_id={subscription.id} error={type(exc).__name__}")
     receipt.status = "sent" if sent else "failed"
+    if sent:
+        record_operation(session, "push", "success", f"ブラウザ通知を{sent}端末へ配信しました",
+            details=f"user={user_id} category={category}")
     return sent
 
 
@@ -1057,6 +1084,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/backups/manage"><span>⇩</span>データ出力</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
+          <a href="/admin/operations"><span>◉</span>運用監視</a>
           {platform_link}
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
@@ -5511,6 +5539,7 @@ def family_backups_manage(access=Depends(require_tenant_admin), session: Session
     body = f'''<h1>FAMILYデータ出力・バックアップ</h1><div class="tenant"><p>選択中の犬舎に属するオーナー連携、愛犬、投稿、同意、監査履歴をZIPにまとめます。パスワードやログイントークンは含みません。</p></div>
     <form method="post" action="/family/backups/download"><label>安全確認のため管理者パスワードを入力</label><input type="password" name="admin_password" required autocomplete="current-password">
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 個人情報を含むファイルとして安全に保管します</label><button class="success">ZIPバックアップを作成・ダウンロード</button></form>
+    <h2>バックアップ整合性確認</h2><form method="post" action="/family/backups/verify" enctype="multipart/form-data"><label>確認するZIPファイル</label><input type="file" name="backup_file" accept=".zip,application/zip" required><button class="secondary">破損・改ざんを確認</button></form>
     <h2>出力履歴</h2><table><tr><th>日時</th><th>実行者</th><th>レコード数</th><th>形式</th></tr>{rows or '<tr><td colspan="4">出力履歴はありません。</td></tr>'}</table>'''
     return layout("FAMILYデータ出力", body, user)
 
@@ -5533,23 +5562,65 @@ def family_backup_download(admin_password: str = Form(...), confirmed: bool = Fo
         "counts": {"owners": len(owners), "dogs": len(dogs), "ownerships": len(ownerships), "posts": len(posts), "audits": len(audits), "consents": len(consents)}}
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         datasets = {"owners.json": [backup_model(item, {"password_hash"}) for item in owners], "dogs.json": [backup_model(item) for item in dogs],
             "ownerships.json": [backup_model(item) for item in ownerships], "posts.json": [backup_model(item) for item in posts],
             "moderation_audits.json": [backup_model(item) for item in audits], "terms.json": [backup_model(item) for item in terms],
             "consents.json": [backup_model(item, {"ip_hash"}) for item in consents]}
+        checksums = {}
         for filename, records in datasets.items():
-            archive.writestr(filename, json.dumps(records, ensure_ascii=False, indent=2))
+            content = json.dumps(records, ensure_ascii=False, indent=2).encode()
+            archive.writestr(filename, content); checksums[filename] = hashlib.sha256(content).hexdigest()
         owner_csv = io.StringIO(newline=""); writer = csv.writer(owner_csv); writer.writerow(["user_id", "name", "email", "active"])
         for owner in owners: writer.writerow([owner.id, owner.name, owner.email, owner.active])
-        archive.writestr("owners.csv", "\ufeff" + owner_csv.getvalue())
+        csv_content = ("\ufeff" + owner_csv.getvalue()).encode(); archive.writestr("owners.csv", csv_content)
+        checksums["owners.csv"] = hashlib.sha256(csv_content).hexdigest()
         for post in posts:
             extension = "png" if post.photo_content_type == "image/png" else ("webp" if post.photo_content_type == "image/webp" else "jpg")
-            archive.writestr(f"photos/post-{post.id}.{extension}", post.photo_data)
+            photo_name = f"photos/post-{post.id}.{extension}"; archive.writestr(photo_name, post.photo_data)
+            checksums[photo_name] = hashlib.sha256(post.photo_data).hexdigest()
+        manifest["checksums"] = checksums
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     count = sum(manifest["counts"].values())
     session.add(FamilyBackupAudit(tenant_id=tenant.id, created_by_id=user.id, record_count=count)); session.commit()
     filename = f"family-backup-{tenant.id}-{date.today().isoformat()}.zip"
     return Response(content=output.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+
+
+@app.post("/family/backups/verify", response_class=HTMLResponse)
+async def family_backup_verify(backup_file: UploadFile = File(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    content = await backup_file.read(100 * 1024 * 1024 + 1)
+    errors: list[str] = []
+    if len(content) > 100 * 1024 * 1024:
+        errors.append("ファイルサイズが100MBを超えています")
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            infos = archive.infolist()
+            if len(infos) > 5000 or sum(item.file_size for item in infos) > 1024 * 1024 * 1024:
+                errors.append("展開後の容量またはファイル数が安全上限を超えています")
+            names = {item.filename for item in infos}
+            if "manifest.json" not in names:
+                errors.append("manifest.jsonがありません")
+            else:
+                manifest = json.loads(archive.read("manifest.json"))
+                if manifest.get("schema_version") != 1 or manifest.get("tenant", {}).get("id") != tenant.id:
+                    errors.append("選択中の犬舎のバックアップではありません")
+                checksums = manifest.get("checksums") or {}
+                if not checksums:
+                    errors.append("整合性情報がない旧形式のバックアップです")
+                for filename, expected in checksums.items():
+                    if filename not in names or hashlib.sha256(archive.read(filename)).hexdigest() != expected:
+                        errors.append(f"{filename}の整合性を確認できません")
+    except (zipfile.BadZipFile, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        errors.append("有効なFAMILYバックアップZIPではありません")
+    result = "failed" if errors else "success"
+    record_operation(session, "backup_verify", result, "バックアップ整合性確認", tenant.id,
+        " / ".join(errors) if errors else f"file={backup_file.filename or 'backup.zip'}")
+    session.commit()
+    if errors:
+        body = '<h1>整合性確認：問題あり</h1><p class="error">' + html.escape("／".join(errors)) + '</p>'
+        return HTMLResponse(layout("バックアップ整合性確認", body + '<a class="button secondary" href="/family/backups/manage">戻る</a>', user), status_code=400)
+    return layout("バックアップ整合性確認", '<h1>整合性確認：正常</h1><p>破損や内容の改変は検出されませんでした。</p><a class="button secondary" href="/family/backups/manage">戻る</a>', user)
 
 
 def require_mobile_user(authorization: str | None = Header(None), session: Session = Depends(db)) -> User:
@@ -6195,6 +6266,52 @@ def email_delivery_retry(delivery_id: int, access=Depends(require_tenant_admin),
     deliver_email(delivery, session)
     session.commit()
     return RedirectResponse("/admin/email-deliveries", status_code=303)
+
+
+@app.get("/admin/operations", response_class=HTMLResponse)
+def operations_dashboard(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    event_condition = (OperationEvent.tenant_id == tenant.id)
+    if actor.platform_admin:
+        event_condition = event_condition | OperationEvent.tenant_id.is_(None)
+    events = session.scalars(select(OperationEvent).where(event_condition)
+        .order_by(OperationEvent.created_at.desc()).limit(100)).all()
+    failed_events = session.scalar(select(func.count(OperationEvent.id)).where(
+        event_condition, OperationEvent.status == "failed", OperationEvent.created_at >= since)) or 0
+    related_ids = set(session.scalars(select(DogOwnership.user_id).where(
+        DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
+    email_condition = (EmailDelivery.tenant_id == tenant.id)
+    if related_ids:
+        email_condition = email_condition | EmailDelivery.user_id.in_(related_ids)
+    failed_emails = session.scalar(select(func.count(EmailDelivery.id)).where(
+        email_condition, EmailDelivery.status == "failed", EmailDelivery.created_at >= since)) or 0
+    active_push = session.scalar(select(func.count(FamilyPushSubscription.id)).where(
+        FamilyPushSubscription.user_id.in_(related_ids), FamilyPushSubscription.active.is_(True))) or 0 if related_ids else 0
+    last_backup = session.scalar(select(FamilyBackupAudit).where(FamilyBackupAudit.tenant_id == tenant.id)
+        .order_by(FamilyBackupAudit.created_at.desc()).limit(1))
+    rows = "".join(f'''<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(item.category)}</td>
+        <td><span class="badge">{html.escape(item.status)}</span></td><td>{html.escape(item.summary)}</td><td>{html.escape(item.details or "－")}</td></tr>''' for item in events)
+    backup_state = last_backup.created_at.strftime("%Y-%m-%d %H:%M") if last_backup else "未作成"
+    body = f'''<h1>運用監視</h1><p>通知、バックアップ、システム設定の状態をまとめて確認できます。</p>
+    <div class="grid"><div class="tenant"><strong>メール配信</strong><h2>{"稼働中" if smtp_ready() else "設定待ち"}</h2><small>24時間の失敗 {failed_emails}件</small></div>
+    <div class="tenant"><strong>ブラウザ通知</strong><h2>{"稼働中" if push_ready() else "停止"}</h2><small>有効端末 {active_push}台</small></div>
+    <div class="tenant"><strong>運用イベント</strong><h2>{failed_events}件</h2><small>24時間の異常</small></div>
+    <div class="tenant"><strong>最終バックアップ</strong><h2>{backup_state}</h2><small>出力履歴を基準に表示</small></div></div>
+    <form method="post" action="/admin/operations/diagnose"><button class="secondary">今すぐシステム診断</button></form>
+    <h2>運用イベント履歴</h2><table><tr><th>日時</th><th>分類</th><th>状態</th><th>概要</th><th>詳細</th></tr>{rows or '<tr><td colspan="5">運用イベントはありません。</td></tr>'}</table>'''
+    return layout("運用監視", body, actor)
+
+
+@app.post("/admin/operations/diagnose")
+def operations_diagnose(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    checks = {"database": True, "push": push_ready(), "email": smtp_ready()}
+    status_value = "success" if checks["database"] and checks["push"] else "warning"
+    record_operation(session, "diagnostic", status_value, "管理者がシステム診断を実行しました", tenant.id,
+        json.dumps(checks, ensure_ascii=False))
+    session.commit()
+    return RedirectResponse("/admin/operations", status_code=303)
 
 
 @app.post("/admin/password-resets/{request_id}/issue", response_class=HTMLResponse)
