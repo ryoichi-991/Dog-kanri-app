@@ -447,10 +447,14 @@ def require_tenant_user(request: Request, user: User = Depends(require_user), se
     return user, tenant
 
 
-def layout(title: str, body: str, user: User | None = None) -> str:
+def layout(title: str, body: str, user: User | None = None, owner_mode: bool = False) -> str:
     nav = ""
-    body_class = "authenticated" if user else "guest"
-    if user:
+    body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
+    if user and owner_mode:
+        nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
+        <nav><a href="/family">うちの子</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
+        <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
+    elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
         nav = f'''<aside class="sidebar">
         <a class="brand" href="/dashboard"><span class="brand-logo-wrap"><img class="brand-logo" src="https://estrella.dog/wp-content/uploads/2025/10/logo-1.svg" alt="ESTRELLA ロゴ"></span><span><strong>ESTRELLA</strong><small>Breeder Management</small></span></a>
@@ -486,8 +490,21 @@ def layout(title: str, body: str, user: User | None = None) -> str:
 :root{{--wine:#704454;--rose:#b66f7c;--rose-light:#ead0d5;--cream:#faf6f3;--paper:#fffdfb;--ink:#3f3036;--muted:#816f76;--line:#eadfe1;--green:#718b75;--danger:#a94f55}}
 *{{box-sizing:border-box}}body{{margin:0;background:var(--cream);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;line-height:1.55}}.sidebar{{position:fixed;inset:0 auto 0 0;width:260px;background:linear-gradient(180deg,#68404f 0%,#55333f 100%);color:#fff;display:flex;flex-direction:column;z-index:10;box-shadow:6px 0 24px #4b26331a}}.brand{{height:84px;display:flex;align-items:center;gap:13px;padding:18px 22px;color:#fff;text-decoration:none;border-bottom:1px solid #ffffff1f}}.brand-mark{{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#f0d8dc;color:var(--wine);font-family:Georgia,serif;font-size:25px}}.brand strong{{display:block;letter-spacing:1.8px;font-family:Georgia,serif}}.brand small,.sidebar-user small{{display:block;color:#ead5da;font-size:11px}}.sidebar nav{{padding:12px 13px;overflow-y:auto;flex:1}}.sidebar nav a{{display:flex;align-items:center;gap:12px;color:#f8eef1;text-decoration:none;padding:10px 13px;border-radius:10px;font-size:14px;margin:2px 0}}.sidebar nav a:hover{{background:#ffffff17;color:#fff}}.sidebar nav a span{{width:20px;text-align:center;color:#eac3cb}}.nav-label{{margin:14px 12px 5px;color:#cbaeb5;font-size:10px;letter-spacing:1.5px;font-weight:700}}.sidebar-user{{display:flex;align-items:center;gap:10px;padding:15px;border-top:1px solid #ffffff1f;background:#452934}}.sidebar-user .avatar{{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#e7c6cc;color:var(--wine);font-weight:700}}.sidebar-user strong{{display:block;max-width:125px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}}.sidebar-user form{{margin-left:auto}}.sidebar-user button{{margin:0;padding:8px;background:transparent;color:#fff;font-size:18px}}main{{max-width:1280px;margin-left:260px;padding:38px 42px}}.card{{background:var(--paper);padding:34px;border:1px solid #f1e7e8;border-radius:20px;box-shadow:0 10px 35px #63404c0d}}h1{{margin:0 0 22px;font-size:28px;letter-spacing:.02em}}h2{{margin-top:34px;padding-bottom:8px;border-bottom:1px solid var(--line);font-size:20px}}label{{display:block;margin:15px 0 6px;font-size:13px;font-weight:650;color:#665159}}input,select,textarea{{width:100%;padding:11px 13px;border:1px solid #dacdd0;border-radius:10px;background:#fff;font-size:15px;color:var(--ink);outline:none}}input:focus,select:focus,textarea:focus{{border-color:var(--rose);box-shadow:0 0 0 3px #b66f7c18}}textarea{{min-height:84px;resize:vertical}}button,.button{{display:inline-block;margin-top:17px;padding:11px 18px;border:0;border-radius:10px;background:var(--rose);color:#fff;text-decoration:none;font-weight:650;cursor:pointer;box-shadow:0 4px 12px #b66f7c28}}button:hover,.button:hover{{filter:brightness(.95)}}.secondary{{background:#89747b}}.danger{{background:var(--danger)}}.success{{background:var(--green)}}.inline{{display:inline}}.inline button{{margin:3px;padding:7px 10px;font-size:12px}}.error{{background:#fff0f0;color:#963c43;padding:13px;border-left:4px solid var(--danger);border-radius:8px}}table{{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;font-size:14px;overflow:hidden}}th{{background:#f6edef;color:#694d57;font-size:12px;letter-spacing:.03em}}th,td{{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}}tr:hover td{{background:#fdf8f8}}.badge{{display:inline-block;padding:5px 10px;border-radius:99px;background:var(--rose-light);color:var(--wine);font-size:12px;font-weight:700}}.tenant{{padding:18px;background:#f7edef;border:1px solid #ecdadd;border-radius:14px;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:18px}}.module{{position:relative;display:block;min-height:118px;padding:21px;border:1px solid var(--line);border-radius:15px;text-decoration:none;color:var(--ink);background:linear-gradient(145deg,#fff 0%,#fdf8f7 100%);transition:.2s}}.module:after{{content:"›";position:absolute;right:18px;top:15px;color:#c18a94;font-size:24px}}.module:hover{{transform:translateY(-2px);border-color:#d6a7af;box-shadow:0 9px 22px #70445414}}.module h3{{margin:0 25px 9px 0;font-size:17px;color:#66404e}}.module p{{margin:0;color:var(--muted);font-size:13px}}
 .brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.title-crown{{display:inline-flex;align-items:center;gap:2px;margin:2px 5px 2px 0;font-size:20px;font-weight:800}}.title-crown small{{font-size:9px;color:var(--ink)}}.crown-silver{{color:#9da3aa;text-shadow:0 1px #fff}}.crown-gold{{color:#d4a72c;text-shadow:0 1px #fff}}.crown-rose{{color:#cf788b}}.crown-purple{{color:#9167a8}}.crown-blue{{color:#668caf}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
-@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}}}
+.owner-header{{position:sticky;top:0;z-index:20;min-height:68px;padding:11px 28px;background:#633b4a;color:#fff;display:flex;align-items:center;gap:28px;box-shadow:0 5px 20px #4b263326}}.owner-brand{{color:#fff;text-decoration:none;font-family:Georgia,serif;letter-spacing:1.3px;white-space:nowrap}}.owner-header nav{{display:flex;gap:7px;flex:1}}.owner-header nav a{{color:#f8eef1;text-decoration:none;padding:9px 12px;border-radius:9px}}.owner-header nav a:hover{{background:#ffffff17}}.owner-account{{display:flex;align-items:center;gap:10px;font-size:13px}}.owner-account form{{margin:0}}.owner-account button{{margin:0;padding:8px 12px;background:#ffffff1c;box-shadow:none}}.owner-view main{{margin:0 auto;max-width:1180px;padding:34px 28px}}
+@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
+
+
+def family_layout(title: str, body: str, user: User, session: Session) -> str:
+    """運営管理者・犬舎スタッフ以外には業務用サイドバーを表示しない。"""
+    has_business_role = user.platform_admin or session.scalar(
+        select(Membership.id).where(
+            Membership.user_id == user.id,
+            Membership.role.in_([Role.admin, Role.employee]),
+        ).limit(1)
+    ) is not None
+    owner_mode = not has_business_role
+    return layout(title, body, user, owner_mode=owner_mode)
 
 
 mcp = FastMCP("Dog-kanri-app")
@@ -2573,7 +2590,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
     <p><a class="button" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
     <div class="grid">{cards}</div>'''
-    return layout("FAMILY", body, user)
+    return family_layout("FAMILY", body, user, session)
 
 
 @app.get("/family/dogs/{dog_id}", response_class=HTMLResponse)
@@ -2600,7 +2617,7 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     <tr><th>性別</th><td>{html.escape(sex)}</td></tr><tr><th>生年月日</th><td>{birth}</td></tr>
     <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr></table>
     <p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
-    return layout(f"{dog.call_name}｜FAMILY", body, user)
+    return family_layout(f"{dog.call_name}｜FAMILY", body, user, session)
 
 
 def owner_profile_for(user: User, session: Session) -> OwnerProfile:
@@ -2642,7 +2659,7 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <p><small>ここをオフにすると、各項目がオンでもプロフィール全体が非公開になります。</small></p></div>
     <button>設定を保存</button></form>
     {f'<form method="post" action="/family/profile/photo/delete"><button class="danger">登録写真を削除</button></form>' if profile.photo_data else ''}'''
-    return layout("公開プロフィール設定", body, user)
+    return family_layout("公開プロフィール設定", body, user, session)
 
 
 @app.post("/family/profile")
@@ -2661,7 +2678,7 @@ async def family_profile_save(
     if photo and photo.filename:
         content = await photo.read(8 * 1024 * 1024 + 1)
         if len(content) > 8 * 1024 * 1024:
-            return HTMLResponse(layout("写真エラー", '<p class="error">写真は8MB以下にしてください。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=400)
+            return HTMLResponse(family_layout("写真エラー", '<p class="error">写真は8MB以下にしてください。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=400)
         try:
             with Image.open(io.BytesIO(content)) as source:
                 if source.width * source.height > 25_000_000:
@@ -2677,13 +2694,13 @@ async def family_profile_save(
                 output = io.BytesIO()
                 image.save(output, format="JPEG", quality=86, optimize=True)
         except Exception:
-            return HTMLResponse(layout("写真エラー", '<p class="error">JPG・PNG・WebP形式の写真を選択してください。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=400)
+            return HTMLResponse(family_layout("写真エラー", '<p class="error">JPG・PNG・WebP形式の写真を選択してください。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=400)
         profile.photo_data = output.getvalue()
         profile.photo_content_type = "image/jpeg"
     eligible = user.platform_admin or session.scalar(select(Membership.id).where(Membership.user_id == user.id).limit(1)) is not None \
         or session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).limit(1)) is not None
     if profile_public and not eligible:
-        return HTMLResponse(layout("公開設定エラー", '<p class="error">プロフィールを公開できるのは、犬舎に所属している方または犬と連携済みのオーナー様です。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=403)
+        return HTMLResponse(family_layout("公開設定エラー", '<p class="error">プロフィールを公開できるのは、犬舎に所属している方または犬と連携済みのオーナー様です。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=403)
     profile.nickname = nickname.strip() or None
     profile.prefecture = prefecture or None
     profile.bio = bio.strip() or None
@@ -2725,7 +2742,7 @@ def family_member_list(user: User = Depends(require_user), session: Session = De
         cards += f'<a class="module" href="/family/members/{profile.public_id}">{photo}<h3>{html.escape(title)}</h3><p>{html.escape(location)}</p></a>'
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYメンバー</h1>
     <p>プロフィール公開に同意したメンバーだけを表示しています。</p><div class="grid">{cards or '<p>公開プロフィールはまだありません。</p>'}</div>'''
-    return layout("FAMILYメンバー", body, user)
+    return family_layout("FAMILYメンバー", body, user, session)
 
 
 def family_ancestor_depths(session: Session, dog: Dog, max_depth: int = 3) -> dict[int, int]:
@@ -2775,7 +2792,7 @@ def family_relationship(session: Session, source: Dog, candidate: Dog) -> tuple[
 def family_member_detail(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
     profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True)))
     if not profile:
-        return HTMLResponse(layout("非公開プロフィール", '<h1>プロフィールは非公開です</h1><p>現在、このプロフィールは公開されていません。</p><a class="button secondary" href="/family/members">戻る</a>', user), status_code=404)
+        return HTMLResponse(family_layout("非公開プロフィール", '<h1>プロフィールは非公開です</h1><p>現在、このプロフィールは公開されていません。</p><a class="button secondary" href="/family/members">戻る</a>', user, session), status_code=404)
     title = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
     photo = f'<img src="/family/members/{profile.public_id}/photo" alt="プロフィール写真" style="width:180px;height:180px;object-fit:cover;border-radius:50%;border:5px solid #ead0d5">' if profile.show_photo and profile.photo_data else ""
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
@@ -2849,7 +2866,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
             relatives_section = '<h2>同腹兄弟・親戚犬</h2><p>現在、公開中のFAMILYメンバーには該当する犬がいません。</p>'
     body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}{relatives_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
-    return layout(f"{title}｜FAMILY", body, user)
+    return family_layout(f"{title}｜FAMILY", body, user, session)
 
 
 @app.get("/family/members/{public_id}/photo")
@@ -2973,7 +2990,7 @@ def family_invite_page(raw_token: str, viewer: User | None = Depends(current_use
         form = f'<p>{html.escape(invitation.email)} でオーナーアカウントを作成します。</p><label>お名前</label><input name="name" required maxlength="100"><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>登録して招待を受け取る</button>'
     body = f'''<h1>{html.escape(tenant.name)}からのご招待</h1><div class="tenant"><h2>{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統書名未登録")}</p></div>
     <form method="post" action="/family/invite/{html.escape(raw_token)}/accept">{form}</form>'''
-    return layout("オーナー登録のご案内", body, viewer)
+    return family_layout("オーナー登録のご案内", body, viewer, session) if viewer else layout("オーナー登録のご案内", body)
 
 
 @app.post("/family/invite/{raw_token}/accept")
@@ -2983,7 +3000,7 @@ def family_invite_accept(raw_token: str, request: Request, name: str = Form(""),
         return HTMLResponse(layout("招待URLエラー", '<p class="error">この招待URLは期限切れ、使用済み、または取り消されています。</p>'), status_code=400)
     owner = viewer
     if owner and owner.email != invitation.email:
-        return HTMLResponse(layout("アカウントエラー", '<p class="error">招待先とは異なるアカウントでログインしています。</p>', owner), status_code=403)
+        return HTMLResponse(family_layout("アカウントエラー", '<p class="error">招待先とは異なるアカウントでログインしています。</p>', owner, session), status_code=403)
     if not owner:
         owner = session.scalar(select(User).where(User.email == invitation.email))
         if owner:
