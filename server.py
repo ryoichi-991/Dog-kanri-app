@@ -378,6 +378,24 @@ class FamilyTimelineCommentRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyTimelineReport(Base):
+    __tablename__ = "family_timeline_reports"
+    __table_args__ = (UniqueConstraint("reporter_id", "target_type", "target_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    reporter_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    album_item_id: Mapped[int] = mapped_column(ForeignKey("family_dog_album_items.id", ondelete="CASCADE"), index=True)
+    target_type: Mapped[str] = mapped_column(String(20), index=True)
+    target_id: Mapped[int] = mapped_column(Integer, index=True)
+    reason: Mapped[str] = mapped_column(String(30))
+    details: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="open", index=True)
+    admin_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    handled_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -776,6 +794,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
           <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
           <a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a>
+          <a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
@@ -4406,21 +4425,87 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
                FamilyTimelineComment.hidden_at.is_(None)).order_by(FamilyTimelineComment.created_at)
     ).all()
     comments = ""
+    reported_targets = {(report.target_type, report.target_id) for report in session.scalars(
+        select(FamilyTimelineReport).where(FamilyTimelineReport.reporter_id == user.id,
+                                           FamilyTimelineReport.album_item_id == item.id)).all()}
     for comment, comment_profile in comment_rows:
         comment_name = "あなた" if comment.user_id == user.id else (comment_profile.nickname if comment_profile and comment_profile.profile_public and comment_profile.show_nickname and comment_profile.nickname else "FAMILYメンバー")
         delete_form = f'''<form class="inline" method="post" action="/family/timeline/{item.id}/comments/{comment.id}/delete"><button class="secondary" style="padding:5px 9px">削除</button></form>''' if comment.user_id == user.id else ""
-        comments += f'''<div class="tenant" style="margin:10px 0;padding:12px"><p style="margin:0 0 5px"><strong>{html.escape(comment_name)}</strong> <small>{comment.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></p><p style="white-space:pre-wrap;margin:0">{html.escape(comment.body)}</p>{delete_form}</div>'''
+        report_link = (f'<a href="/family/timeline/{item.id}/report?target_type=comment&amp;target_id={comment.id}"><small>犬舎へ通報</small></a>' if ("comment", comment.id) not in reported_targets else '<small>通報受付済み</small>') if comment.user_id != user.id else ""
+        comments += f'''<div class="tenant" style="margin:10px 0;padding:12px"><p style="margin:0 0 5px"><strong>{html.escape(comment_name)}</strong> <small>{comment.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></p><p style="white-space:pre-wrap;margin:0">{html.escape(comment.body)}</p>{delete_form} {report_link}</div>'''
     comments = comments or '<p><small>最初のコメントを送りましょう。</small></p>'
     caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
+    photo_report = ""
+    if item.uploaded_by_id != user.id:
+        photo_report = '<small>犬舎へ通報済み</small>' if ("photo", item.id) in reported_targets else f'<a href="/family/timeline/{item.id}/report?target_type=photo&amp;target_id={item.id}"><small>この投稿を犬舎へ通報</small></a>'
     body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><article style="max-width:820px;margin:20px auto 0">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
     <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
     <span class="badge">{html.escape(visibility)}</span></div>
     <div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真"></div>
-    {caption}<p><small>撮影日：{taken}</small></p>
+    {caption}<p><small>撮影日：{taken}</small>　{photo_report}</p>
     <form class="inline" method="post" action="/family/timeline/{item.id}/like?return_to=detail"><button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}
     <section style="margin-top:25px"><h2>コメント</h2>{comments}<form method="post" action="/family/timeline/{item.id}/comments"><label>コメント（300文字まで）</label><textarea name="body" maxlength="300" required></textarea><button>コメントを送る</button></form><p><small>コメントは同じ写真を閲覧できるFAMILYに表示されます。不適切な内容は犬舎管理者が非表示にできます。</small></p></section></article>'''
     return family_layout(f"{dog.call_name}｜FAMILYタイムライン", body, user, session)
+
+
+TIMELINE_REPORT_REASONS = {
+    "harassment": "嫌がらせ・攻撃的な内容",
+    "privacy": "個人情報・プライバシー",
+    "inappropriate": "不適切な写真・表現",
+    "spam": "宣伝・迷惑行為",
+    "other": "その他",
+}
+
+
+def family_timeline_report_target(item_id: int, target_type: str, target_id: int, user: User, session: Session):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record or target_type not in {"photo", "comment"}:
+        raise HTTPException(status_code=404)
+    item, dog, tenant, _ = record
+    if target_type == "photo":
+        if target_id != item.id or item.uploaded_by_id == user.id:
+            raise HTTPException(status_code=404)
+    else:
+        comment = session.scalar(select(FamilyTimelineComment).where(
+            FamilyTimelineComment.id == target_id, FamilyTimelineComment.album_item_id == item.id,
+            FamilyTimelineComment.deleted_at.is_(None), FamilyTimelineComment.hidden_at.is_(None)))
+        if not comment or comment.user_id == user.id:
+            raise HTTPException(status_code=404)
+    return item, dog, tenant
+
+
+@app.get("/family/timeline/{item_id}/report", response_class=HTMLResponse)
+def family_timeline_report_page(item_id: int, target_type: str, target_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    _, dog, _ = family_timeline_report_target(item_id, target_type, target_id, user, session)
+    existing = session.scalar(select(FamilyTimelineReport).where(
+        FamilyTimelineReport.reporter_id == user.id, FamilyTimelineReport.target_type == target_type,
+        FamilyTimelineReport.target_id == target_id))
+    if existing:
+        body = f'''<a class="button secondary" href="/family/timeline/{item_id}">投稿へ戻る</a><h1>通報受付済み</h1><div class="tenant"><p>この内容は犬舎へ連絡済みです。確認と対応をお待ちください。</p></div>'''
+        return family_layout("通報受付済み｜FAMILY", body, user, session)
+    options = "".join(f'<option value="{key}">{label}</option>' for key, label in TIMELINE_REPORT_REASONS.items())
+    target_label = "投稿写真" if target_type == "photo" else "コメント"
+    body = f'''<a class="button secondary" href="/family/timeline/{item_id}">投稿へ戻る</a><h1>犬舎へ通報</h1>
+    <div class="tenant"><p><strong>{html.escape(dog.call_name)}の{target_label}</strong>について犬舎へ連絡します。</p><p>緊急性がある場合は、この機能だけでなく犬舎へ直接ご連絡ください。</p></div>
+    <form method="post" action="/family/timeline/{item_id}/report"><input type="hidden" name="target_type" value="{target_type}"><input type="hidden" name="target_id" value="{target_id}"><label>理由</label><select name="reason" required>{options}</select><label>詳しい状況（任意・500文字まで）</label><textarea name="details" maxlength="500"></textarea><button>犬舎へ通報する</button></form>'''
+    return family_layout("犬舎へ通報｜FAMILY", body, user, session)
+
+
+@app.post("/family/timeline/{item_id}/report")
+def family_timeline_report_create(item_id: int, target_type: str = Form(...), target_id: int = Form(...), reason: str = Form(...), details: str = Form(""), user: User = Depends(require_user), session: Session = Depends(db)):
+    item, _, tenant = family_timeline_report_target(item_id, target_type, target_id, user, session)
+    if reason not in TIMELINE_REPORT_REASONS:
+        raise HTTPException(status_code=400, detail="通報理由を選択してください")
+    existing = session.scalar(select(FamilyTimelineReport).where(
+        FamilyTimelineReport.reporter_id == user.id, FamilyTimelineReport.target_type == target_type,
+        FamilyTimelineReport.target_id == target_id))
+    if not existing:
+        session.add(FamilyTimelineReport(tenant_id=tenant.id, reporter_id=user.id, album_item_id=item.id,
+                                         target_type=target_type, target_id=target_id, reason=reason,
+                                         details=details.strip()[:500] or None))
+        session.commit()
+    return RedirectResponse(f"/family/timeline/{item_id}", status_code=303)
 
 
 @app.post("/family/timeline/{item_id}/like")
@@ -4526,6 +4611,57 @@ def family_timeline_comment_moderate(comment_id: int, action: str = Form(...), a
     comment.admin_note = admin_note.strip()[:500] or None
     session.commit()
     return RedirectResponse("/family/timeline/comments/manage", status_code=303)
+
+
+@app.get("/family/timeline/reports/manage", response_class=HTMLResponse)
+def family_timeline_reports_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    reports = session.execute(
+        select(FamilyTimelineReport, Dog).join(FamilyDogAlbumItem, FamilyDogAlbumItem.id == FamilyTimelineReport.album_item_id)
+        .join(Dog, Dog.id == FamilyDogAlbumItem.dog_id).where(FamilyTimelineReport.tenant_id == tenant.id)
+        .order_by(FamilyTimelineReport.status, FamilyTimelineReport.created_at.desc()).limit(300)
+    ).all()
+    cards = ""
+    for report, dog in reports:
+        reason = TIMELINE_REPORT_REASONS.get(report.reason, report.reason)
+        target = "投稿写真" if report.target_type == "photo" else "コメント"
+        status_label = {"open": "未対応", "reviewing": "確認中", "resolved": "対応済み", "dismissed": "対応不要"}.get(report.status, report.status)
+        if report.target_type == "photo":
+            target_preview = f'<div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/reports/manage/{report.id}/photo" alt="通報対象写真"></div>'
+        else:
+            reported_comment = session.get(FamilyTimelineComment, report.target_id)
+            target_preview = f'<div class="tenant"><strong>通報対象コメント原文</strong><p style="white-space:pre-wrap">{html.escape(reported_comment.body if reported_comment else "対象コメントは確認できません")}</p></div>'
+        cards += f'''<article class="tenant"><p><span class="badge">{status_label}</span> <strong>{html.escape(dog.call_name)}／{target}</strong></p>{target_preview}<p><strong>理由：</strong>{html.escape(reason)}</p><p style="white-space:pre-wrap">{html.escape(report.details or "詳細なし")}</p><p><small>通報者：{html.escape(family_message_name(report.reporter_id, session))} ／ {report.created_at.strftime('%Y-%m-%d %H:%M')}</small></p><form method="post" action="/family/timeline/reports/manage/{report.id}"><label>対応状況</label><select name="status"><option value="open" {'selected' if report.status == 'open' else ''}>未対応</option><option value="reviewing" {'selected' if report.status == 'reviewing' else ''}>確認中</option><option value="resolved" {'selected' if report.status == 'resolved' else ''}>対応済み</option><option value="dismissed" {'selected' if report.status == 'dismissed' else ''}>対応不要</option></select><label>管理メモ（利用者には表示されません）</label><textarea name="admin_note" maxlength="500">{html.escape(report.admin_note or '')}</textarea><button>対応内容を保存</button></form></article>'''
+    body = f'''<h1>タイムライン通報管理</h1><div class="tenant"><p>オーナー様から届いた写真・コメントへの通報です。対象内容を確認し、必要に応じてコメント管理から非表示にしてください。</p></div>{cards or '<p>通報はありません。</p>'}'''
+    return layout("タイムライン通報管理", body, user)
+
+
+@app.get("/family/timeline/reports/manage/{report_id}/photo")
+def family_timeline_report_photo(report_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    report = session.scalar(select(FamilyTimelineReport).where(FamilyTimelineReport.id == report_id,
+                                                                FamilyTimelineReport.tenant_id == tenant.id))
+    if not report:
+        raise HTTPException(status_code=404)
+    item = session.get(FamilyDogAlbumItem, report.album_item_id)
+    if not item:
+        raise HTTPException(status_code=404)
+    return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.post("/family/timeline/reports/manage/{report_id}")
+def family_timeline_report_update(report_id: int, status: str = Form(...), admin_note: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    report = session.scalar(select(FamilyTimelineReport).where(FamilyTimelineReport.id == report_id,
+                                                                FamilyTimelineReport.tenant_id == tenant.id))
+    if not report or status not in {"open", "reviewing", "resolved", "dismissed"}:
+        raise HTTPException(status_code=404)
+    report.status = status
+    report.admin_note = admin_note.strip()[:500] or None
+    report.handled_by_id = user.id
+    report.handled_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse("/family/timeline/reports/manage", status_code=303)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
