@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import csv
 import hashlib
 import html
@@ -727,6 +728,22 @@ class MobileApiToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SecuritySetting(Base):
+    __tablename__ = "security_settings"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AuthThrottle(Base):
+    __tablename__ = "auth_throttles"
+    key_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    failures: Mapped[int] = mapped_column(Integer, default=0)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class EmailDelivery(Base):
     __tablename__ = "email_deliveries"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -766,6 +783,41 @@ def normalize_email(value: str) -> str:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def auth_throttle_key(request: Request, scope: str, identity: str) -> str:
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    address = forwarded or (request.client.host if request.client else "unknown")
+    return hashlib.sha256(f"{scope}|{address}|{normalize_email(identity)}".encode()).hexdigest()
+
+
+def auth_throttle_blocked(key: str, session: Session) -> bool:
+    item = session.get(AuthThrottle, key)
+    if not item: return False
+    now = datetime.now(timezone.utc)
+    blocked = item.blocked_until
+    if blocked and (blocked if blocked.tzinfo else blocked.replace(tzinfo=timezone.utc)) > now:
+        return True
+    started = item.window_started_at if item.window_started_at.tzinfo else item.window_started_at.replace(tzinfo=timezone.utc)
+    if started < now - timedelta(minutes=15):
+        session.delete(item); session.commit()
+    return False
+
+
+def auth_throttle_failure(key: str, session: Session) -> None:
+    now = datetime.now(timezone.utc); item = session.get(AuthThrottle, key)
+    if not item:
+        item = AuthThrottle(key_hash=key, failures=0, window_started_at=now); session.add(item)
+    started = item.window_started_at if item.window_started_at.tzinfo else item.window_started_at.replace(tzinfo=timezone.utc)
+    if started < now - timedelta(minutes=15): item.failures, item.window_started_at = 0, now
+    item.failures += 1; item.updated_at = now
+    if item.failures >= 5: item.blocked_until = now + timedelta(minutes=15)
+    session.commit()
+
+
+def auth_throttle_success(key: str, session: Session) -> None:
+    item = session.get(AuthThrottle, key)
+    if item: session.delete(item); session.commit()
 
 
 def smtp_ready() -> bool:
@@ -827,8 +879,37 @@ def email_notification_allowed(user: User, category: str, session: Session) -> b
     return bool(setting.email_enabled and getattr(setting, category, False))
 
 
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "")
+
+
+def ensure_vapid_keys(session: Session) -> None:
+    """環境変数がない場合だけ、DBへ永続化したP-256鍵を再利用する。"""
+    global VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT
+    if VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and VAPID_SUBJECT:
+        return
+    stored = {item.key: item.value for item in session.scalars(select(SecuritySetting).where(
+        SecuritySetting.key.in_(["vapid_public_key", "vapid_private_key", "vapid_subject"]))).all()}
+    if not stored.get("vapid_public_key") or not stored.get("vapid_private_key"):
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        private = ec.generate_private_key(ec.SECP256R1())
+        private_der = private.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        public_point = private.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        stored["vapid_private_key"] = base64.urlsafe_b64encode(private_der).decode("ascii")
+        stored["vapid_public_key"] = base64.urlsafe_b64encode(public_point).rstrip(b"=").decode("ascii")
+    stored.setdefault("vapid_subject", f'mailto:{os.environ.get("SMTP_FROM_EMAIL", "admin@benefit-navi.com")}')
+    for key, value in stored.items():
+        item = session.get(SecuritySetting, key)
+        if item: item.value, item.updated_at = value, datetime.now(timezone.utc)
+        else: session.add(SecuritySetting(key=key, value=value))
+    session.commit()
+    VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT = stored["vapid_public_key"], stored["vapid_private_key"], stored["vapid_subject"]
+
+
 def push_ready() -> bool:
-    return bool(os.environ.get("VAPID_PUBLIC_KEY") and os.environ.get("VAPID_PRIVATE_KEY") and os.environ.get("VAPID_SUBJECT"))
+    return bool(VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY and VAPID_SUBJECT)
 
 
 def send_web_push(user_id: int, category: str, title: str, body: str, url: str, dedupe_key: str, session: Session) -> int:
@@ -851,8 +932,8 @@ def send_web_push(user_id: int, category: str, title: str, body: str, url: str, 
     for subscription in subscriptions:
         try:
             webpush(subscription_info={"endpoint": subscription.endpoint, "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth}},
-                    data=payload, vapid_private_key=os.environ["VAPID_PRIVATE_KEY"],
-                    vapid_claims={"sub": os.environ["VAPID_SUBJECT"]}, ttl=86400)
+                    data=payload, vapid_private_key=VAPID_PRIVATE_KEY,
+                    vapid_claims={"sub": VAPID_SUBJECT}, ttl=86400)
             subscription.last_success_at = datetime.now(timezone.utc); sent += 1
         except Exception as exc:
             response = getattr(exc, "response", None)
@@ -1020,6 +1101,23 @@ def db_now() -> str:
 app = FastAPI(title="Dog-kanri-app")
 
 
+@app.middleware("http")
+async def security_headers_and_origin(request: Request, call_next):
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith("/api/v1/"):
+        site = request.headers.get("sec-fetch-site", "")
+        origin = request.headers.get("origin")
+        expected_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        if site == "cross-site" or (origin and expected_host and origin.split("://", 1)[-1].rstrip("/") != expected_host):
+            return JSONResponse({"detail": "安全のため、この操作を受け付けませんでした"}, status_code=403)
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+    return response
+
+
 @app.on_event("startup")
 def startup():
     # 既存DBへ安全に列を追加してから、新テーブルを作る。
@@ -1071,6 +1169,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
     with SessionLocal() as session:
+        ensure_vapid_keys(session)
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
             legacy = session.scalar(select(User).where(User.role == Role.admin).order_by(User.id).limit(1))
@@ -1192,10 +1291,15 @@ def login_page(registered: int = 0, setup: int = 0):
 
 
 @app.post("/login")
-def login(email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
+def login(request: Request, email: str = Form(...), password: str = Form(...), session: Session = Depends(db)):
+    throttle_key = auth_throttle_key(request, "web-login", email)
+    if auth_throttle_blocked(throttle_key, session):
+        return HTMLResponse(layout("ログイン", '<p class="error">ログイン試行が多いため、15分後にもう一度お試しください。</p><a href="/login">戻る</a>'), status_code=429)
     user = session.scalar(select(User).where(User.email == normalize_email(email)))
     if not user or not user.active or not passwords.verify(password, user.password_hash):
-        return HTMLResponse(layout("ログイン", '<p class="error">メールアドレスまたはパスワードが違います。</p><a href="/login">戻る</a>'))
+        auth_throttle_failure(throttle_key, session)
+        return HTMLResponse(layout("ログイン", '<p class="error">メールアドレスまたはパスワードが違います。</p><a href="/login">戻る</a>'), status_code=401)
+    auth_throttle_success(throttle_key, session)
     raw = secrets.token_urlsafe(32)
     session.add(LoginSession(token_hash=token_hash(raw), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)))
     session.commit()
@@ -1213,7 +1317,11 @@ def forgot_password_page():
 
 
 @app.post("/forgot-password", response_class=HTMLResponse)
-def forgot_password_request(email: str = Form(...), session: Session = Depends(db)):
+def forgot_password_request(request: Request, email: str = Form(...), session: Session = Depends(db)):
+    throttle_key = auth_throttle_key(request, "forgot-password", email)
+    if auth_throttle_blocked(throttle_key, session):
+        return layout("受付完了", '<h1>受付しました</h1><p>登録状況にかかわらず、安全のため同じ案内を表示しています。</p><p><a href="/login">ログインへ戻る</a></p>')
+    auth_throttle_failure(throttle_key, session)
     account = session.scalar(select(User).where(func.lower(User.email) == normalize_email(email), User.active.is_(True)))
     if account:
         recent = session.scalar(select(PasswordResetRequest).where(
@@ -3295,8 +3403,8 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
     <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
     <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
     <label><input style="width:auto" type="checkbox" name="anniversaries" value="true" {checked(setting.anniversaries)}> 誕生日・お迎え記念日（7日前・前日・当日）</label>
-    <button>通知設定を保存</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>
-    <script>const vapid={json.dumps(os.environ.get("VAPID_PUBLIC_KEY", ""))};function b64(s){{const p='='.repeat((4-s.length%4)%4),v=(s+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(v);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))}}
+    <button>通知設定を保存</button></form><form method="post" action="/family/push-test"><button class="secondary">この端末へテスト通知を送る</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>
+    <script>const vapid={json.dumps(VAPID_PUBLIC_KEY)};function b64(s){{const p='='.repeat((4-s.length%4)%4),v=(s+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(v);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))}}
     document.getElementById('push-register').onclick=async()=>{{const state=document.getElementById('push-state');try{{if(!vapid)throw new Error('通知サーバーの設定準備中です');const reg=await navigator.serviceWorker.register('/family-push-worker.js');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('ブラウザで通知が許可されませんでした');const sub=await reg.pushManager.subscribe({{userVisibleOnly:true,applicationServerKey:b64(vapid)}});const res=await fetch('/family/push-subscriptions',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(sub)}});if(!res.ok)throw new Error('端末登録に失敗しました');state.textContent='通知端末を登録しました';}}catch(e){{state.textContent=e.message}}}};</script>'''
     return family_layout("通知設定｜FAMILY", body, user, session)
 
@@ -3333,6 +3441,16 @@ async def family_push_subscription_create(request: Request, user: User = Depends
     setting = family_notification_setting(user, session); setting.push_enabled = True
     session.commit()
     return JSONResponse({"ok": True})
+
+
+@app.post("/family/push-test", response_class=HTMLResponse)
+def family_push_test(user: User = Depends(require_user), session: Session = Depends(db)):
+    key = f"push:test:{user.id}:{datetime.now(timezone.utc).isoformat()}"
+    sent = send_web_push(user.id, "messages", "ESTRELLA FAMILY テスト通知", "ブラウザ通知は正常に設定されています。", "/family/notifications", key, session)
+    session.commit()
+    if not sent:
+        return HTMLResponse(family_layout("通知テスト｜FAMILY", '<h1>通知を送信できませんでした</h1><p class="error">先に「ブラウザ通知を許可する」を押し、新着メッセージとプッシュ通知をオンにして保存してください。</p><a class="button secondary" href="/family/notification-settings">通知設定へ戻る</a>', user, session), status_code=400)
+    return family_layout("通知テスト｜FAMILY", '<h1>テスト通知を送信しました</h1><p>この端末に通知が表示されることをご確認ください。</p><a class="button secondary" href="/family/notification-settings">通知設定へ戻る</a>', user, session)
 
 
 def next_family_anniversary(month: int, day: int, today: date) -> date:
@@ -5391,14 +5509,17 @@ def family_backups_manage(access=Depends(require_tenant_admin), session: Session
         .where(FamilyBackupAudit.tenant_id == tenant.id).order_by(FamilyBackupAudit.created_at.desc()).limit(50)).all()
     rows = "".join(f'<tr><td>{audit.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(actor.name)}</td><td>{audit.record_count}</td><td>{html.escape(audit.format.upper())}</td></tr>' for audit, actor in records)
     body = f'''<h1>FAMILYデータ出力・バックアップ</h1><div class="tenant"><p>選択中の犬舎に属するオーナー連携、愛犬、投稿、同意、監査履歴をZIPにまとめます。パスワードやログイントークンは含みません。</p></div>
-    <p><a class="button success" href="/family/backups/download">ZIPバックアップを作成・ダウンロード</a></p>
+    <form method="post" action="/family/backups/download"><label>安全確認のため管理者パスワードを入力</label><input type="password" name="admin_password" required autocomplete="current-password">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 個人情報を含むファイルとして安全に保管します</label><button class="success">ZIPバックアップを作成・ダウンロード</button></form>
     <h2>出力履歴</h2><table><tr><th>日時</th><th>実行者</th><th>レコード数</th><th>形式</th></tr>{rows or '<tr><td colspan="4">出力履歴はありません。</td></tr>'}</table>'''
     return layout("FAMILYデータ出力", body, user)
 
 
-@app.get("/family/backups/download")
-def family_backup_download(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+@app.post("/family/backups/download")
+def family_backup_download(admin_password: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
+    if not confirmed or not passwords.verify(admin_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="管理者パスワードまたは確認項目を確認してください")
     ownerships = session.scalars(select(DogOwnership).where(DogOwnership.tenant_id == tenant.id)).all()
     owner_ids = sorted({item.user_id for item in ownerships})
     owners = session.scalars(select(User).where(User.id.in_(owner_ids)).order_by(User.id)).all() if owner_ids else []
@@ -5452,9 +5573,14 @@ def require_mobile_user(authorization: str | None = Header(None), session: Sessi
 async def mobile_auth_token(request: Request, session: Session = Depends(db)):
     payload = await request.json()
     email, password = normalize_email(str(payload.get("email", ""))), str(payload.get("password", ""))
+    throttle_key = auth_throttle_key(request, "mobile-login", email)
+    if auth_throttle_blocked(throttle_key, session):
+        raise HTTPException(status_code=429, detail="ログイン試行が多いため、15分後にもう一度お試しください")
     user = session.scalar(select(User).where(User.email == email, User.active.is_(True)))
     if not user or not password or not passwords.verify(password, user.password_hash):
+        auth_throttle_failure(throttle_key, session)
         raise HTTPException(status_code=401, detail="メールアドレスまたはパスワードが違います")
+    auth_throttle_success(throttle_key, session)
     raw = secrets.token_urlsafe(48)
     token = MobileApiToken(user_id=user.id, token_hash=token_hash(raw), device_name=str(payload.get("device_name", "スマートフォン"))[:100] or "スマートフォン",
         expires_at=datetime.now(timezone.utc) + timedelta(days=90))
@@ -6109,7 +6235,7 @@ def membership_add(email: str = Form(...), role: Role = Form(...), access=Depend
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "push_ready": push_ready(), "email_ready": smtp_ready(), "api_version": "v1"}
 
 
 app.mount("/mcp", mcp.sse_app(mount_path="/mcp"))
