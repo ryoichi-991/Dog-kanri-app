@@ -476,7 +476,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -2617,7 +2617,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <p><a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -3131,6 +3131,68 @@ def family_kennel_page(user: User = Depends(require_user), session: Session = De
     <p>血縁にかかわらず、同じ犬舎から愛犬を迎えたFAMILY同士がつながるページです。公開を許可したプロフィールと愛犬だけを表示します。</p>{sections}
     <p><small>表示内容は各オーナー様の公開プロフィール設定に従います。</small></p>'''
     return family_layout("犬舎FAMILY会｜FAMILY", body, user, session)
+
+
+def family_timeline_items(user: User, session: Session) -> dict[int, tuple[FamilyDogAlbumItem, Dog, Tenant, OwnerProfile]]:
+    """閲覧者に公開できる成長アルバム投稿を返す。"""
+    source_dogs = session.scalars(
+        select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True))
+    ).all()
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    records = session.execute(
+        select(FamilyDogAlbumItem, Dog, Tenant, OwnerProfile)
+        .join(Dog, Dog.id == FamilyDogAlbumItem.dog_id).join(Tenant, Tenant.id == Dog.tenant_id)
+        .join(OwnerProfile, OwnerProfile.user_id == FamilyDogAlbumItem.uploaded_by_id)
+        .where(FamilyDogAlbumItem.visibility.in_(["family", "relatives"]), Dog.active.is_(True),
+               Tenant.active.is_(True), Tenant.deleted.is_(False), OwnerProfile.profile_public.is_(True),
+               OwnerProfile.show_dogs.is_(True))
+        .order_by(FamilyDogAlbumItem.created_at.desc()).limit(200)
+    ).all()
+    visible: dict[int, tuple[FamilyDogAlbumItem, Dog, Tenant, OwnerProfile]] = {}
+    for item, dog, tenant, profile in records:
+        allowed = item.uploaded_by_id == user.id
+        if item.visibility == "family" and dog.tenant_id in tenant_ids:
+            allowed = True
+        if item.visibility == "relatives" and any(family_relationship(session, source, dog) for source in source_dogs):
+            allowed = True
+        if allowed:
+            visible[item.id] = (item, dog, tenant, profile)
+    return visible
+
+
+@app.get("/family/timeline", response_class=HTMLResponse)
+def family_timeline(user: User = Depends(require_user), session: Session = Depends(db)):
+    visible = family_timeline_items(user, session)
+    posts = ""
+    for item, dog, tenant, profile in list(visible.values())[:50]:
+        owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+        taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
+        visibility = "同じ犬舎のFAMILYに公開" if item.visibility == "family" else "兄弟・親戚犬に公開"
+        caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
+        posts += f'''<article class="tenant" style="max-width:760px;margin:0 auto 22px">
+        <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
+        <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
+        <span class="badge">{html.escape(visibility)}</span></div>
+        <a href="/family/timeline/{item.id}/photo" target="_blank" style="display:flex;align-items:center;justify-content:center;min-height:240px;max-height:520px;background:#fff;border-radius:14px;overflow:hidden;margin-top:12px">
+        <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" style="display:block;max-width:100%;max-height:520px;width:auto;height:auto;object-fit:contain"></a>
+        {caption}<p><small>撮影日：{taken}</small></p></article>'''
+    if not posts:
+        posts = '''<div class="tenant"><p>タイムラインに表示できる写真はまだありません。</p>
+        <p>「うちの子」から愛犬を開き、成長アルバムへ写真を追加してください。公開範囲を「同じ犬舎のFAMILY」または「兄弟・親戚犬」にすると表示されます。</p></div>'''
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYタイムライン</h1>
+    <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。</p>{posts}
+    <p><small>「自分だけ」に設定した写真はタイムラインには表示されません。</small></p>'''
+    return family_layout("FAMILYタイムライン", body, user, session)
+
+
+@app.get("/family/timeline/{item_id}/photo")
+def family_timeline_photo(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record:
+        raise HTTPException(status_code=404)
+    item = record[0]
+    return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
