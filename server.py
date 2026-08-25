@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import html
 import json
@@ -1097,6 +1098,68 @@ def jkc_slot_text(image: Image.Image) -> str:
     return "\n".join(results)
 
 
+def imported_dog_certificate_text(image: Image.Image, full_text: str) -> str:
+    """JKC輸入犬登録証明書は父母だけの書式なので、15欄OCRを実行しない。"""
+    upper = full_text.upper().replace("°", "’").replace("*", "’")
+    metadata: dict[str, str] = {"organization": "JKC", "country": "日本"}
+    jkc = re.search(r"JKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z1I]))?", upper)
+    if jkc:
+        suffix = jkc.group(4)
+        suffix = "I" if suffix == "1" else suffix
+        metadata["pedigree_no"] = f"JKC-{jkc.group(1)}-{jkc.group(2)}/{jkc.group(3)}" + (f"-{suffix}" if suffix else "")
+    width, height = image.size
+    identity_crop = image.crop((int(width * .25), int(height * .30), int(width * .78), int(height * .40)))
+    identity_crop = identity_crop.resize((identity_crop.width * 3, identity_crop.height * 3), Image.Resampling.LANCZOS)
+    identity_text = pytesseract.image_to_string(identity_crop, lang="eng", config="--psm 6", timeout=30).upper()
+    chip = re.search(r"\b(?:ID|1D)\s*([0-9]{15})\b", identity_text) or re.search(r"\b(?:ID|1D)\s*([0-9]{15})\b", upper)
+    if chip:
+        metadata["microchip_no"] = chip.group(1)
+    breed = re.search(r"\bMINIATURE\s+SCHNAUZER\b", upper)
+    if breed:
+        metadata["breed"] = "MINIATURE SCHNAUZER"
+    if re.search(r"\b(?:FEMALE|REMALE|EMALE)\b", upper):
+        metadata["sex"] = "female"
+    elif re.search(r"\bMALE\b", upper):
+        metadata["sex"] = "male"
+    birth = re.search(r"(20\d{2})\s*(?:年|4[A-Z0-9]?)?\s*(1[0-2]|[1-9])\s*(?:月|A)?\s*(3[01]|[12]\d|[1-9])\s*(?:日|H)?", full_text, re.IGNORECASE)
+    if birth:
+        try:
+            metadata["birth_date"] = date(*map(int, birth.groups())).isoformat()
+        except ValueError:
+            pass
+    dog_name = ""
+    name_match = re.search(r"(?:CH\s*\([^\n)]{2,6}\)\s*)?\n?\s*([A-Z][A-Z0-9'’ .-]{5,80})\s*\n\s*(?:BREED|Breed)", upper, re.IGNORECASE)
+    if name_match:
+        dog_name = name_match.group(1).strip(" .-")
+    if not dog_name:
+        name_match = re.search(r"(?:PLASMA|[A-Z]{3,})[- ][A-Z0-9'’ -]{3,}\b", upper)
+        dog_name = name_match.group(0).strip(" .-") if name_match else ""
+    dog_name = re.sub(r"\bJP\s*[°*'`´’‘]\s*S\b", "JP’S", dog_name)
+    dog_name = re.sub(r"\bMS\s*[°*'`´’‘]\s*S\b", "MS’S", dog_name)
+    root_titles = extract_title_keys(upper.split(dog_name, 1)[0][-100:] if dog_name and dog_name in upper else "")
+
+    def parent_after(label: str) -> tuple[str, list[str], str]:
+        end_label = "DAM" if label == "SIRE" else "JAPAN KENNEL CLUB"
+        section_match = re.search(rf"\b{label}\b([\s\S]*?)(?=\b{end_label}\b)", upper)
+        section = section_match.group(1) if section_match else ""
+        match = re.search(r"([A-Z][A-Z0-9'’ .-]{5,80})\s*\n\s*KATH\d+", section)
+        if not match:
+            return "", [], ""
+        name = re.sub(r"\bMS\s*[°*'`´’‘]\s*S\b", "MS’S", match.group(1).strip(" .-"))
+        context = section[:match.start(1)]
+        color_match = re.search(r"\b(?:BLK|BLACK|SLT\s+PPR|BLK\s+SLVR)\b", section[match.end():])
+        return name, extract_title_keys(context), normalize_pedigree_color(color_match.group(0) if color_match else "")
+
+    results = [f"[[PEDIGREE_META]] {json.dumps(metadata, ensure_ascii=False)}"]
+    if dog_name:
+        results.append(f"[[PEDIGREE_SLOT_0]] {dog_name} || {','.join(root_titles)} || {normalize_pedigree_color(upper)}")
+    for index, label in ((1, "SIRE"), (2, "DAM")):
+        name, titles, color = parent_after(label)
+        if name:
+            results.append(f"[[PEDIGREE_SLOT_{index}]] {name} || {','.join(titles)} || {color}")
+    return "\n".join(results)
+
+
 def extract_pedigree_text(path: Path, content_type: str) -> str:
     """PDFまたは写真から文字を抽出する。スキャンPDFは1ページ目を画像化してOCRする。"""
     if content_type == "application/pdf" or path.suffix.lower() == ".pdf":
@@ -1120,7 +1183,9 @@ def extract_pedigree_text(path: Path, content_type: str) -> str:
     with Image.open(image_path) as source:
         image = ImageOps.exif_transpose(source).convert("RGB")
         full_text = ocr_image(image, psm=11)
-        if re.search(r"JAPAN\s+KENNEL\s+CLUB|JKC[-— ]?MS", full_text, re.IGNORECASE):
+        if re.search(r"REGISTRATION\s+CERTIFICATE\s+FOR\s+IMPORTED\s+DOG|輸入犬登録証明書", full_text, re.IGNORECASE):
+            full_text += "\n" + imported_dog_certificate_text(image, full_text)
+        elif re.search(r"JAPAN\s+KENNEL\s+CLUB|JKC[-— ]?MS", full_text, re.IGNORECASE):
             full_text += "\n" + jkc_slot_text(image)
         return full_text
 
@@ -1142,6 +1207,9 @@ def pedigree_document_metadata(raw_text: str, metadata: dict[str, str]) -> dict[
     kath = re.search(r"\bKATH\s*[- ]?\s*(\d{7,12})\b", upper)
     jkc = re.search(r"\bJKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z]))?", upper)
     jkc_no = f"JKC-{jkc.group(1)}-{jkc.group(2)}/{jkc.group(3)}" + (f"-{jkc.group(4)}" if jkc and jkc.group(4) else "") if jkc else ""
+    trusted_jkc = metadata.get("pedigree_no", "")
+    if trusted_jkc.upper().startswith("JKC-") and (not jkc_no or len(trusted_jkc) > len(jkc_no)):
+        jkc_no = trusted_jkc
     kath_no = f"KATH{kath.group(1)}" if kath else ""
     if is_import:
         return {"type": "import_registration", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": "JKC", "country": "日本", "domestic_no": jkc_no, "origin_no": kath_no, "origin_country": "タイ", "origin_organization": "KCTH", "primary": "true"}
@@ -1410,7 +1478,9 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
         with tempfile.TemporaryDirectory(prefix="pedigree-") as tmp:
             source = Path(tmp) / f"source{suffix}"
             source.write_bytes(content)
-            raw_text = extract_pedigree_text(source, pedigree_file.content_type or "")
+            # OCRはCPU負荷が高いためイベントループ外で実行し、処理中も
+            # ヘルスチェックや他画面へのアクセスを止めない。
+            raw_text = await asyncio.to_thread(extract_pedigree_text, source, pedigree_file.content_type or "")
         metadata, candidates, detected_titles, detected_colors = pedigree_candidates(raw_text)
         document_metadata = pedigree_document_metadata(raw_text, metadata)
     except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
