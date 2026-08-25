@@ -42,6 +42,9 @@ class Phase6StaticTests(unittest.TestCase):
         home = SOURCE[SOURCE.index("def family_home"):SOURCE.index("def family_notifications")]
         for path in ("/family/notifications", "/family/messages", "/family/announcements", "/family/timeline"):
             self.assertNotIn(f'href="{path}"', home)
+        self.assertIn('class="family-home-card"', home)
+        self.assertIn('class="family-home-photo"', home)
+        self.assertIn('class="family-home-info"', home)
 
 
 if __name__ == "__main__":

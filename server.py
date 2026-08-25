@@ -1098,9 +1098,10 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
 .nav-count{{display:inline-grid;place-items:center;min-width:19px;height:19px;margin-left:4px;padding:0 5px;border-radius:10px;background:#fff;color:var(--wine);font-size:11px;font-weight:800}}.notification-item{{display:block;margin:12px 0;padding:18px;border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);text-decoration:none}}.notification-item.unread{{border-left:5px solid var(--rose);background:#fffafb}}.notification-item p{{margin:5px 0}}.notification-kind{{display:inline-block;margin-right:7px;color:var(--wine);font-size:12px;font-weight:750}}
 .timeline-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:22px 0}}.timeline-tile{{position:relative;display:block;aspect-ratio:1;overflow:hidden;background:#f1e7e9;color:#fff;text-decoration:none}}.timeline-tile img{{display:block;width:100%;height:100%;object-fit:cover;transition:transform .2s ease}}.timeline-tile:hover img{{transform:scale(1.025)}}.timeline-overlay{{position:absolute;inset:auto 0 0;padding:28px 10px 8px;background:linear-gradient(transparent,#2d1924cc);font-size:12px}}.timeline-overlay strong{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.timeline-stats{{display:flex;justify-content:space-between;gap:6px;margin-top:2px;font-size:11px}}
 .family-photo-stage{{width:100%;min-height:260px;max-height:70vh;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:18px;background:linear-gradient(145deg,#f7edef,#fff);border:1px solid var(--line);margin-bottom:18px}}.family-dog-photo{{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain}}.family-dog-thumb{{display:block;width:100%;height:190px;object-fit:contain;border-radius:12px;margin-bottom:12px;background:#f7edef}}
+.family-home-grid{{display:grid;gap:18px;margin-top:18px}}.family-home-card{{display:grid;grid-template-columns:minmax(260px,340px) 1fr;min-height:260px;padding:0;overflow:hidden;border:1px solid var(--line);border-radius:18px;text-decoration:none;color:var(--ink);background:#fff;box-shadow:0 8px 24px #7044540d;transition:.2s}}.family-home-card:hover{{transform:translateY(-2px);border-color:#d6a7af;box-shadow:0 12px 28px #70445418}}.family-home-photo{{display:flex;align-items:center;justify-content:center;min-height:260px;padding:14px;background:linear-gradient(145deg,#f3e7e9,#fbf5f4)}}.family-home-photo img{{display:block;width:100%;height:232px;object-fit:contain;border-radius:12px}}.family-home-photo-empty{{font-family:Georgia,serif;font-size:72px;color:#c59aa3}}.family-home-info{{display:flex;flex-direction:column;justify-content:center;padding:30px 34px}}.family-home-info h3{{margin:0 0 12px;font-size:25px;color:var(--wine)}}.family-home-info p{{margin:5px 0;color:var(--muted)}}.family-home-info .registered-name{{color:var(--ink);font-weight:650}}.family-home-info .badge{{align-self:flex-start;margin-top:12px}}.family-home-more{{margin-top:18px;color:var(--rose);font-weight:700}}
 .album-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;margin:18px 0}}.album-item{{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}}.album-item a{{display:flex;height:210px;align-items:center;justify-content:center;background:#f7edef}}.album-item img{{display:block;max-width:100%;max-height:210px;width:auto;height:auto;object-fit:contain}}.album-meta{{padding:13px}}.album-meta p{{margin:5px 0}}.album-meta form button{{margin-top:8px}}
 @media(max-width:950px){{.timeline-grid{{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}}}}
-@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}.timeline-grid{{gap:3px;margin-left:-10px;margin-right:-10px}}.timeline-overlay{{padding:20px 6px 5px;font-size:10px}}.timeline-stats{{font-size:9px}}}}
+@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}.family-home-card{{grid-template-columns:1fr}}.family-home-photo{{min-height:220px}}.family-home-photo img{{height:220px}}.family-home-info{{padding:22px}}.family-home-info h3{{font-size:22px}}.timeline-grid{{gap:3px;margin-left:-10px;margin-right:-10px}}.timeline-overlay{{padding:20px 6px 5px;font-size:10px}}.timeline-stats{{font-size:9px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
@@ -3341,20 +3342,20 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         sex = {"male": "牡", "female": "牝"}.get(dog.sex, dog.sex)
         relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
         family_profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog.id))
-        photo = f'<img class="family-dog-thumb" src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}">' if family_profile and family_profile.photo_data else ''
-        cards += f'''<a class="module" href="/family/dogs/{dog.id}">
-          {photo}
-          <h3>{html.escape(dog.call_name)}</h3>
-          <p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
+        photo = f'<img src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}">' if family_profile and family_profile.photo_data else f'<span class="family-home-photo-empty">{html.escape(dog.call_name[:1])}</span>'
+        cards += f'''<a class="family-home-card" href="/family/dogs/{dog.id}">
+          <span class="family-home-photo">{photo}</span>
+          <span class="family-home-info"><h3>{html.escape(dog.call_name)}</h3>
+          <p class="registered-name">{html.escape(dog.registered_name or "血統書名未登録")}</p>
           <p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(sex)} ／ {html.escape(dog.color or "毛色未登録")}</p>
-          <p>{html.escape(tenant.name)}　<span class="badge">{relation}</span></p>
+          <p>{html.escape(tenant.name)}</p><span class="badge">{relation}</span><span class="family-home-more">プロフィールを見る →</span></span>
         </a>'''
     if not cards:
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
     <h2>うちの子</h2>
-    <div class="grid">{cards}</div>'''
+    <div class="family-home-grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
 
