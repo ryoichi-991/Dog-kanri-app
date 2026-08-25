@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -2864,6 +2865,12 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
     event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
     response_form = ""
     if announcement.event_date:
+        deadline = datetime(
+            announcement.event_date.year, announcement.event_date.month, announcement.event_date.day,
+            9, 0, tzinfo=ZoneInfo("Asia/Tokyo"),
+        ) - timedelta(days=1)
+        response_open = datetime.now(ZoneInfo("Asia/Tokyo")) < deadline
+        deadline_label = deadline.strftime("%Y年%m月%d日 午前9時")
         response = session.scalar(select(FamilyEventResponse).where(
             FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.user_id == user.id
         ))
@@ -2878,8 +2885,7 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
             for dog in owned_dogs
         ) or '<p><small>この犬舎と連携された愛犬はありません。</small></p>'
         current = {"attending": "参加", "maybe": "検討中", "declined": "不参加"}.get(response.status, "未回答") if response else "未回答"
-        response_form = f'''<section class="tenant"><h2 style="margin-top:0">イベント参加回答</h2><p>現在の回答：<span class="badge">{current}</span></p>
-        <form method="post" action="/family/announcements/view/{announcement.id}/response">
+        form = f'''<form method="post" action="/family/announcements/view/{announcement.id}/response">
         <label>参加について</label><select name="response_status" required>
         <option value="attending" {'selected' if response and response.status == 'attending' else ''}>参加します</option>
         <option value="maybe" {'selected' if response and response.status == 'maybe' else ''}>検討中</option>
@@ -2887,7 +2893,10 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
         <label>参加人数</label><input type="number" name="party_size" min="1" max="20" value="{response.party_size if response else 1}" required>
         <label>一緒に参加する愛犬</label><div>{dog_checks}</div>
         <label>犬舎への連絡事項（500文字まで）</label><textarea name="note" maxlength="500">{html.escape(response.note or '') if response else ''}</textarea>
-        <button>回答を保存する</button></form><p><small>回答は開催前まで何度でも変更できます。</small></p></section>'''
+        <button>回答を保存する</button></form>''' if response_open else '''<div class="tenant"><p><strong>回答受付は終了しました。</strong></p><p>変更が必要な場合は犬舎へ直接ご連絡ください。</p></div>'''
+        response_form = f'''<section class="tenant"><h2 style="margin-top:0">イベント参加回答</h2><p>現在の回答：<span class="badge">{current}</span></p>
+        <p><strong>回答期限：{deadline_label}</strong></p>{form}
+        <p><small>回答は原則、開催日の1日前の午前9時まで何度でも変更できます。</small></p></section>'''
     body = f'''<a class="button secondary" href="/family/announcements">お知らせ一覧へ戻る</a>
     <h1>{html.escape(announcement.title)}</h1><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime('%Y年%m月%d日')}掲載</small></p>
     {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>{response_form}'''
@@ -2907,6 +2916,12 @@ def family_event_response_save(
     )) if tenant_ids else None
     if not announcement:
         raise HTTPException(status_code=404, detail="回答できるイベントが見つかりません")
+    deadline = datetime(
+        announcement.event_date.year, announcement.event_date.month, announcement.event_date.day,
+        9, 0, tzinfo=ZoneInfo("Asia/Tokyo"),
+    ) - timedelta(days=1)
+    if datetime.now(ZoneInfo("Asia/Tokyo")) >= deadline:
+        raise HTTPException(status_code=403, detail="回答期限を過ぎています。変更が必要な場合は犬舎へ直接ご連絡ください")
     if response_status not in {"attending", "maybe", "declined"} or not 1 <= party_size <= 20 or len(note.strip()) > 500:
         raise HTTPException(status_code=400, detail="回答内容を確認してください")
     dogs = session.scalars(
