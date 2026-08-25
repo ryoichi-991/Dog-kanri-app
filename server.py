@@ -385,6 +385,59 @@ class FamilyAnnouncement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class FamilyConversation(Base):
+    __tablename__ = "family_conversations"
+    __table_args__ = (UniqueConstraint("tenant_id", "user1_id", "user2_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user1_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user2_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyMessage(Base):
+    __tablename__ = "family_messages"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("family_conversations.id", ondelete="CASCADE"), index=True)
+    sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    body: Mapped[str] = mapped_column(String(1000))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FamilyMessageRead(Base):
+    __tablename__ = "family_message_reads"
+    __table_args__ = (UniqueConstraint("conversation_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("family_conversations.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    last_read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyMessageBlock(Base):
+    __tablename__ = "family_message_blocks"
+    __table_args__ = (UniqueConstraint("tenant_id", "blocker_id", "blocked_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    blocker_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    blocked_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyMessageAudit(Base):
+    __tablename__ = "family_message_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    conversation_id: Mapped[int] = mapped_column(ForeignKey("family_conversations.id", ondelete="CASCADE"), index=True)
+    admin_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    action: Mapped[str] = mapped_column(String(50))
+    details: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class LegalDocument(Base):
     __tablename__ = "legal_documents"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -490,7 +543,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -520,6 +573,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <p class="nav-label">管理設定</p>
           <a href="/admin/users"><span>♙</span>ユーザー管理</a>
           <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
+          <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
           {platform_link}
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
@@ -2634,7 +2688,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <p><a class="button" href="/family/messages">メッセージ</a> <a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -3190,6 +3244,211 @@ def family_kennel_tenant_ids(user: User, session: Session) -> set[int]:
     return tenant_ids
 
 
+def family_message_name(user_id: int, session: Session) -> str:
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.user_id == user_id))
+    if profile and profile.profile_public and profile.show_nickname and profile.nickname:
+        return profile.nickname
+    return "FAMILYメンバー"
+
+
+def family_message_conversation(conversation_id: int, user: User, session: Session) -> FamilyConversation:
+    conversation = session.get(FamilyConversation, conversation_id)
+    if not conversation or user.id not in {conversation.user1_id, conversation.user2_id}:
+        raise HTTPException(status_code=404)
+    return conversation
+
+
+def family_message_blocked(conversation: FamilyConversation, session: Session) -> bool:
+    return session.scalar(
+        select(FamilyMessageBlock.id).where(
+            FamilyMessageBlock.tenant_id == conversation.tenant_id,
+            FamilyMessageBlock.blocker_id.in_([conversation.user1_id, conversation.user2_id]),
+            FamilyMessageBlock.blocked_id.in_([conversation.user1_id, conversation.user2_id]),
+        )
+    ) is not None
+
+
+FAMILY_MESSAGE_NOTICE = "安全管理およびトラブル対応のため、必要な場合に限り、犬舎管理者がメッセージ履歴を確認することがあります。"
+
+
+@app.get("/family/messages/manage", response_class=HTMLResponse)
+def family_messages_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    conversations = session.scalars(
+        select(FamilyConversation).where(FamilyConversation.tenant_id == tenant.id)
+        .order_by(FamilyConversation.created_at.desc())
+    ).all()
+    rows = ""
+    for conversation in conversations:
+        latest = session.scalar(select(FamilyMessage).where(FamilyMessage.conversation_id == conversation.id).order_by(FamilyMessage.sent_at.desc()))
+        preview = "メッセージなし" if not latest else ("送信取消済み" if latest.withdrawn_at else latest.body[:40])
+        rows += f'''<tr><td>{html.escape(family_message_name(conversation.user1_id, session))}</td>
+        <td>{html.escape(family_message_name(conversation.user2_id, session))}</td><td>{html.escape(preview)}</td>
+        <td>{"利用中" if conversation.active else "停止中"}</td><td><a class="button secondary" href="/family/messages/manage/{conversation.id}">履歴を確認</a></td></tr>'''
+    body = f'''<h1>FAMILYメッセージ管理</h1><div class="tenant"><p>{FAMILY_MESSAGE_NOTICE}</p>
+    <p>履歴を開いた操作も記録されます。原文は変更せず、不適切な投稿の非表示と管理メモのみ行えます。</p></div>
+    <table><tr><th>参加者1</th><th>参加者2</th><th>最新</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="5">会話はまだありません。</td></tr>'}</table>'''
+    return layout("FAMILYメッセージ管理", body, user)
+
+
+@app.get("/family/messages/manage/{conversation_id}", response_class=HTMLResponse)
+def family_messages_manage_detail(conversation_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    conversation = session.scalar(select(FamilyConversation).where(FamilyConversation.id == conversation_id, FamilyConversation.tenant_id == tenant.id))
+    if not conversation:
+        raise HTTPException(status_code=404)
+    session.add(FamilyMessageAudit(conversation_id=conversation.id, admin_user_id=user.id, action="view", details="管理者が履歴を閲覧"))
+    session.commit()
+    messages = session.scalars(select(FamilyMessage).where(FamilyMessage.conversation_id == conversation.id).order_by(FamilyMessage.sent_at)).all()
+    cards = ""
+    for message in messages:
+        states = " / ".join(value for value in ["送信取消済み" if message.withdrawn_at else "", "非表示" if message.hidden_at else ""] if value) or "表示中"
+        cards += f'''<article class="tenant"><p><strong>{html.escape(family_message_name(message.sender_id, session))}</strong>　{message.sent_at.strftime('%Y-%m-%d %H:%M')}　<span class="badge">{states}</span></p>
+        <p style="white-space:pre-wrap">{html.escape(message.body)}</p>
+        <form method="post" action="/family/messages/manage/{conversation.id}/messages/{message.id}/moderate">
+        <label>管理メモ</label><input name="admin_note" maxlength="500" value="{html.escape(message.admin_note or '')}">
+        <button name="action" value="{'unhide' if message.hidden_at else 'hide'}">{'再表示' if message.hidden_at else '利用者画面から非表示'}</button></form></article>'''
+    body = f'''<a class="button secondary" href="/family/messages/manage">一覧へ戻る</a><h1>メッセージ履歴</h1>
+    <p>{html.escape(family_message_name(conversation.user1_id, session))} ↔ {html.escape(family_message_name(conversation.user2_id, session))}</p>
+    <form method="post" action="/family/messages/manage/{conversation.id}/state"><button name="active" value="{'true' if not conversation.active else 'false'}">{'利用を再開' if not conversation.active else 'この会話を停止'}</button></form>{cards or '<p>メッセージはありません。</p>'}'''
+    return layout("メッセージ履歴", body, user)
+
+
+@app.post("/family/messages/manage/{conversation_id}/state")
+def family_messages_manage_state(conversation_id: int, active: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    conversation = session.scalar(select(FamilyConversation).where(FamilyConversation.id == conversation_id, FamilyConversation.tenant_id == tenant.id))
+    if not conversation:
+        raise HTTPException(status_code=404)
+    conversation.active = active == "true"
+    session.add(FamilyMessageAudit(conversation_id=conversation.id, admin_user_id=user.id, action="resume" if conversation.active else "suspend", details="会話状態を変更"))
+    session.commit()
+    return RedirectResponse(f"/family/messages/manage/{conversation.id}", status_code=303)
+
+
+@app.post("/family/messages/manage/{conversation_id}/messages/{message_id}/moderate")
+def family_message_moderate(conversation_id: int, message_id: int, action: str = Form(...), admin_note: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    conversation = session.scalar(select(FamilyConversation).where(FamilyConversation.id == conversation_id, FamilyConversation.tenant_id == tenant.id))
+    message = session.scalar(select(FamilyMessage).where(FamilyMessage.id == message_id, FamilyMessage.conversation_id == conversation_id))
+    if not conversation or not message or action not in {"hide", "unhide"}:
+        raise HTTPException(status_code=404)
+    message.hidden_at = datetime.now(timezone.utc) if action == "hide" else None
+    message.hidden_by_id = user.id if action == "hide" else None
+    message.admin_note = admin_note.strip()[:500] or None
+    session.add(FamilyMessageAudit(conversation_id=conversation.id, admin_user_id=user.id, action=action, details=f"message_id={message.id}"))
+    session.commit()
+    return RedirectResponse(f"/family/messages/manage/{conversation.id}", status_code=303)
+
+
+@app.get("/family/messages", response_class=HTMLResponse)
+def family_messages(user: User = Depends(require_user), session: Session = Depends(db)):
+    conversations = session.scalars(
+        select(FamilyConversation).where((FamilyConversation.user1_id == user.id) | (FamilyConversation.user2_id == user.id))
+        .order_by(FamilyConversation.created_at.desc())
+    ).all()
+    cards = ""
+    for conversation in conversations:
+        other_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
+        latest = session.scalar(select(FamilyMessage).where(FamilyMessage.conversation_id == conversation.id).order_by(FamilyMessage.sent_at.desc()))
+        read = session.scalar(select(FamilyMessageRead).where(FamilyMessageRead.conversation_id == conversation.id, FamilyMessageRead.user_id == user.id))
+        unread = bool(latest and latest.sender_id != user.id and (not read or latest.sent_at > read.last_read_at))
+        preview = "まだメッセージはありません" if not latest else ("送信が取り消されました" if latest.withdrawn_at else ("管理者により非表示" if latest.hidden_at else latest.body[:55]))
+        cards += f'''<a class="module" href="/family/messages/{conversation.id}"><h3>{html.escape(family_message_name(other_id, session))} {'<span class="badge">未読</span>' if unread else ''}</h3>
+        <p>{html.escape(preview)}</p><p><small>{'利用中' if conversation.active else '犬舎により停止中'}</small></p></a>'''
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>メッセージ</h1>
+    <div class="tenant"><p>{FAMILY_MESSAGE_NOTICE}</p><p>送信後の原文編集はできません。必要な場合は送信取消をご利用ください。</p></div>
+    <div class="grid">{cards or '<p>会話はまだありません。公開プロフィールの「メッセージを送る」から開始できます。</p>'}</div>'''
+    return family_layout("メッセージ｜FAMILY", body, user, session)
+
+
+@app.post("/family/messages/start/{public_id}")
+def family_message_start(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True)))
+    if not profile or profile.user_id == user.id:
+        raise HTTPException(status_code=400, detail="この相手とは会話を開始できません")
+    shared = family_kennel_tenant_ids(user, session) & family_kennel_tenant_ids(session.get(User, profile.user_id), session)
+    if not shared:
+        raise HTTPException(status_code=403, detail="同じ犬舎のFAMILY間でのみ利用できます")
+    tenant_id = sorted(shared)[0]
+    user1_id, user2_id = sorted([user.id, profile.user_id])
+    conversation = session.scalar(select(FamilyConversation).where(FamilyConversation.tenant_id == tenant_id, FamilyConversation.user1_id == user1_id, FamilyConversation.user2_id == user2_id))
+    if not conversation:
+        conversation = FamilyConversation(tenant_id=tenant_id, user1_id=user1_id, user2_id=user2_id)
+        session.add(conversation)
+        session.commit()
+        session.refresh(conversation)
+    return RedirectResponse(f"/family/messages/{conversation.id}", status_code=303)
+
+
+@app.get("/family/messages/{conversation_id}", response_class=HTMLResponse)
+def family_message_detail(conversation_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    conversation = family_message_conversation(conversation_id, user, session)
+    other_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
+    read = session.scalar(select(FamilyMessageRead).where(FamilyMessageRead.conversation_id == conversation.id, FamilyMessageRead.user_id == user.id))
+    if read:
+        read.last_read_at = datetime.now(timezone.utc)
+    else:
+        session.add(FamilyMessageRead(conversation_id=conversation.id, user_id=user.id))
+    session.commit()
+    messages = session.scalars(select(FamilyMessage).where(FamilyMessage.conversation_id == conversation.id).order_by(FamilyMessage.sent_at)).all()
+    cards = ""
+    for message in messages:
+        mine = message.sender_id == user.id
+        if message.hidden_at:
+            content = "管理者により非表示になりました"
+        elif message.withdrawn_at:
+            content = "送信が取り消されました"
+        else:
+            content = html.escape(message.body)
+        withdraw = f'<form method="post" action="/family/messages/{conversation.id}/{message.id}/withdraw"><button class="secondary">送信取消</button></form>' if mine and not message.withdrawn_at and not message.hidden_at else ""
+        cards += f'''<article class="tenant" style="margin-left:{'18%' if mine else '0'};margin-right:{'0' if mine else '18%'}"><p><strong>{'あなた' if mine else html.escape(family_message_name(other_id, session))}</strong> <small>{message.sent_at.strftime('%Y-%m-%d %H:%M')}</small></p><p style="white-space:pre-wrap">{content}</p>{withdraw}</article>'''
+    blocked = family_message_blocked(conversation, session)
+    send_form = f'''<form method="post" action="/family/messages/{conversation.id}"><label>メッセージ（1000文字まで）</label><textarea name="body" maxlength="1000" required></textarea><button>送信する</button></form>''' if conversation.active and not blocked else '<div class="tenant"><p>現在、この会話には送信できません。</p></div>'
+    own_block = session.scalar(select(FamilyMessageBlock).where(FamilyMessageBlock.tenant_id == conversation.tenant_id, FamilyMessageBlock.blocker_id == user.id, FamilyMessageBlock.blocked_id == other_id))
+    body = f'''<a class="button secondary" href="/family/messages">メッセージ一覧へ戻る</a><h1>{html.escape(family_message_name(other_id, session))}さん</h1>
+    <p><small>{FAMILY_MESSAGE_NOTICE}</small></p>{cards or '<p>最初のメッセージを送ってみましょう。</p>'}{send_form}
+    <form method="post" action="/family/messages/{conversation.id}/block"><button class="secondary">{'ブロックを解除' if own_block else 'この相手をブロック'}</button></form>'''
+    return family_layout("メッセージ｜FAMILY", body, user, session)
+
+
+@app.post("/family/messages/{conversation_id}")
+def family_message_send(conversation_id: int, body: str = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
+    conversation = family_message_conversation(conversation_id, user, session)
+    message_body = body.strip()
+    if not message_body or len(message_body) > 1000:
+        raise HTTPException(status_code=400, detail="メッセージは1〜1000文字で入力してください")
+    if not conversation.active or family_message_blocked(conversation, session):
+        raise HTTPException(status_code=403, detail="現在、この会話には送信できません")
+    session.add(FamilyMessage(conversation_id=conversation.id, sender_id=user.id, body=message_body))
+    session.commit()
+    return RedirectResponse(f"/family/messages/{conversation.id}", status_code=303)
+
+
+@app.post("/family/messages/{conversation_id}/{message_id}/withdraw")
+def family_message_withdraw(conversation_id: int, message_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    family_message_conversation(conversation_id, user, session)
+    message = session.scalar(select(FamilyMessage).where(FamilyMessage.id == message_id, FamilyMessage.conversation_id == conversation_id, FamilyMessage.sender_id == user.id))
+    if not message:
+        raise HTTPException(status_code=404)
+    message.withdrawn_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse(f"/family/messages/{conversation_id}", status_code=303)
+
+
+@app.post("/family/messages/{conversation_id}/block")
+def family_message_block(conversation_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    conversation = family_message_conversation(conversation_id, user, session)
+    other_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
+    block = session.scalar(select(FamilyMessageBlock).where(FamilyMessageBlock.tenant_id == conversation.tenant_id, FamilyMessageBlock.blocker_id == user.id, FamilyMessageBlock.blocked_id == other_id))
+    if block:
+        session.delete(block)
+    else:
+        session.add(FamilyMessageBlock(tenant_id=conversation.tenant_id, blocker_id=user.id, blocked_id=other_id))
+    session.commit()
+    return RedirectResponse(f"/family/messages/{conversation.id}", status_code=303)
+
+
 @app.get("/family/kennel", response_class=HTMLResponse)
 def family_kennel_page(user: User = Depends(require_user), session: Session = Depends(db)):
     """同じ犬舎から迎えた、公開に同意済みのFAMILYを犬舎別に表示する。"""
@@ -3359,6 +3618,10 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
     bio = f'<div class="tenant" style="white-space:pre-wrap">{html.escape(profile.bio)}</div>' if profile.show_bio and profile.bio else ""
     instagram = f'''<p><a class="button" href="https://www.instagram.com/{html.escape(profile.instagram_username)}/" target="_blank" rel="noopener noreferrer">Instagram @{html.escape(profile.instagram_username)} を見る ↗</a></p>''' if profile.show_instagram and profile.instagram_username else ""
+    message_button = ""
+    target_user = session.get(User, profile.user_id)
+    if profile.user_id != user.id and target_user and family_kennel_tenant_ids(user, session) & family_kennel_tenant_ids(target_user, session):
+        message_button = f'''<form method="post" action="/family/messages/start/{profile.public_id}"><button>メッセージを送る</button></form>'''
     dogs_section = ""
     records = []
     if profile.show_dogs:
@@ -3426,7 +3689,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
             {f'<h3>親戚犬</h3><div class="grid">{relative_cards}</div>' if relative_cards else ''}'''
         else:
             relatives_section = '<h2>同腹兄弟・親戚犬</h2><p>現在、公開中のFAMILYメンバーには該当する犬がいません。</p>'
-    body = f'''<a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{instagram}{bio}{dogs_section}{relatives_section}
+    body = f'''<a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{instagram}{message_button}{bio}{dogs_section}{relatives_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
     return family_layout(f"{title}｜FAMILY", body, user, session)
 
