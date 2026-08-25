@@ -499,6 +499,18 @@ class LoginSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class AccountEmailChangeAudit(Base):
+    __tablename__ = "account_email_change_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    target_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    changed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    old_email: Mapped[str] = mapped_column(String(255))
+    new_email: Mapped[str] = mapped_column(String(255))
+    linked_customers_updated: Mapped[int] = mapped_column(Integer, default=0)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 def db():
     with SessionLocal() as session:
         yield session
@@ -4223,8 +4235,13 @@ def family_owner_links(access=Depends(require_tenant_admin), session: Session = 
     rows = ""
     for ownership, dog, owner in records:
         relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+        try:
+            email_change_target(owner.id, user, tenant, session)
+            email_action = f'<a class="button secondary" href="/family/owners/{owner.id}/email">メール変更</a>'
+        except HTTPException:
+            email_action = '<span class="badge">運営管理者のみ変更可</span>'
         rows += f'''<tr><td>{html.escape(dog.call_name)}</td><td>{html.escape(owner.name)}</td><td>{html.escape(owner.email)}</td><td>{relation}</td>
-        <td><form class="inline" method="post" action="/family/owners/{ownership.id}/remove"><button class="secondary">連携解除</button></form></td></tr>'''
+        <td>{email_action} <form class="inline" method="post" action="/family/owners/{ownership.id}/remove"><button class="secondary">連携解除</button></form></td></tr>'''
     body = f'''<a class="button secondary" href="/admin/users">ユーザー管理へ戻る</a> <a class="button success" href="/family/invitations">オーナー様を招待</a>
     <h1>{html.escape(tenant.name)} オーナー連携</h1>
     <p>オーナーが登録したメールアドレスと犬を結び付けます。1人に複数頭、ご家族に同じ犬を連携できます。</p>
@@ -4234,6 +4251,90 @@ def family_owner_links(access=Depends(require_tenant_admin), session: Session = 
     <button>犬とオーナーを連携</button></form>
     <h2>現在の連携</h2><table><tr><th>犬</th><th>オーナー</th><th>メール</th><th>関係</th><th>操作</th></tr>{rows}</table>'''
     return layout("オーナー連携", body, user)
+
+
+def email_change_target(user_id: int, actor: User, tenant: Tenant, session: Session) -> tuple[User, set[int]]:
+    target = session.get(User, user_id)
+    if not target or not target.active or target.id == actor.id:
+        raise HTTPException(status_code=404, detail="変更対象のアカウントが見つかりません")
+    tenant_ids = set(session.scalars(select(DogOwnership.tenant_id).where(
+        DogOwnership.user_id == target.id, DogOwnership.active.is_(True)
+    )).all())
+    tenant_ids.update(session.scalars(select(Membership.tenant_id).where(Membership.user_id == target.id)).all())
+    if tenant.id not in tenant_ids:
+        raise HTTPException(status_code=404, detail="この犬舎と関係するアカウントではありません")
+    roles = set(session.scalars(select(Membership.role).where(Membership.user_id == target.id)).all())
+    customer_only = not target.platform_admin and target.role == Role.customer and roles.issubset({Role.customer})
+    if not actor.platform_admin and (tenant_ids != {tenant.id} or not customer_only):
+        raise HTTPException(status_code=403, detail="複数犬舎に関係するアカウント、管理者・従業員のメール変更は運営管理者だけが行えます")
+    return target, tenant_ids
+
+
+@app.get("/family/owners/{user_id}/email", response_class=HTMLResponse)
+def family_owner_email_edit(user_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    target, tenant_ids = email_change_target(user_id, actor, tenant, session)
+    dogs = session.scalars(
+        select(Dog.call_name).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+        .where(DogOwnership.user_id == target.id, DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))
+        .order_by(Dog.call_name)
+    ).all()
+    histories = session.execute(
+        select(AccountEmailChangeAudit, User).join(User, User.id == AccountEmailChangeAudit.changed_by_id)
+        .where(AccountEmailChangeAudit.target_user_id == target.id).order_by(AccountEmailChangeAudit.changed_at.desc()).limit(20)
+    ).all()
+    history_rows = "".join(
+        f'''<tr><td>{audit.changed_at.strftime('%Y-%m-%d %H:%M')}</td><td>{html.escape(audit.old_email)}</td>
+        <td>{html.escape(audit.new_email)}</td><td>{html.escape(changer.name)}</td></tr>''' for audit, changer in histories
+    )
+    scope_notice = "複数犬舎に関係するため、運営管理者権限で変更します。" if len(tenant_ids) > 1 else "この犬舎だけに関係するオーナーアカウントです。"
+    body = f'''<a class="button secondary" href="/family/owners">オーナー連携へ戻る</a><h1>登録メールアドレス変更</h1>
+    <div class="tenant"><p><strong>オーナー：</strong>{html.escape(target.name)}</p><p><strong>愛犬：</strong>{html.escape("、".join(dogs) or "連携なし")}</p>
+    <p><strong>現在：</strong>{html.escape(target.email)}</p><p><small>{scope_notice}</small></p></div>
+    <div class="tenant"><p><strong>重要な操作です</strong></p><p>変更後は旧メールアドレスでログインできません。安全のため、このアカウントのログイン中セッションをすべて終了します。</p></div>
+    <form method="post"><label>新しいメールアドレス</label><input type="email" name="new_email" required autocomplete="off">
+    <label>確認のため、あなたの管理者パスワードを入力</label><input type="password" name="admin_password" required autocomplete="current-password">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> オーナー様本人から変更依頼を受け、内容を確認しました</label>
+    <button class="danger">登録メールアドレスを変更する</button></form>
+    <h2>変更履歴</h2><table><tr><th>変更日時</th><th>変更前</th><th>変更後</th><th>担当者</th></tr>{history_rows or '<tr><td colspan="4">変更履歴はありません。</td></tr>'}</table>'''
+    return layout("登録メールアドレス変更", body, actor)
+
+
+@app.post("/family/owners/{user_id}/email")
+def family_owner_email_update(
+    user_id: int, new_email: str = Form(...), admin_password: str = Form(...), confirmed: bool = Form(False),
+    access=Depends(require_tenant_admin), session: Session = Depends(db),
+):
+    actor, tenant = access
+    target, tenant_ids = email_change_target(user_id, actor, tenant, session)
+    normalized = normalize_email(new_email)
+    if not confirmed or not passwords.verify(admin_password, actor.password_hash):
+        raise HTTPException(status_code=403, detail="管理者パスワードまたは確認項目を確認してください")
+    if len(normalized) > 255 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        raise HTTPException(status_code=400, detail="新しいメールアドレスの形式を確認してください")
+    duplicate = session.scalar(select(User.id).where(func.lower(User.email) == normalized, User.id != target.id).limit(1))
+    if duplicate:
+        raise HTTPException(status_code=400, detail="このメールアドレスは別のアカウントで使用されています")
+    if normalized == normalize_email(target.email):
+        raise HTTPException(status_code=400, detail="現在と同じメールアドレスです")
+    old_email = target.email
+    customer_ids = set(session.scalars(select(DogOwnership.customer_id).where(
+        DogOwnership.user_id == target.id, DogOwnership.tenant_id.in_(tenant_ids),
+        DogOwnership.customer_id.is_not(None), DogOwnership.active.is_(True),
+    )).all())
+    linked_customers = session.scalars(select(Customer).where(
+        Customer.id.in_(customer_ids), func.lower(Customer.email) == normalize_email(old_email)
+    )).all() if customer_ids else []
+    target.email = normalized
+    for customer in linked_customers:
+        customer.email = normalized
+    session.add(AccountEmailChangeAudit(
+        tenant_id=tenant.id, target_user_id=target.id, changed_by_id=actor.id,
+        old_email=old_email, new_email=normalized, linked_customers_updated=len(linked_customers),
+    ))
+    session.execute(text("DELETE FROM login_sessions WHERE user_id = :user_id"), {"user_id": target.id})
+    session.commit()
+    return RedirectResponse(f"/family/owners/{target.id}/email", status_code=303)
 
 
 @app.post("/family/owners")
