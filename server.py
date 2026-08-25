@@ -344,6 +344,15 @@ class FamilyTimelineLike(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class FamilyTimelineLikeRead(Base):
+    __tablename__ = "family_timeline_like_reads"
+    __table_args__ = (UniqueConstraint("like_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    like_id: Mapped[int] = mapped_column(ForeignKey("family_timeline_likes.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -2748,11 +2757,18 @@ def family_notifications(user: User = Depends(require_user), session: Session = 
         <p><strong>{html.escape(announcement.title)}</strong></p><p>{html.escape(tenant.name)}{event}</p>
         <small>{announcement.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
         items.append((announcement.created_at, card))
+    for like, item, dog in family_unread_like_items(user, session):
+        liker_name = family_message_name(like.user_id, session)
+        card = f'''<a class="notification-item unread" href="/family/timeline/{item.id}">
+        <span class="notification-kind">タイムライン</span><span class="badge">未読</span>
+        <p><strong>{html.escape(liker_name)}さんが{html.escape(dog.call_name)}の写真に「いいね」しました</strong></p>
+        <small>{like.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
+        items.append((like.created_at, card))
     cards = "".join(card for _, card in sorted(items, key=lambda item: item[0], reverse=True))
     if not cards:
-        cards = '<div class="tenant"><p>新しい通知はありません。</p><p><small>新着メッセージと犬舎からのお知らせを、ここでまとめて確認できます。</small></p></div>'
+        cards = '<div class="tenant"><p>新しい通知はありません。</p><p><small>新着メッセージ、犬舎からのお知らせ、写真への「いいね」をここでまとめて確認できます。</small></p></div>'
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>通知</h1>
-    <p>未読のメッセージと、まだ確認していない犬舎からのお知らせです。</p>{cards}
+    <p>未読のメッセージ、犬舎からのお知らせ、成長写真への「いいね」をまとめて表示しています。</p>{cards}
     <p><a class="button secondary" href="/family/anniversaries">誕生日・お迎え記念日を確認</a></p>'''
     return family_layout("通知｜FAMILY", body, user, session)
 
@@ -3492,8 +3508,29 @@ def family_unread_announcements(user: User, session: Session) -> list[tuple[Fami
     ).all())
 
 
+def family_unread_like_items(user: User, session: Session) -> list[tuple[FamilyTimelineLike, FamilyDogAlbumItem, Dog]]:
+    """自分の投稿へ付いた、未確認のいいねを返す。"""
+    visible_ids = set(family_timeline_items(user, session))
+    if not visible_ids:
+        return []
+    return list(session.execute(
+        select(FamilyTimelineLike, FamilyDogAlbumItem, Dog)
+        .join(FamilyDogAlbumItem, FamilyDogAlbumItem.id == FamilyTimelineLike.album_item_id)
+        .join(Dog, Dog.id == FamilyDogAlbumItem.dog_id)
+        .outerjoin(FamilyTimelineLikeRead, and_(
+            FamilyTimelineLikeRead.like_id == FamilyTimelineLike.id,
+            FamilyTimelineLikeRead.user_id == user.id,
+        ))
+        .where(
+            FamilyDogAlbumItem.id.in_(visible_ids), FamilyDogAlbumItem.uploaded_by_id == user.id,
+            FamilyTimelineLike.user_id != user.id, FamilyTimelineLikeRead.id.is_(None),
+        ).order_by(FamilyTimelineLike.created_at.desc()).limit(100)
+    ).all())
+
+
 def family_notification_count(user: User, session: Session) -> int:
-    return len(family_unread_message_items(user, session)) + len(family_unread_announcements(user, session))
+    return (len(family_unread_message_items(user, session)) + len(family_unread_announcements(user, session))
+            + len(family_unread_like_items(user, session)))
 
 
 def family_message_name(user_id: int, session: Session) -> str:
@@ -3804,6 +3841,18 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
     if not record:
         raise HTTPException(status_code=404)
     item, dog, tenant, profile = record
+    if item.uploaded_by_id == user.id:
+        unread_likes = session.scalars(
+            select(FamilyTimelineLike).outerjoin(FamilyTimelineLikeRead, and_(
+                FamilyTimelineLikeRead.like_id == FamilyTimelineLike.id,
+                FamilyTimelineLikeRead.user_id == user.id,
+            )).where(FamilyTimelineLike.album_item_id == item.id, FamilyTimelineLike.user_id != user.id,
+                     FamilyTimelineLikeRead.id.is_(None))
+        ).all()
+        for unread_like in unread_likes:
+            session.add(FamilyTimelineLikeRead(like_id=unread_like.id, user_id=user.id))
+        if unread_likes:
+            session.commit()
     owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
     taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
     visibility = "同じ犬舎のFAMILYに公開" if item.visibility == "family" else "兄弟・親戚犬に公開"
