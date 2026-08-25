@@ -273,6 +273,20 @@ class PuppySale(Base):
     status: Mapped[str] = mapped_column(String(30), default="inquiry")
 
 
+class DogTransfer(Base):
+    __tablename__ = "dog_transfers"
+    __table_args__ = (UniqueConstraint("tenant_id", "dog_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
+    transferred_on: Mapped[date] = mapped_column(Date)
+    reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class LegalDocument(Base):
     __tablename__ = "legal_documents"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -1837,8 +1851,8 @@ def transferred_dogs_page(access=Depends(require_tenant_user), session: Session 
         Dog.status == "transferred",
         Dog.category != "external",
     ).order_by(Dog.birth_date.desc(), Dog.call_name)).all()
-    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id).order_by(PuppySale.id)).all()
-    sales_by_dog = {sale.dog_id: sale for sale in sales}
+    transfers = session.scalars(select(DogTransfer).where(DogTransfer.tenant_id == tenant.id).order_by(DogTransfer.id)).all()
+    transfers_by_dog = {transfer.dog_id: transfer for transfer in transfers}
     male_count = sum(dog.sex == "male" for dog in dogs)
     female_count = sum(dog.sex == "female" for dog in dogs)
     puppy_count = sum(dog.category == "puppy" for dog in dogs)
@@ -1846,16 +1860,95 @@ def transferred_dogs_page(access=Depends(require_tenant_user), session: Session 
     metrics = f'''<div class="grid"><div class="module"><h3>譲渡済合計</h3><p><strong style="font-size:28px">{len(dogs)}</strong>頭</p></div><div class="module"><h3>牡／牝</h3><p><strong>{male_count}</strong>頭 ／ <strong>{female_count}</strong>頭</p></div><div class="module"><h3>仔犬</h3><p><strong style="font-size:28px">{puppy_count}</strong>頭</p></div><div class="module"><h3>親犬</h3><p><strong style="font-size:28px">{parent_count}</strong>頭</p></div></div>'''
     rows = ""
     for dog in dogs:
-        sale = sales_by_dog.get(dog.id)
-        customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
-        recipient = customer.name if customer else sale.customer_name if sale else "-"
+        transfer = transfers_by_dog.get(dog.id)
+        customer = session.get(Customer, transfer.customer_id) if transfer and transfer.customer_id else None
+        recipient = customer.name if customer else "未登録"
         sire = session.get(Dog, dog.sire_id) if dog.sire_id else None
         dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
         category = {"parent": "親犬", "puppy": "仔犬"}.get(dog.category, dog.category)
-        handover_date = sale.handover_date if sale and sale.handover_date else "-"
-        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{category}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{html.escape(recipient)}</td><td>{handover_date}</td><td><a class="button secondary" href="/modules/dogs/{dog.id}">詳細</a> <a class="button" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
+        handover_date = transfer.transferred_on if transfer else "-"
+        transfer_label = "譲渡先を変更" if transfer else "譲渡先を登録"
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{category}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{html.escape(recipient)}</td><td>{handover_date}</td><td><a class="button" href="/modules/transferred-dogs/{dog.id}">{transfer_label}</a> <a class="button secondary" href="/modules/dogs/{dog.id}">詳細</a></td></tr>'''
     body = f'''<h1>譲渡済一覧</h1><p>{html.escape(tenant.name)}で「譲渡済」に設定した犬を表示しています。血統参照用の外部犬は含みません。</p><p><small>有償で販売した仔犬は「販売犬一覧」で管理し、無償譲渡や引退犬の譲渡などをこの画面で確認できます。</small></p>{metrics}<table><tr><th>犬名</th><th>区分</th><th>性別</th><th>犬種</th><th>生年月日</th><th>毛色</th><th>父犬</th><th>母犬</th><th>譲渡先</th><th>引渡し日</th><th>操作</th></tr>{rows or '<tr><td colspan="11">譲渡済みの犬はいません。</td></tr>'}</table>'''
     return layout("譲渡済一覧", body, user)
+
+
+@app.get("/modules/transferred-dogs/{dog_id}", response_class=HTMLResponse)
+def dog_transfer_page(dog_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if not dog.active or dog.category == "external":
+        raise HTTPException(status_code=404, detail="譲渡先を登録できる犬ではありません")
+    transfer = session.scalar(select(DogTransfer).where(DogTransfer.tenant_id == tenant.id, DogTransfer.dog_id == dog.id))
+    customers = session.scalars(select(Customer).where(Customer.tenant_id == tenant.id).order_by(Customer.name)).all()
+    selected_customer_id = transfer.customer_id if transfer else None
+    customer_options = '<option value="">新しい譲渡先を入力する</option>' + "".join(
+        f'<option value="{customer.id}" {"selected" if customer.id == selected_customer_id else ""}>{html.escape(customer.name)}／{html.escape(customer.phone or customer.email or "連絡先未登録")}</option>'
+        for customer in customers
+    )
+    selected_customer = session.get(Customer, selected_customer_id) if selected_customer_id else None
+    registered_customer = ""
+    if selected_customer:
+        registered_customer = f'''<div class="tenant"><strong>現在の譲渡先</strong><p>{html.escape(selected_customer.name)}　{html.escape(selected_customer.phone or "")}<br>{html.escape(selected_customer.email or "")}<br>{html.escape(selected_customer.postal_code or "")} {html.escape(selected_customer.address or "")}</p></div>'''
+    body = f'''<h1>譲渡先の登録</h1><div class="tenant"><h2 style="margin-top:0">{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統名未登録")}／{"牡" if dog.sex == "male" else "牝"}／{html.escape(dog.breed or "犬種未登録")}</p></div>{registered_customer}
+    <form method="post" action="/modules/transferred-dogs/{dog.id}"><h2>登録済みのお客様を選ぶ</h2><label>譲渡先</label><select name="customer_id">{customer_options}</select><p><small>登録済みのお客様を選んだ場合、下の新規入力欄は使用しません。</small></p>
+    <h2>新しい譲渡先を登録する</h2><div class="grid"><div><label>お名前</label><input name="customer_name" maxlength="150"></div><div><label>フリガナ</label><input name="customer_name_kana" maxlength="150"></div><div><label>電話番号</label><input name="customer_phone" type="tel" maxlength="50"></div><div><label>メールアドレス</label><input name="customer_email" type="email" maxlength="255"></div><div><label>郵便番号</label><input name="customer_postal_code" maxlength="20"></div><div><label>住所</label><input name="customer_address" maxlength="300"></div></div>
+    <h2>譲渡情報</h2><div class="grid"><div><label>譲渡日</label><input name="transferred_on" type="date" value="{transfer.transferred_on if transfer else date.today()}" required></div><div><label>譲渡理由</label><select name="reason"><option value="">選択してください</option>{''.join(f'<option value="{value}" {"selected" if transfer and transfer.reason == value else ""}>{value}</option>' for value in ["引退犬の譲渡", "繁殖犬の譲渡", "無償譲渡", "共同所有", "その他"])}</select></div></div><label>メモ</label><textarea name="notes" placeholder="譲渡時の取り決め、名義変更、健康状態など">{html.escape(transfer.notes or "") if transfer else ""}</textarea><button>譲渡先情報を保存する</button> <a class="button secondary" href="/modules/transferred-dogs">キャンセル</a></form>'''
+    return layout("譲渡先の登録", body, user)
+
+
+@app.post("/modules/transferred-dogs/{dog_id}")
+def dog_transfer_save(
+    dog_id: int,
+    customer_id: str = Form(""), customer_name: str = Form(""), customer_name_kana: str = Form(""),
+    customer_phone: str = Form(""), customer_email: str = Form(""), customer_postal_code: str = Form(""),
+    customer_address: str = Form(""), transferred_on: str = Form(...), reason: str = Form(""), notes: str = Form(""),
+    access=Depends(require_tenant_user), session: Session = Depends(db),
+):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if not dog.active or dog.category == "external":
+        raise HTTPException(status_code=400, detail="譲渡先を登録できる犬ではありません")
+    try:
+        transfer_date = date.fromisoformat(transferred_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="譲渡日を確認してください")
+    if transfer_date > date.today():
+        raise HTTPException(status_code=400, detail="未来の日付は譲渡日に登録できません")
+    if customer_id:
+        try:
+            selected_customer_id = int(customer_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="譲渡先を確認してください")
+        customer = session.scalar(select(Customer).where(Customer.id == selected_customer_id, Customer.tenant_id == tenant.id))
+        if not customer:
+            raise HTTPException(status_code=400, detail="譲渡先が見つかりません")
+    else:
+        if not customer_name.strip():
+            raise HTTPException(status_code=400, detail="登録済みのお客様を選ぶか、新しい譲渡先のお名前を入力してください")
+        customer = Customer(
+            tenant_id=tenant.id, name=customer_name.strip(), name_kana=customer_name_kana.strip() or None,
+            phone=customer_phone.strip() or None, email=normalize_email(customer_email) if customer_email.strip() else None,
+            postal_code=customer_postal_code.strip() or None, address=customer_address.strip() or None,
+            notes="譲渡先登録画面から作成",
+        )
+        session.add(customer)
+        session.flush()
+    transfer = session.scalar(select(DogTransfer).where(DogTransfer.tenant_id == tenant.id, DogTransfer.dog_id == dog.id))
+    if transfer:
+        transfer.customer_id = customer.id
+        transfer.transferred_on = transfer_date
+        transfer.reason = reason.strip() or None
+        transfer.notes = notes.strip() or None
+        transfer.updated_at = datetime.now(timezone.utc)
+    else:
+        session.add(DogTransfer(
+            tenant_id=tenant.id, dog_id=dog.id, customer_id=customer.id, transferred_on=transfer_date,
+            reason=reason.strip() or None, notes=notes.strip() or None,
+        ))
+    dog.status = "transferred"
+    session.commit()
+    return RedirectResponse("/modules/transferred-dogs", status_code=303)
 
 
 @app.get("/modules/dog-list/{category}", response_class=HTMLResponse)
