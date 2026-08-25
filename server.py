@@ -403,6 +403,19 @@ class FamilyAnnouncementRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyEventResponse(Base):
+    __tablename__ = "family_event_responses"
+    __table_args__ = (UniqueConstraint("announcement_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    announcement_id: Mapped[int] = mapped_column(ForeignKey("family_announcements.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    party_size: Mapped[int] = mapped_column(Integer, default=1)
+    dog_names: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class FamilyConversation(Base):
     __tablename__ = "family_conversations"
     __table_args__ = (UniqueConstraint("tenant_id", "user1_id", "user2_id"),)
@@ -2849,10 +2862,72 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
         session.add(FamilyAnnouncementRead(announcement_id=announcement.id, user_id=user.id))
     session.commit()
     event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
+    response_form = ""
+    if announcement.event_date:
+        response = session.scalar(select(FamilyEventResponse).where(
+            FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.user_id == user.id
+        ))
+        owned_dogs = session.scalars(
+            select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+            .where(DogOwnership.user_id == user.id, DogOwnership.tenant_id == announcement.tenant_id,
+                   DogOwnership.active.is_(True), Dog.active.is_(True)).order_by(Dog.call_name)
+        ).all()
+        selected_names = set((response.dog_names or "").split("、")) if response else set()
+        dog_checks = "".join(
+            f'<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px"><input type="checkbox" name="dog_ids" value="{dog.id}" style="width:auto" {'checked' if dog.call_name in selected_names else ''}>{html.escape(dog.call_name)}</label>'
+            for dog in owned_dogs
+        ) or '<p><small>この犬舎と連携された愛犬はありません。</small></p>'
+        current = {"attending": "参加", "maybe": "検討中", "declined": "不参加"}.get(response.status, "未回答") if response else "未回答"
+        response_form = f'''<section class="tenant"><h2 style="margin-top:0">イベント参加回答</h2><p>現在の回答：<span class="badge">{current}</span></p>
+        <form method="post" action="/family/announcements/view/{announcement.id}/response">
+        <label>参加について</label><select name="response_status" required>
+        <option value="attending" {'selected' if response and response.status == 'attending' else ''}>参加します</option>
+        <option value="maybe" {'selected' if response and response.status == 'maybe' else ''}>検討中</option>
+        <option value="declined" {'selected' if response and response.status == 'declined' else ''}>参加しません</option></select>
+        <label>参加人数</label><input type="number" name="party_size" min="1" max="20" value="{response.party_size if response else 1}" required>
+        <label>一緒に参加する愛犬</label><div>{dog_checks}</div>
+        <label>犬舎への連絡事項（500文字まで）</label><textarea name="note" maxlength="500">{html.escape(response.note or '') if response else ''}</textarea>
+        <button>回答を保存する</button></form><p><small>回答は開催前まで何度でも変更できます。</small></p></section>'''
     body = f'''<a class="button secondary" href="/family/announcements">お知らせ一覧へ戻る</a>
     <h1>{html.escape(announcement.title)}</h1><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime('%Y年%m月%d日')}掲載</small></p>
-    {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>'''
+    {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>{response_form}'''
     return family_layout(f"{announcement.title}｜FAMILY", body, user, session)
+
+
+@app.post("/family/announcements/view/{announcement_id}/response")
+def family_event_response_save(
+    announcement_id: int, response_status: str = Form(...), party_size: int = Form(1),
+    dog_ids: list[int] = Form([]), note: str = Form(""),
+    user: User = Depends(require_user), session: Session = Depends(db),
+):
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    announcement = session.scalar(select(FamilyAnnouncement).where(
+        FamilyAnnouncement.id == announcement_id, FamilyAnnouncement.tenant_id.in_(tenant_ids),
+        FamilyAnnouncement.active.is_(True), FamilyAnnouncement.event_date.is_not(None),
+    )) if tenant_ids else None
+    if not announcement:
+        raise HTTPException(status_code=404, detail="回答できるイベントが見つかりません")
+    if response_status not in {"attending", "maybe", "declined"} or not 1 <= party_size <= 20 or len(note.strip()) > 500:
+        raise HTTPException(status_code=400, detail="回答内容を確認してください")
+    dogs = session.scalars(
+        select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+        .where(Dog.id.in_(dog_ids), DogOwnership.user_id == user.id,
+               DogOwnership.tenant_id == announcement.tenant_id, DogOwnership.active.is_(True), Dog.active.is_(True))
+        .order_by(Dog.call_name)
+    ).all() if dog_ids else []
+    response = session.scalar(select(FamilyEventResponse).where(
+        FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.user_id == user.id
+    ))
+    if not response:
+        response = FamilyEventResponse(announcement_id=announcement.id, user_id=user.id)
+        session.add(response)
+    response.status = response_status
+    response.party_size = party_size
+    response.dog_names = "、".join(dog.call_name for dog in dogs) or None
+    response.note = note.strip() or None
+    response.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse(f"/family/announcements/view/{announcement.id}", status_code=303)
 
 
 @app.get("/family/announcements/manage", response_class=HTMLResponse)
@@ -2868,7 +2943,9 @@ def family_announcements_manage(access=Depends(require_tenant_admin), session: S
         action = "stop" if announcement.active else "start"
         action_label = "掲載を停止" if announcement.active else "再公開"
         event = announcement.event_date.strftime("%Y-%m-%d") if announcement.event_date else "－"
-        rows += f'''<tr><td>{html.escape(announcement.title)}</td><td>{event}</td><td>{state}</td><td>{announcement.created_at.date()}</td>
+        responses = session.scalar(select(func.count(FamilyEventResponse.id)).where(FamilyEventResponse.announcement_id == announcement.id)) if announcement.event_date else 0
+        response_link = f'<a class="button secondary" href="/family/announcements/manage/{announcement.id}/responses">回答 {responses}件</a>' if announcement.event_date else "－"
+        rows += f'''<tr><td>{html.escape(announcement.title)}</td><td>{event}</td><td>{state}</td><td>{announcement.created_at.date()}</td><td>{response_link}</td>
         <td><form class="inline" method="post" action="/family/announcements/manage/{announcement.id}/action"><input type="hidden" name="action" value="{action}"><button class="secondary">{action_label}</button></form></td></tr>'''
     body = f'''<a class="button secondary" href="/dashboard">ダッシュボードへ戻る</a><h1>{html.escape(tenant.name)} FAMILYお知らせ管理</h1>
     <p>この犬舎から愛犬を迎えたオーナー様だけに表示されます。</p>
@@ -2876,8 +2953,42 @@ def family_announcements_manage(access=Depends(require_tenant_admin), session: S
     <label>開催日（イベントの場合）</label><input type="date" name="event_date">
     <label>お知らせ内容（2,000文字まで）</label><textarea name="body" maxlength="2000" required placeholder="日時、会場、持ち物、参加方法などをご案内ください。"></textarea>
     <button>お知らせを公開する</button></form><h2>掲載履歴</h2>
-    <table><tr><th>タイトル</th><th>開催日</th><th>状態</th><th>掲載日</th><th>操作</th></tr>{rows or '<tr><td colspan="5">お知らせはまだありません。</td></tr>'}</table>'''
+    <table><tr><th>タイトル</th><th>開催日</th><th>状態</th><th>掲載日</th><th>参加回答</th><th>操作</th></tr>{rows or '<tr><td colspan="6">お知らせはまだありません。</td></tr>'}</table>'''
     return layout("FAMILYお知らせ管理", body, user)
+
+
+@app.get("/family/announcements/manage/{announcement_id}/responses", response_class=HTMLResponse)
+def family_event_responses_manage(announcement_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    announcement = session.scalar(select(FamilyAnnouncement).where(
+        FamilyAnnouncement.id == announcement_id, FamilyAnnouncement.tenant_id == tenant.id,
+        FamilyAnnouncement.event_date.is_not(None),
+    ))
+    if not announcement:
+        raise HTTPException(status_code=404, detail="イベントが見つかりません")
+    records = session.execute(
+        select(FamilyEventResponse, User).join(User, User.id == FamilyEventResponse.user_id)
+        .where(FamilyEventResponse.announcement_id == announcement.id)
+        .order_by(FamilyEventResponse.status, User.name)
+    ).all()
+    labels = {"attending": "参加", "maybe": "検討中", "declined": "不参加"}
+    rows = ""
+    attending_people = 0
+    for response, owner in records:
+        if response.status == "attending":
+            attending_people += response.party_size
+        rows += f'''<tr><td>{html.escape(owner.name)}</td><td>{labels.get(response.status, response.status)}</td>
+        <td>{response.party_size}名</td><td>{html.escape(response.dog_names or "－")}</td><td style="white-space:pre-wrap">{html.escape(response.note or "－")}</td>
+        <td>{response.updated_at.strftime('%Y-%m-%d %H:%M')}</td></tr>'''
+    summary = {status: sum(1 for response, _ in records if response.status == status) for status in labels}
+    body = f'''<a class="button secondary" href="/family/announcements/manage">お知らせ管理へ戻る</a><h1>{html.escape(announcement.title)} 参加回答</h1>
+    <p>開催日：{announcement.event_date.strftime('%Y年%m月%d日')}</p><div class="grid">
+    <div class="module"><h3>参加</h3><p><strong>{summary['attending']}組／{attending_people}名</strong></p></div>
+    <div class="module"><h3>検討中</h3><p><strong>{summary['maybe']}組</strong></p></div>
+    <div class="module"><h3>不参加</h3><p><strong>{summary['declined']}組</strong></p></div></div>
+    <table><tr><th>オーナー</th><th>回答</th><th>人数</th><th>愛犬</th><th>連絡事項</th><th>更新日時</th></tr>
+    {rows or '<tr><td colspan="6">回答はまだありません。</td></tr>'}</table>'''
+    return layout("イベント参加回答", body, user)
 
 
 @app.post("/family/announcements/manage")
