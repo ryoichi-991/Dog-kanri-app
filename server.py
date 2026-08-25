@@ -342,6 +342,7 @@ class OwnerProfile(Base):
     show_photo: Mapped[bool] = mapped_column(Boolean, default=False)
     show_dogs: Mapped[bool] = mapped_column(Boolean, default=False)
     show_parents: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_relatives: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -537,6 +538,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS notes TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_dogs BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_parents BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_relatives BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dog_transfers ADD COLUMN IF NOT EXISTS amount INTEGER"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -2634,6 +2636,7 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <h2>愛犬・血統の公開設定</h2>
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_dogs" value="true" {checked(profile.show_dogs)}> 連携されている愛犬を公開する</label>
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_parents" value="true" {checked(profile.show_parents)}> 愛犬の父犬・母犬も公開する</label>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_relatives" value="true" {checked(profile.show_relatives)}> 同腹兄弟・親戚犬を自動表示する</label>
     <p><small>父母を公開しても、血統書番号・マイクロチップ番号・所有者情報は表示されません。</small></p>
     <div class="tenant"><label style="font-size:16px"><input style="width:auto" type="checkbox" name="profile_public" value="true" {checked(profile.profile_public)}> プロフィール全体をFAMILYメンバーへ公開する</label>
     <p><small>ここをオフにすると、各項目がオンでもプロフィール全体が非公開になります。</small></p></div>
@@ -2647,6 +2650,7 @@ async def family_profile_save(
     nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
     profile_public: bool = Form(False), show_nickname: bool = Form(False), show_prefecture: bool = Form(False),
     show_bio: bool = Form(False), show_photo: bool = Form(False), show_dogs: bool = Form(False), show_parents: bool = Form(False),
+    show_relatives: bool = Form(False),
     user: User = Depends(require_user), session: Session = Depends(db),
 ):
     if prefecture and prefecture not in PREFECTURES:
@@ -2686,6 +2690,7 @@ async def family_profile_save(
     profile.profile_public, profile.show_nickname = profile_public, show_nickname
     profile.show_prefecture, profile.show_bio, profile.show_photo = show_prefecture, show_bio, show_photo
     profile.show_dogs, profile.show_parents = show_dogs, show_parents and show_dogs
+    profile.show_relatives = show_relatives and show_dogs
     profile.updated_at = datetime.now(timezone.utc)
     session.commit()
     return RedirectResponse("/family/profile", status_code=303)
@@ -2723,6 +2728,49 @@ def family_member_list(user: User = Depends(require_user), session: Session = De
     return layout("FAMILYメンバー", body, user)
 
 
+def family_ancestor_depths(session: Session, dog: Dog, max_depth: int = 3) -> dict[int, int]:
+    """同一テナント内の祖先IDと近さを返す。循環・誤登録でも無限再帰しない。"""
+    depths: dict[int, int] = {}
+    frontier = [(dog.sire_id, 1), (dog.dam_id, 1)]
+    while frontier:
+        dog_id, depth = frontier.pop(0)
+        if not dog_id or depth > max_depth or (dog_id in depths and depths[dog_id] <= depth):
+            continue
+        ancestor = session.get(Dog, dog_id)
+        if not ancestor or ancestor.tenant_id != dog.tenant_id:
+            continue
+        depths[dog_id] = depth
+        frontier.extend([(ancestor.sire_id, depth + 1), (ancestor.dam_id, depth + 1)])
+    return depths
+
+
+def family_relationship(session: Session, source: Dog, candidate: Dog) -> tuple[str, str] | None:
+    """公開用の関係分類。同腹を最優先し、次に直系・片親・共通祖先を判定する。"""
+    if source.id == candidate.id or source.tenant_id != candidate.tenant_id:
+        return None
+    same_sire = bool(source.sire_id and source.sire_id == candidate.sire_id)
+    same_dam = bool(source.dam_id and source.dam_id == candidate.dam_id)
+    if same_sire and same_dam:
+        if source.birth_date and source.birth_date == candidate.birth_date:
+            return "litter", "同腹兄弟"
+        return "relative", "父母が同じきょうだい（別の出産）"
+    source_ancestors = family_ancestor_depths(session, source)
+    candidate_ancestors = family_ancestor_depths(session, candidate)
+    if source.id in candidate_ancestors or candidate.id in source_ancestors:
+        return "relative", "親子・直系の親戚犬"
+    if same_sire:
+        return "relative", "父犬が同じきょうだい"
+    if same_dam:
+        return "relative", "母犬が同じきょうだい"
+    common = set(source_ancestors) & set(candidate_ancestors)
+    if common:
+        nearest = min(common, key=lambda dog_id: source_ancestors[dog_id] + candidate_ancestors[dog_id])
+        ancestor = session.get(Dog, nearest)
+        ancestor_name = ancestor.registered_name or ancestor.call_name if ancestor else "共通祖先"
+        return "relative", f"{ancestor_name}を共通祖先に持つ親戚犬"
+    return None
+
+
 @app.get("/family/members/{public_id}", response_class=HTMLResponse)
 def family_member_detail(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
     profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True)))
@@ -2733,6 +2781,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
     bio = f'<div class="tenant" style="white-space:pre-wrap">{html.escape(profile.bio)}</div>' if profile.show_bio and profile.bio else ""
     dogs_section = ""
+    records = []
     if profile.show_dogs:
         records = session.execute(
             select(DogOwnership, Dog, Tenant).join(Dog, Dog.id == DogOwnership.dog_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
@@ -2759,7 +2808,46 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
             <h2 style="margin-top:8px">{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
             <p>{title_marks(dog.titles) or "称号なし"}</p><p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(sex)} ／ {html.escape(dog.color or "毛色未登録")}</p>{parent_html}</section>'''
         dogs_section = f'<h2>愛犬</h2>{dog_cards or "<p>公開できる愛犬はまだ登録されていません。</p>"}'
-    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}
+    relatives_section = ""
+    if profile.show_dogs and profile.show_relatives and records:
+        source_dogs = {dog.id: dog for _, dog, _ in records}
+        candidates = session.execute(
+            select(Dog, OwnerProfile).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+            .join(OwnerProfile, OwnerProfile.user_id == DogOwnership.user_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+            .where(DogOwnership.active.is_(True), Dog.active.is_(True), OwnerProfile.profile_public.is_(True),
+                   OwnerProfile.show_dogs.is_(True), OwnerProfile.id != profile.id, Tenant.active.is_(True), Tenant.deleted.is_(False))
+            .order_by(Dog.call_name)
+        ).all()
+        matches: dict[int, tuple[int, str, str, Dog, OwnerProfile]] = {}
+        for candidate, candidate_profile in candidates:
+            if candidate.id in source_dogs:
+                continue
+            for source in source_dogs.values():
+                relationship = family_relationship(session, source, candidate)
+                if not relationship:
+                    continue
+                group, label = relationship
+                priority = 0 if group == "litter" else 1
+                current = matches.get(candidate.id)
+                if not current or priority < current[0]:
+                    matches[candidate.id] = (priority, group, f"{source.call_name}と{label}", candidate, candidate_profile)
+        litter_cards, relative_cards = "", ""
+        for _, group, label, dog, candidate_profile in sorted(matches.values(), key=lambda value: (value[0], value[3].call_name)):
+            member_name = candidate_profile.nickname if candidate_profile.show_nickname and candidate_profile.nickname else "FAMILYメンバー"
+            card = f'''<a class="module" href="/family/members/{candidate_profile.public_id}"><h3>{html.escape(dog.call_name)}</h3>
+            <p>{html.escape(dog.registered_name or "血統書名未登録")}</p><p><span class="badge">{html.escape(label)}</span></p>
+            <p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(dog.color or "毛色未登録")}</p><p>オーナー：{html.escape(member_name)}</p></a>'''
+            if group == "litter":
+                litter_cards += card
+            else:
+                relative_cards += card
+        if litter_cards or relative_cards:
+            relatives_section = f'''<h2>同腹兄弟・親戚犬</h2>
+            {f'<h3>同腹兄弟</h3><div class="grid">{litter_cards}</div>' if litter_cards else ''}
+            {f'<h3>親戚犬</h3><div class="grid">{relative_cards}</div>' if relative_cards else ''}'''
+        else:
+            relatives_section = '<h2>同腹兄弟・親戚犬</h2><p>現在、公開中のFAMILYメンバーには該当する犬がいません。</p>'
+    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}{relatives_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
     return layout(f"{title}｜FAMILY", body, user)
 
