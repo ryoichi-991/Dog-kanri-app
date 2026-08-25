@@ -476,7 +476,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -517,7 +517,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
 .owner-header{{position:sticky;top:0;z-index:20;min-height:68px;padding:11px 28px;background:#633b4a;color:#fff;display:flex;align-items:center;gap:28px;box-shadow:0 5px 20px #4b263326}}.owner-brand{{color:#fff;text-decoration:none;font-family:Georgia,serif;letter-spacing:1.3px;white-space:nowrap}}.owner-header nav{{display:flex;gap:7px;flex:1}}.owner-header nav a{{color:#f8eef1;text-decoration:none;padding:9px 12px;border-radius:9px}}.owner-header nav a:hover{{background:#ffffff17}}.owner-account{{display:flex;align-items:center;gap:10px;font-size:13px}}.owner-account form{{margin:0}}.owner-account button{{margin:0;padding:8px 12px;background:#ffffff1c;box-shadow:none}}.owner-view main{{margin:0 auto;max-width:1180px;padding:34px 28px}}
 .family-photo-stage{{width:100%;min-height:260px;max-height:70vh;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:18px;background:linear-gradient(145deg,#f7edef,#fff);border:1px solid var(--line);margin-bottom:18px}}.family-dog-photo{{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain}}.family-dog-thumb{{display:block;width:100%;height:190px;object-fit:contain;border-radius:12px;margin-bottom:12px;background:#f7edef}}
 .album-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;margin:18px 0}}.album-item{{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}}.album-item a{{display:flex;height:210px;align-items:center;justify-content:center;background:#f7edef}}.album-item img{{display:block;max-width:100%;max-height:210px;width:auto;height:auto;object-fit:contain}}.album-meta{{padding:13px}}.album-meta p{{margin:5px 0}}.album-meta form button{{margin-top:8px}}
-@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
+@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
@@ -2617,7 +2617,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
+    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -2982,6 +2982,81 @@ def family_relationship(session: Session, source: Dog, candidate: Dog) -> tuple[
         ancestor_name = ancestor.registered_name or ancestor.call_name if ancestor else "共通祖先"
         return "relative", f"{ancestor_name}を共通祖先に持つ親戚犬"
     return None
+
+
+def family_relative_matches(user: User, session: Session) -> dict[int, tuple[int, str, str, Dog, OwnerProfile]]:
+    """閲覧者の愛犬と、公開に同意した他オーナーの親戚犬を照合する。"""
+    source_dogs = session.scalars(
+        select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True))
+    ).all()
+    candidates = session.execute(
+        select(Dog, OwnerProfile).join(DogOwnership, DogOwnership.dog_id == Dog.id)
+        .join(OwnerProfile, OwnerProfile.user_id == DogOwnership.user_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.active.is_(True), Dog.active.is_(True), OwnerProfile.profile_public.is_(True),
+               OwnerProfile.show_dogs.is_(True), OwnerProfile.show_relatives.is_(True), OwnerProfile.user_id != user.id,
+               Tenant.active.is_(True), Tenant.deleted.is_(False))
+    ).all()
+    matches: dict[int, tuple[int, str, str, Dog, OwnerProfile]] = {}
+    for candidate, profile in candidates:
+        for source in source_dogs:
+            relationship = family_relationship(session, source, candidate)
+            if not relationship:
+                continue
+            group, label = relationship
+            priority = 0 if group == "litter" else 1
+            current = matches.get(candidate.id)
+            if not current or priority < current[0]:
+                matches[candidate.id] = (priority, group, f"{source.call_name}と{label}", candidate, profile)
+    return matches
+
+
+@app.get("/family/relatives", response_class=HTMLResponse)
+def family_relatives_page(user: User = Depends(require_user), session: Session = Depends(db)):
+    matches = family_relative_matches(user, session)
+    litter_cards, relative_cards = "", ""
+    for _, group, label, dog, profile in sorted(matches.values(), key=lambda value: (value[0], value[3].call_name)):
+        owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+        family_profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog.id))
+        dog_photo = f'<img class="family-dog-thumb" src="/family/relatives/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}">' if family_profile and family_profile.photo_data else ''
+        album_items = session.scalars(
+            select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.dog_id == dog.id, FamilyDogAlbumItem.visibility.in_(["relatives", "family"]))
+            .order_by(FamilyDogAlbumItem.taken_on.desc(), FamilyDogAlbumItem.created_at.desc()).limit(3)
+        ).all()
+        shared_photos = "".join(
+            f'<a href="/family/relatives/album/{item.id}/photo" target="_blank"><img src="/family/relatives/album/{item.id}/photo" alt="共有写真" style="width:76px;height:76px;object-fit:contain;background:#f7edef;border-radius:9px"></a>' for item in album_items
+        )
+        card = f'''<article class="module">{dog_photo}<h3>{html.escape(dog.call_name)}</h3><p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
+        <p><span class="badge">{html.escape(label)}</span></p><p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(dog.color or "毛色未登録")}</p>
+        <p>オーナー：<a href="/family/members/{profile.public_id}">{html.escape(owner_name)}</a></p>{f'<div style="display:flex;gap:7px;margin-top:12px">{shared_photos}</div>' if shared_photos else ''}</article>'''
+        if group == "litter":
+            litter_cards += card
+        else:
+            relative_cards += card
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>兄弟・親戚犬とのつながり</h1>
+    <p>登録された血統データから関係を自動判定し、公開に同意したオーナー様と愛犬だけを表示します。</p>
+    <h2>同腹兄弟</h2><div class="grid">{litter_cards or '<p>現在、公開中の同腹兄弟はいません。</p>'}</div>
+    <h2>親戚犬</h2><div class="grid">{relative_cards or '<p>現在、公開中の親戚犬はいません。</p>'}</div>
+    <p><small>血統書に父犬・母犬・先祖が正しく登録されているほど、より正確に判定できます。</small></p>'''
+    return family_layout("兄弟・親戚犬｜FAMILY", body, user, session)
+
+
+@app.get("/family/relatives/dogs/{dog_id}/photo")
+def family_relative_dog_photo(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if dog_id not in family_relative_matches(user, session):
+        raise HTTPException(status_code=404)
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog_id))
+    if not profile or not profile.photo_data:
+        raise HTTPException(status_code=404)
+    return Response(content=profile.photo_data, media_type=profile.photo_content_type or "image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/family/relatives/album/{item_id}/photo")
+def family_relative_album_photo(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    item = session.scalar(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.id == item_id, FamilyDogAlbumItem.visibility.in_(["relatives", "family"])))
+    if not item or item.dog_id not in family_relative_matches(user, session):
+        raise HTTPException(status_code=404)
+    return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/family/members/{public_id}", response_class=HTMLResponse)
