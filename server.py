@@ -356,6 +356,28 @@ class FamilyTimelineLikeRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyTimelineComment(Base):
+    __tablename__ = "family_timeline_comments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    album_item_id: Mapped[int] = mapped_column(ForeignKey("family_dog_album_items.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    body: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    hidden_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FamilyTimelineCommentRead(Base):
+    __tablename__ = "family_timeline_comment_reads"
+    __table_args__ = (UniqueConstraint("comment_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    comment_id: Mapped[int] = mapped_column(ForeignKey("family_timeline_comments.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -753,6 +775,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/admin/users"><span>♙</span>ユーザー管理</a>
           <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
           <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
+          <a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
@@ -3020,6 +3043,14 @@ def family_notifications(user: User = Depends(require_user), session: Session = 
         <p><strong>{html.escape(liker_name)}さんが{html.escape(dog.call_name)}の写真に「いいね」しました</strong></p>
         <small>{like.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
         items.append((like.created_at, card))
+    for comment, item, dog in (family_unread_comment_items(user, session) if settings.likes else []):
+        commenter_name = family_message_name(comment.user_id, session)
+        preview = comment.body[:80] + ("…" if len(comment.body) > 80 else "")
+        card = f'''<a class="notification-item unread" href="/family/timeline/{item.id}">
+        <span class="notification-kind">タイムライン</span><span class="badge">未読</span>
+        <p><strong>{html.escape(commenter_name)}さんが{html.escape(dog.call_name)}の写真にコメントしました</strong></p>
+        <p>{html.escape(preview)}</p><small>{comment.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
+        items.append((comment.created_at, card))
     for dog, event_type, event_date, days in (family_anniversary_notification_items(user, session) if settings.anniversaries else []):
         label = "誕生日" if event_type == "birthday" else "お迎え記念日"
         timing = "今日です" if days == 0 else ("明日です" if days == 1 else "7日後です")
@@ -3950,6 +3981,27 @@ def family_unread_like_items(user: User, session: Session) -> list[tuple[FamilyT
     ).all())
 
 
+def family_unread_comment_items(user: User, session: Session) -> list[tuple[FamilyTimelineComment, FamilyDogAlbumItem, Dog]]:
+    """自分の投稿へ届いた、未確認のコメントを返す。"""
+    visible_ids = set(family_timeline_items(user, session))
+    if not visible_ids:
+        return []
+    return list(session.execute(
+        select(FamilyTimelineComment, FamilyDogAlbumItem, Dog)
+        .join(FamilyDogAlbumItem, FamilyDogAlbumItem.id == FamilyTimelineComment.album_item_id)
+        .join(Dog, Dog.id == FamilyDogAlbumItem.dog_id)
+        .outerjoin(FamilyTimelineCommentRead, and_(
+            FamilyTimelineCommentRead.comment_id == FamilyTimelineComment.id,
+            FamilyTimelineCommentRead.user_id == user.id,
+        ))
+        .where(
+            FamilyDogAlbumItem.id.in_(visible_ids), FamilyDogAlbumItem.uploaded_by_id == user.id,
+            FamilyTimelineComment.user_id != user.id, FamilyTimelineComment.deleted_at.is_(None),
+            FamilyTimelineComment.hidden_at.is_(None), FamilyTimelineCommentRead.id.is_(None),
+        ).order_by(FamilyTimelineComment.created_at.desc()).limit(100)
+    ).all())
+
+
 def family_anniversary_notification_items(user: User, session: Session) -> list[tuple[Dog, str, date, int]]:
     dogs = session.scalars(select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id).where(
         DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True)
@@ -3982,7 +4034,7 @@ def family_notification_count(user: User, session: Session) -> int:
     setting = family_notification_setting(user, session)
     return ((len(family_unread_message_items(user, session)) if setting.messages else 0)
             + (len(family_unread_announcements(user, session)) if setting.announcements else 0)
-            + (len(family_unread_like_items(user, session)) if setting.likes else 0)
+            + ((len(family_unread_like_items(user, session)) + len(family_unread_comment_items(user, session))) if setting.likes else 0)
             + (len(family_anniversary_notification_items(user, session)) if setting.anniversaries else 0))
 
 
@@ -4286,10 +4338,13 @@ def family_timeline(user: User = Depends(require_user), session: Session = Depen
     for item, dog, tenant, profile in list(visible.values())[:50]:
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
         like_count = session.scalar(select(func.count(FamilyTimelineLike.id)).where(FamilyTimelineLike.album_item_id == item.id)) or 0
+        comment_count = session.scalar(select(func.count(FamilyTimelineComment.id)).where(
+            FamilyTimelineComment.album_item_id == item.id, FamilyTimelineComment.deleted_at.is_(None),
+            FamilyTimelineComment.hidden_at.is_(None))) or 0
         posts += f'''<a class="timeline-tile" href="/family/timeline/{item.id}">
         <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" loading="lazy">
         <span class="timeline-overlay"><strong>{html.escape(dog.call_name)}</strong>
-        <span class="timeline-stats"><span>{taken}</span><span>♥ {like_count}</span></span></span></a>'''
+        <span class="timeline-stats"><span>{taken}</span><span>♥ {like_count}　💬 {comment_count}</span></span></span></a>'''
     if not posts:
         posts = '''<div class="tenant" style="grid-column:1/-1"><p>タイムラインに表示できる写真はまだありません。</p>
         <p>「うちの子」から愛犬を開き、成長アルバムへ写真を追加してください。公開範囲を「同じ犬舎のFAMILY」または「兄弟・親戚犬」にすると表示されます。</p></div>'''
@@ -4315,7 +4370,17 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
         ).all()
         for unread_like in unread_likes:
             session.add(FamilyTimelineLikeRead(like_id=unread_like.id, user_id=user.id))
-        if unread_likes:
+        unread_comments = session.scalars(
+            select(FamilyTimelineComment).outerjoin(FamilyTimelineCommentRead, and_(
+                FamilyTimelineCommentRead.comment_id == FamilyTimelineComment.id,
+                FamilyTimelineCommentRead.user_id == user.id,
+            )).where(FamilyTimelineComment.album_item_id == item.id, FamilyTimelineComment.user_id != user.id,
+                     FamilyTimelineComment.deleted_at.is_(None), FamilyTimelineComment.hidden_at.is_(None),
+                     FamilyTimelineCommentRead.id.is_(None))
+        ).all()
+        for unread_comment in unread_comments:
+            session.add(FamilyTimelineCommentRead(comment_id=unread_comment.id, user_id=user.id))
+        if unread_likes or unread_comments:
             session.commit()
     owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
     taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
@@ -4335,6 +4400,17 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
             like_names.append("FAMILYメンバー")
     more = f" ほか{len(likes) - 10}人" if len(likes) > 10 else ""
     liked_by = f'<p><small>{html.escape("、".join(like_names))}{more}</small></p>' if like_names else '<p><small>最初のいいねを送りましょう</small></p>'
+    comment_rows = session.execute(
+        select(FamilyTimelineComment, OwnerProfile).outerjoin(OwnerProfile, OwnerProfile.user_id == FamilyTimelineComment.user_id)
+        .where(FamilyTimelineComment.album_item_id == item.id, FamilyTimelineComment.deleted_at.is_(None),
+               FamilyTimelineComment.hidden_at.is_(None)).order_by(FamilyTimelineComment.created_at)
+    ).all()
+    comments = ""
+    for comment, comment_profile in comment_rows:
+        comment_name = "あなた" if comment.user_id == user.id else (comment_profile.nickname if comment_profile and comment_profile.profile_public and comment_profile.show_nickname and comment_profile.nickname else "FAMILYメンバー")
+        delete_form = f'''<form class="inline" method="post" action="/family/timeline/{item.id}/comments/{comment.id}/delete"><button class="secondary" style="padding:5px 9px">削除</button></form>''' if comment.user_id == user.id else ""
+        comments += f'''<div class="tenant" style="margin:10px 0;padding:12px"><p style="margin:0 0 5px"><strong>{html.escape(comment_name)}</strong> <small>{comment.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></p><p style="white-space:pre-wrap;margin:0">{html.escape(comment.body)}</p>{delete_form}</div>'''
+    comments = comments or '<p><small>最初のコメントを送りましょう。</small></p>'
     caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
     body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><article style="max-width:820px;margin:20px auto 0">
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
@@ -4342,7 +4418,8 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
     <span class="badge">{html.escape(visibility)}</span></div>
     <div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真"></div>
     {caption}<p><small>撮影日：{taken}</small></p>
-    <form class="inline" method="post" action="/family/timeline/{item.id}/like?return_to=detail"><button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}</article>'''
+    <form class="inline" method="post" action="/family/timeline/{item.id}/like?return_to=detail"><button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}
+    <section style="margin-top:25px"><h2>コメント</h2>{comments}<form method="post" action="/family/timeline/{item.id}/comments"><label>コメント（300文字まで）</label><textarea name="body" maxlength="300" required></textarea><button>コメントを送る</button></form><p><small>コメントは同じ写真を閲覧できるFAMILYに表示されます。不適切な内容は犬舎管理者が非表示にできます。</small></p></section></article>'''
     return family_layout(f"{dog.call_name}｜FAMILYタイムライン", body, user, session)
 
 
@@ -4379,6 +4456,76 @@ def family_timeline_photo(item_id: int, user: User = Depends(require_user), sess
         raise HTTPException(status_code=404)
     item = record[0]
     return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.post("/family/timeline/{item_id}/comments")
+def family_timeline_comment_create(item_id: int, body: str = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record:
+        raise HTTPException(status_code=404)
+    text = body.strip()
+    if not text or len(text) > 300:
+        raise HTTPException(status_code=400, detail="コメントは1〜300文字で入力してください")
+    item, dog, tenant, _ = record
+    comment = FamilyTimelineComment(album_item_id=item.id, user_id=user.id, body=text)
+    session.add(comment)
+    session.flush()
+    owner = session.get(User, item.uploaded_by_id)
+    if owner and owner.id != user.id and email_notification_allowed(owner, "likes", session):
+        base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+        queue_email(session, owner.email, "timeline_comment", f"【ESTRELLA FAMILY】{dog.call_name}の写真にコメントが届きました",
+                    f"{owner.name} 様\n\n{family_message_name(user.id, session)}さんが{dog.call_name}の写真にコメントしました。\n\n{text}\n\n{base_url}/family/timeline/{item.id}",
+                    tenant.id, owner.id, f"comment:{comment.id}")
+    session.commit()
+    return RedirectResponse(f"/family/timeline/{item_id}", status_code=303)
+
+
+@app.post("/family/timeline/{item_id}/comments/{comment_id}/delete")
+def family_timeline_comment_delete(item_id: int, comment_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if item_id not in family_timeline_items(user, session):
+        raise HTTPException(status_code=404)
+    comment = session.scalar(select(FamilyTimelineComment).where(
+        FamilyTimelineComment.id == comment_id, FamilyTimelineComment.album_item_id == item_id,
+        FamilyTimelineComment.user_id == user.id, FamilyTimelineComment.deleted_at.is_(None)))
+    if not comment:
+        raise HTTPException(status_code=404)
+    comment.deleted_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse(f"/family/timeline/{item_id}", status_code=303)
+
+
+@app.get("/family/timeline/comments/manage", response_class=HTMLResponse)
+def family_timeline_comments_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    rows = session.execute(
+        select(FamilyTimelineComment, FamilyDogAlbumItem, Dog).join(
+            FamilyDogAlbumItem, FamilyDogAlbumItem.id == FamilyTimelineComment.album_item_id).join(
+            Dog, Dog.id == FamilyDogAlbumItem.dog_id).where(Dog.tenant_id == tenant.id)
+        .order_by(FamilyTimelineComment.created_at.desc()).limit(300)
+    ).all()
+    cards = ""
+    for comment, item, dog in rows:
+        state = "投稿者が削除" if comment.deleted_at else ("管理者が非表示" if comment.hidden_at else "表示中")
+        action = "unhide" if comment.hidden_at else "hide"
+        button = "再表示" if comment.hidden_at else "利用者画面から非表示"
+        cards += f'''<article class="tenant"><p><strong>{html.escape(dog.call_name)}</strong> ／ {html.escape(family_message_name(comment.user_id, session))}　<span class="badge">{state}</span></p><p style="white-space:pre-wrap">{html.escape(comment.body)}</p><small>{comment.created_at.strftime('%Y-%m-%d %H:%M')}</small><form method="post" action="/family/timeline/comments/manage/{comment.id}"><label>管理メモ</label><input name="admin_note" maxlength="500" value="{html.escape(comment.admin_note or '')}"><button name="action" value="{action}">{button}</button></form></article>'''
+    body = f'''<h1>タイムラインコメント管理</h1><div class="tenant"><p>トラブル対応のため原文と操作前の履歴を保持します。管理者は原文を書き換えず、公開状態と管理メモのみ変更できます。</p></div>{cards or '<p>コメントはまだありません。</p>'}'''
+    return layout("タイムラインコメント管理", body, user)
+
+
+@app.post("/family/timeline/comments/manage/{comment_id}")
+def family_timeline_comment_moderate(comment_id: int, action: str = Form(...), admin_note: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    comment = session.scalar(select(FamilyTimelineComment).join(
+        FamilyDogAlbumItem, FamilyDogAlbumItem.id == FamilyTimelineComment.album_item_id).join(
+        Dog, Dog.id == FamilyDogAlbumItem.dog_id).where(FamilyTimelineComment.id == comment_id, Dog.tenant_id == tenant.id))
+    if not comment or action not in {"hide", "unhide"}:
+        raise HTTPException(status_code=404)
+    comment.hidden_at = datetime.now(timezone.utc) if action == "hide" else None
+    comment.hidden_by_id = user.id if action == "hide" else None
+    comment.admin_note = admin_note.strip()[:500] or None
+    session.commit()
+    return RedirectResponse("/family/timeline/comments/manage", status_code=303)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
