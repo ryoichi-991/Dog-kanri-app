@@ -334,6 +334,15 @@ class FamilyDogAlbumItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyTimelineLike(Base):
+    __tablename__ = "family_timeline_likes"
+    __table_args__ = (UniqueConstraint("album_item_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    album_item_id: Mapped[int] = mapped_column(ForeignKey("family_dog_album_items.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -3650,13 +3659,30 @@ def family_timeline(user: User = Depends(require_user), session: Session = Depen
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
         visibility = "同じ犬舎のFAMILYに公開" if item.visibility == "family" else "兄弟・親戚犬に公開"
         caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
+        likes = session.execute(
+            select(FamilyTimelineLike, OwnerProfile).outerjoin(OwnerProfile, OwnerProfile.user_id == FamilyTimelineLike.user_id)
+            .where(FamilyTimelineLike.album_item_id == item.id).order_by(FamilyTimelineLike.created_at)
+        ).all()
+        liked = any(like.user_id == user.id for like, _ in likes)
+        like_names = []
+        for like, like_profile in likes[:5]:
+            if like.user_id == user.id:
+                like_names.append("あなた")
+            elif like_profile and like_profile.profile_public and like_profile.show_nickname and like_profile.nickname:
+                like_names.append(like_profile.nickname)
+            else:
+                like_names.append("FAMILYメンバー")
+        more = f" ほか{len(likes) - 5}人" if len(likes) > 5 else ""
+        liked_by = f'<small>{html.escape("、".join(like_names))}{more}</small>' if like_names else '<small>最初のいいねを送りましょう</small>'
         posts += f'''<article class="tenant" style="max-width:760px;margin:0 auto 22px">
         <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
         <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
         <span class="badge">{html.escape(visibility)}</span></div>
         <a href="/family/timeline/{item.id}/photo" target="_blank" style="display:flex;align-items:center;justify-content:center;min-height:240px;max-height:520px;background:#fff;border-radius:14px;overflow:hidden;margin-top:12px">
         <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" style="display:block;max-width:100%;max-height:520px;width:auto;height:auto;object-fit:contain"></a>
-        {caption}<p><small>撮影日：{taken}</small></p></article>'''
+        {caption}<p><small>撮影日：{taken}</small></p>
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><form class="inline" method="post" action="/family/timeline/{item.id}/like">
+        <button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}</div></article>'''
     if not posts:
         posts = '''<div class="tenant"><p>タイムラインに表示できる写真はまだありません。</p>
         <p>「うちの子」から愛犬を開き、成長アルバムへ写真を追加してください。公開範囲を「同じ犬舎のFAMILY」または「兄弟・親戚犬」にすると表示されます。</p></div>'''
@@ -3664,6 +3690,21 @@ def family_timeline(user: User = Depends(require_user), session: Session = Depen
     <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。</p>{posts}
     <p><small>「自分だけ」に設定した写真はタイムラインには表示されません。</small></p>'''
     return family_layout("FAMILYタイムライン", body, user, session)
+
+
+@app.post("/family/timeline/{item_id}/like")
+def family_timeline_like_toggle(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if item_id not in family_timeline_items(user, session):
+        raise HTTPException(status_code=404)
+    like = session.scalar(select(FamilyTimelineLike).where(
+        FamilyTimelineLike.album_item_id == item_id, FamilyTimelineLike.user_id == user.id
+    ))
+    if like:
+        session.delete(like)
+    else:
+        session.add(FamilyTimelineLike(album_item_id=item_id, user_id=user.id))
+    session.commit()
+    return RedirectResponse("/family/timeline", status_code=303)
 
 
 @app.get("/family/timeline/{item_id}/photo")
