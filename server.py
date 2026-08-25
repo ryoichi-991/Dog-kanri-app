@@ -921,9 +921,15 @@ def normalize_pedigree_color(value: str) -> str:
     return ""
 
 
-def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
+def jkc_root_metadata(image: Image.Image, records: list[tuple[float, float, str]] | None = None) -> dict[str, str]:
     """本犬欄だけを読み、祖先欄の番号や団体名を混入させない。"""
-    lines = ocr_spatial_lines(image, (.02, .08, .68, .28))
+    def lines_in(box: tuple[float, float, float, float]) -> list[str]:
+        if records is None:
+            return ocr_spatial_lines(image, box)
+        left, top, right, bottom = box
+        return [value for x, y, value in records if left <= x <= right and top <= y <= bottom]
+
+    lines = lines_in((.02, .08, .68, .28))
     value = "\n".join(lines)
     result = {"organization": "JKC", "country": "日本"}
     trusted_identity = jkc_root_sex_birth(image)
@@ -981,7 +987,7 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
     result.update(trusted_identity)
     # 本犬の称号は犬名の直上だけから取得する。広い本人情報領域には
     # 右側7番祖先のINT.CH等が入り得るため、本人へ誤付与しない。
-    root_title_lines = ocr_spatial_lines(image, (.25, .035, .76, .115))
+    root_title_lines = lines_in((.25, .035, .76, .115))
     title_keys = extract_title_keys("\n".join(root_title_lines))
     if title_keys:
         result["titles"] = ",".join(title_keys)
@@ -990,9 +996,9 @@ def jkc_root_metadata(image: Image.Image) -> dict[str, str]:
 
 def jkc_slot_text(image: Image.Image) -> str:
     """JKCの番号付き15欄を独立解析し、欠落による血縁位置の連鎖ずれを防ぐ。"""
-    metadata = jkc_root_metadata(image)
-    results: list[str] = [f"[[PEDIGREE_META]] {json.dumps(metadata, ensure_ascii=False)}"]
     records = ocr_spatial_records(image)
+    metadata = jkc_root_metadata(image, records)
+    results: list[str] = [f"[[PEDIGREE_META]] {json.dumps(metadata, ensure_ascii=False)}"]
 
     def crop_text(box: tuple[float, float, float, float], psm: int = 6) -> str:
         width, height = image.size
@@ -1050,16 +1056,20 @@ def jkc_slot_text(image: Image.Image) -> str:
         name_y = max((item[0] for item in possible), default=bottom)
         title_context = "\n".join(record[2] for record in local if record[1] < name_y)
         titles = extract_title_keys(title_context)
-        cropped_text = crop_text(box)
-        fallback_name, fallback_titles, fallback_color = details_from_text(cropped_text)
-        if not name:
-            name = fallback_name
-        for key in fallback_titles:
-            if key not in titles:
-                titles.append(key)
         # 前の世代欄の毛色が矩形上端へ入る場合があるため、本犬の登録番号より
         # 下にある毛色を優先し、隣接犬の色を取り込まない。
         local_color = normalize_pedigree_color("\n".join(color_records))
+        # 全面座標OCRで名前と毛色が取れた欄は再OCRしない。従来は全14欄を
+        # 常に拡大OCRしていたため、低性能な本番環境で処理上限に達していた。
+        fallback_color = ""
+        if not name or not local_color:
+            cropped_text = crop_text(box)
+            fallback_name, fallback_titles, fallback_color = details_from_text(cropped_text)
+            if not name:
+                name = fallback_name
+            for key in fallback_titles:
+                if key not in titles:
+                    titles.append(key)
         return name, titles, local_color or fallback_color
 
     if metadata.get("registered_name"):
