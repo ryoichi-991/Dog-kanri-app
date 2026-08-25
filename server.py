@@ -476,7 +476,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -2617,7 +2617,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
+    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -3009,6 +3009,72 @@ def family_relative_matches(user: User, session: Session) -> dict[int, tuple[int
             if not current or priority < current[0]:
                 matches[candidate.id] = (priority, group, f"{source.call_name}と{label}", candidate, profile)
     return matches
+
+
+def family_kennel_tenant_ids(user: User, session: Session) -> set[int]:
+    """閲覧者が所属する、または愛犬を迎えた犬舎だけを返す。"""
+    tenant_ids = set(session.scalars(
+        select(DogOwnership.tenant_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True),
+               Tenant.active.is_(True), Tenant.deleted.is_(False))
+    ).all())
+    tenant_ids.update(session.scalars(
+        select(Membership.tenant_id).join(Tenant, Tenant.id == Membership.tenant_id)
+        .where(Membership.user_id == user.id, Tenant.active.is_(True), Tenant.deleted.is_(False))
+    ).all())
+    if user.platform_admin:
+        tenant_ids.update(session.scalars(
+            select(Tenant.id).where(Tenant.active.is_(True), Tenant.deleted.is_(False))
+        ).all())
+    return tenant_ids
+
+
+@app.get("/family/kennel", response_class=HTMLResponse)
+def family_kennel_page(user: User = Depends(require_user), session: Session = Depends(db)):
+    """同じ犬舎から迎えた、公開に同意済みのFAMILYを犬舎別に表示する。"""
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    if not tenant_ids:
+        body = '''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>犬舎FAMILY会</h1>
+        <div class="tenant"><p>愛犬または犬舎との連携がまだありません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'''
+        return family_layout("犬舎FAMILY会", body, user, session)
+
+    records = session.execute(
+        select(Tenant, OwnerProfile, Dog).join(DogOwnership, DogOwnership.tenant_id == Tenant.id)
+        .join(Dog, Dog.id == DogOwnership.dog_id).join(OwnerProfile, OwnerProfile.user_id == DogOwnership.user_id)
+        .where(Tenant.id.in_(tenant_ids), Tenant.active.is_(True), Tenant.deleted.is_(False),
+               DogOwnership.active.is_(True), Dog.active.is_(True), OwnerProfile.profile_public.is_(True),
+               OwnerProfile.show_dogs.is_(True))
+        .order_by(Tenant.name, OwnerProfile.updated_at.desc(), Dog.call_name)
+    ).all()
+    grouped: dict[int, dict] = {}
+    for tenant, profile, dog in records:
+        tenant_group = grouped.setdefault(tenant.id, {"tenant": tenant, "members": {}})
+        member = tenant_group["members"].setdefault(profile.id, {"profile": profile, "dogs": {}})
+        member["dogs"][dog.id] = dog
+
+    sections = ""
+    for group in grouped.values():
+        tenant, member_cards = group["tenant"], ""
+        for member in group["members"].values():
+            profile, dogs = member["profile"], list(member["dogs"].values())
+            member_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+            location = profile.prefecture if profile.show_prefecture and profile.prefecture else "地域非公開"
+            photo = f'<img src="/family/members/{profile.public_id}/photo" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:50%;margin-bottom:10px">' if profile.show_photo and profile.photo_data else '<div style="width:72px;height:72px;border-radius:50%;display:grid;place-items:center;background:#ead0d5;font-size:26px;margin-bottom:10px">♡</div>'
+            dog_names = "、".join(html.escape(dog.call_name) for dog in dogs[:4])
+            if len(dogs) > 4:
+                dog_names += f" ほか{len(dogs) - 4}頭"
+            own_badge = ' <span class="badge">あなた</span>' if profile.user_id == user.id else ""
+            member_cards += f'''<a class="module" href="/family/members/{profile.public_id}">{photo}<h3>{html.escape(member_name)}{own_badge}</h3>
+            <p>{html.escape(location)}</p><p><strong>愛犬：</strong>{dog_names}</p><p><span class="badge">{len(dogs)}頭</span></p></a>'''
+        sections += f'''<section class="tenant"><h2 style="margin-top:0">{html.escape(tenant.name)} FAMILY会</h2>
+        <p>同じ犬舎から愛犬を迎えた、公開中のオーナー様です。</p><div class="grid">{member_cards or '<p>公開中のメンバーはまだいません。</p>'}</div></section>'''
+    if not sections:
+        tenant_names = session.scalars(select(Tenant.name).where(Tenant.id.in_(tenant_ids)).order_by(Tenant.name)).all()
+        sections = "".join(f'<section class="tenant"><h2 style="margin-top:0">{html.escape(name)} FAMILY会</h2><p>公開中のメンバーはまだいません。</p></section>' for name in tenant_names)
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>犬舎FAMILY会</h1>
+    <p>血縁にかかわらず、同じ犬舎から愛犬を迎えたFAMILY同士がつながるページです。公開を許可したプロフィールと愛犬だけを表示します。</p>{sections}
+    <p><small>表示内容は各オーナー様の公開プロフィール設定に従います。</small></p>'''
+    return family_layout("犬舎FAMILY会｜FAMILY", body, user, session)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
