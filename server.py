@@ -391,7 +391,7 @@ class FamilyTimelineReport(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     reporter_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    album_item_id: Mapped[int] = mapped_column(ForeignKey("family_dog_album_items.id", ondelete="CASCADE"), index=True)
+    album_item_id: Mapped[int | None] = mapped_column(ForeignKey("family_dog_album_items.id", ondelete="CASCADE"), nullable=True, index=True)
     target_type: Mapped[str] = mapped_column(String(20), index=True)
     target_id: Mapped[int] = mapped_column(Integer, index=True)
     reason: Mapped[str] = mapped_column(String(30))
@@ -400,6 +400,32 @@ class FamilyTimelineReport(Base):
     admin_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     handled_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FamilyUserRestriction(Base):
+    __tablename__ = "family_user_restrictions"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    posting_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    likes_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    messages_disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyModerationAudit(Base):
+    __tablename__ = "family_moderation_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    admin_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    target_type: Mapped[str] = mapped_column(String(30))
+    target_id: Mapped[int] = mapped_column(Integer)
+    action: Mapped[str] = mapped_column(String(50))
+    details: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
@@ -821,6 +847,8 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
           <a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a>
           <a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a>
+          <a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a>
+          <a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
@@ -915,6 +943,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
@@ -3791,8 +3820,11 @@ def family_dog_photo_delete(dog_id: int, user: User = Depends(require_user), ses
 
 @app.post("/family/dogs/{dog_id}/album")
 async def family_dog_album_add(dog_id: int, photos: list[UploadFile] = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
-    if not family_owned_dog(dog_id, user, session):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned:
         raise HTTPException(status_code=403, detail="この犬のアルバムへ追加できません")
+    if family_action_disabled(user.id, owned[1].tenant_id, "posting", session):
+        raise HTTPException(status_code=403, detail="犬舎により投稿機能が停止されています")
     caption = caption.strip()
     if len(caption) > 300 or visibility not in {"private", "relatives", "family"}:
         raise HTTPException(status_code=400, detail="コメントまたは公開範囲を確認してください")
@@ -4223,6 +4255,12 @@ def family_message_name(user_id: int, session: Session) -> str:
     return "FAMILYメンバー"
 
 
+def family_action_disabled(user_id: int, tenant_id: int, action: str, session: Session) -> bool:
+    restriction = session.scalar(select(FamilyUserRestriction).where(
+        FamilyUserRestriction.user_id == user_id, FamilyUserRestriction.tenant_id == tenant_id))
+    return bool(restriction and getattr(restriction, f"{action}_disabled", False))
+
+
 def family_message_conversation(conversation_id: int, user: User, session: Session) -> FamilyConversation:
     conversation = session.get(FamilyConversation, conversation_id)
     if not conversation or user.id not in {conversation.user1_id, conversation.user2_id}:
@@ -4309,6 +4347,7 @@ def family_message_moderate(conversation_id: int, message_id: int, action: str =
     message.hidden_by_id = user.id if action == "hide" else None
     message.admin_note = admin_note.strip()[:500] or None
     session.add(FamilyMessageAudit(conversation_id=conversation.id, admin_user_id=user.id, action=action, details=f"message_id={message.id}"))
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type="message", target_id=message.id, action=action, details=message.admin_note))
     session.commit()
     return RedirectResponse(f"/family/messages/manage/{conversation.id}", status_code=303)
 
@@ -4374,7 +4413,8 @@ def family_message_detail(conversation_id: int, user: User = Depends(require_use
         else:
             content = html.escape(message.body)
         withdraw = f'<form method="post" action="/family/messages/{conversation.id}/{message.id}/withdraw"><button class="secondary">送信取消</button></form>' if mine and not message.withdrawn_at and not message.hidden_at else ""
-        cards += f'''<article class="tenant" style="margin-left:{'18%' if mine else '0'};margin-right:{'0' if mine else '18%'}"><p><strong>{'あなた' if mine else html.escape(family_message_name(other_id, session))}</strong> <small>{message.sent_at.strftime('%Y-%m-%d %H:%M')}</small></p><p style="white-space:pre-wrap">{content}</p>{withdraw}</article>'''
+        report_link = f'<a href="/family/safety/report?target_type=message&amp;target_id={message.id}&amp;tenant_id={conversation.tenant_id}"><small>犬舎へ通報</small></a>' if not mine and not message.withdrawn_at else ""
+        cards += f'''<article class="tenant" style="margin-left:{'18%' if mine else '0'};margin-right:{'0' if mine else '18%'}"><p><strong>{'あなた' if mine else html.escape(family_message_name(other_id, session))}</strong> <small>{message.sent_at.strftime('%Y-%m-%d %H:%M')}</small></p><p style="white-space:pre-wrap">{content}</p>{withdraw} {report_link}</article>'''
     blocked = family_message_blocked(conversation, session)
     send_form = f'''<form method="post" action="/family/messages/{conversation.id}"><label>メッセージ（1000文字まで）</label><textarea name="body" maxlength="1000" required></textarea><button>送信する</button></form>''' if conversation.active and not blocked else '<div class="tenant"><p>現在、この会話には送信できません。</p></div>'
     own_block = session.scalar(select(FamilyMessageBlock).where(FamilyMessageBlock.tenant_id == conversation.tenant_id, FamilyMessageBlock.blocker_id == user.id, FamilyMessageBlock.blocked_id == other_id))
@@ -4387,6 +4427,8 @@ def family_message_detail(conversation_id: int, user: User = Depends(require_use
 @app.post("/family/messages/{conversation_id}")
 def family_message_send(conversation_id: int, body: str = Form(...), user: User = Depends(require_user), session: Session = Depends(db)):
     conversation = family_message_conversation(conversation_id, user, session)
+    if family_action_disabled(user.id, conversation.tenant_id, "messages", session):
+        raise HTTPException(status_code=403, detail="犬舎によりメッセージ機能が停止されています")
     message_body = body.strip()
     if not message_body or len(message_body) > 1000:
         raise HTTPException(status_code=400, detail="メッセージは1〜1000文字で入力してください")
@@ -4717,6 +4759,8 @@ def family_timeline_like_toggle(item_id: int, return_to: str = "", user: User = 
     if not record:
         raise HTTPException(status_code=404)
     item, dog, tenant, _ = record
+    if family_action_disabled(user.id, tenant.id, "likes", session):
+        raise HTTPException(status_code=403, detail="犬舎によりいいね機能が停止されています")
     like = session.scalar(select(FamilyTimelineLike).where(
         FamilyTimelineLike.album_item_id == item_id, FamilyTimelineLike.user_id == user.id
     ))
@@ -4758,6 +4802,8 @@ def family_timeline_comment_create(item_id: int, body: str = Form(...), user: Us
     if not text or len(text) > 300:
         raise HTTPException(status_code=400, detail="コメントは1〜300文字で入力してください")
     item, dog, tenant, _ = record
+    if family_action_disabled(user.id, tenant.id, "posting", session):
+        raise HTTPException(status_code=403, detail="犬舎によりコメント投稿が停止されています")
     comment = FamilyTimelineComment(album_item_id=item.id, user_id=user.id, body=text)
     session.add(comment)
     session.flush()
@@ -4815,6 +4861,7 @@ def family_timeline_comment_moderate(comment_id: int, action: str = Form(...), a
     comment.hidden_at = datetime.now(timezone.utc) if action == "hide" else None
     comment.hidden_by_id = user.id if action == "hide" else None
     comment.admin_note = admin_note.strip()[:500] or None
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type="comment", target_id=comment.id, action=action, details=comment.admin_note))
     session.commit()
     return RedirectResponse("/family/timeline/comments/manage", status_code=303)
 
@@ -4866,8 +4913,92 @@ def family_timeline_report_update(report_id: int, status: str = Form(...), admin
     report.admin_note = admin_note.strip()[:500] or None
     report.handled_by_id = user.id
     report.handled_at = datetime.now(timezone.utc)
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type="report",
+        target_id=report.id, action=f"status:{status}", details=report.admin_note))
     session.commit()
     return RedirectResponse("/family/timeline/reports/manage", status_code=303)
+
+
+@app.get("/family/safety/report", response_class=HTMLResponse)
+def family_safety_report_page(target_type: str, target_id: int, tenant_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if tenant_id not in family_kennel_tenant_ids(user, session) or target_type not in {"profile", "message"}:
+        raise HTTPException(status_code=404)
+    if target_type == "profile":
+        target = session.get(User, target_id)
+        if not target or target.id == user.id or tenant_id not in family_kennel_tenant_ids(target, session): raise HTTPException(status_code=404)
+        label = f"{family_message_name(target.id, session)}さんのプロフィール"
+    else:
+        message = session.get(FamilyMessage, target_id); conversation = session.get(FamilyConversation, message.conversation_id) if message else None
+        if not message or not conversation or conversation.tenant_id != tenant_id or user.id not in {conversation.user1_id, conversation.user2_id} or message.sender_id == user.id: raise HTTPException(status_code=404)
+        label = "受信メッセージ"
+    options = "".join(f'<option value="{key}">{value}</option>' for key, value in TIMELINE_REPORT_REASONS.items())
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>犬舎へ通報</h1><div class="tenant"><p>{html.escape(label)}について犬舎へ連絡します。</p></div><form method="post"><input type="hidden" name="target_type" value="{target_type}"><input type="hidden" name="target_id" value="{target_id}"><input type="hidden" name="tenant_id" value="{tenant_id}"><label>理由</label><select name="reason">{options}</select><label>詳しい状況（500文字まで）</label><textarea name="details" maxlength="500"></textarea><button>犬舎へ通報する</button></form>'''
+    return family_layout("犬舎へ通報", body, user, session)
+
+
+@app.post("/family/safety/report")
+def family_safety_report_create(target_type: str = Form(...), target_id: int = Form(...), tenant_id: int = Form(...), reason: str = Form(...), details: str = Form(""), user: User = Depends(require_user), session: Session = Depends(db)):
+    family_safety_report_page(target_type, target_id, tenant_id, user, session)
+    if reason not in TIMELINE_REPORT_REASONS: raise HTTPException(status_code=400)
+    existing = session.scalar(select(FamilyTimelineReport.id).where(FamilyTimelineReport.reporter_id == user.id,
+        FamilyTimelineReport.target_type == target_type, FamilyTimelineReport.target_id == target_id))
+    if not existing:
+        session.add(FamilyTimelineReport(tenant_id=tenant_id, reporter_id=user.id, album_item_id=None, target_type=target_type,
+            target_id=target_id, reason=reason, details=details.strip()[:500] or None)); session.commit()
+    return RedirectResponse("/family", status_code=303)
+
+
+@app.get("/family/safety/reports/manage", response_class=HTMLResponse)
+def family_safety_reports_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    reports = session.scalars(select(FamilyTimelineReport).where(FamilyTimelineReport.tenant_id == tenant.id,
+        FamilyTimelineReport.target_type.in_(["profile", "message"])).order_by(FamilyTimelineReport.status, FamilyTimelineReport.created_at.desc())).all()
+    cards = ""
+    for report in reports:
+        if report.target_type == "profile": content = f"プロフィール：{family_message_name(report.target_id, session)}"
+        else:
+            message = session.get(FamilyMessage, report.target_id); content = f"メッセージ原文：{message.body if message else '確認できません'}"
+        cards += f'''<article class="tenant"><p><span class="badge">{html.escape(report.status)}</span> <strong>{html.escape(content)}</strong></p><p>理由：{html.escape(TIMELINE_REPORT_REASONS.get(report.reason, report.reason))}</p><p>{html.escape(report.details or '詳細なし')}</p><form method="post" action="/family/safety/reports/manage/{report.id}"><select name="status"><option value="open">未対応</option><option value="reviewing">確認中</option><option value="resolved">対応済み</option><option value="dismissed">対応不要</option></select><label>管理メモ</label><textarea name="admin_note" maxlength="500">{html.escape(report.admin_note or '')}</textarea><button>保存</button></form></article>'''
+    return layout("プロフィール・メッセージ通報", f'''<h1>プロフィール・メッセージ通報</h1>{cards or '<p>通報はありません。</p>'}''', user)
+
+
+@app.post("/family/safety/reports/manage/{report_id}")
+def family_safety_report_update(report_id: int, status: str = Form(...), admin_note: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; report = session.scalar(select(FamilyTimelineReport).where(FamilyTimelineReport.id == report_id, FamilyTimelineReport.tenant_id == tenant.id))
+    if not report or status not in {"open", "reviewing", "resolved", "dismissed"}: raise HTTPException(status_code=404)
+    report.status, report.admin_note, report.handled_by_id, report.handled_at = status, admin_note.strip()[:500] or None, user.id, datetime.now(timezone.utc)
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type=report.target_type, target_id=report.target_id, action=f"report:{status}", details=report.admin_note)); session.commit()
+    return RedirectResponse("/family/safety/reports/manage", status_code=303)
+
+
+@app.get("/family/restrictions/manage", response_class=HTMLResponse)
+def family_restrictions_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    owners = session.execute(select(User).join(DogOwnership, DogOwnership.user_id == User.id).where(
+        DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True)).distinct().order_by(User.name)).scalars().all()
+    cards = ""
+    for owner in owners:
+        restriction = session.scalar(select(FamilyUserRestriction).where(FamilyUserRestriction.tenant_id == tenant.id,
+            FamilyUserRestriction.user_id == owner.id))
+        cards += f'''<article class="tenant"><h3>{html.escape(owner.name)}</h3><p>{html.escape(owner.email)}</p><form method="post" action="/family/restrictions/manage/{owner.id}"><label><input style="width:auto" type="checkbox" name="posting_disabled" value="true" {'checked' if restriction and restriction.posting_disabled else ''}> 投稿・コメントを停止</label><label><input style="width:auto" type="checkbox" name="likes_disabled" value="true" {'checked' if restriction and restriction.likes_disabled else ''}> いいねを停止</label><label><input style="width:auto" type="checkbox" name="messages_disabled" value="true" {'checked' if restriction and restriction.messages_disabled else ''}> メッセージを停止</label><label>停止理由・管理メモ</label><textarea name="reason" maxlength="500">{html.escape(restriction.reason if restriction and restriction.reason else '')}</textarea><button>利用状態を保存</button></form></article>'''
+    return layout("FAMILY利用停止", f'''<h1>FAMILY利用停止</h1><div class="tenant"><p>閲覧や愛犬データは残したまま、交流機能だけを個別に停止できます。すべての変更は操作履歴へ保存されます。</p></div>{cards or '<p>連携オーナーはいません。</p>'}''', user)
+
+
+@app.post("/family/restrictions/manage/{owner_id}")
+def family_restriction_save(owner_id: int, posting_disabled: bool = Form(False), likes_disabled: bool = Form(False), messages_disabled: bool = Form(False), reason: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    linked = session.scalar(select(DogOwnership.id).where(DogOwnership.tenant_id == tenant.id,
+        DogOwnership.user_id == owner_id, DogOwnership.active.is_(True)))
+    if not linked: raise HTTPException(status_code=404)
+    restriction = session.scalar(select(FamilyUserRestriction).where(FamilyUserRestriction.tenant_id == tenant.id,
+        FamilyUserRestriction.user_id == owner_id))
+    if not restriction:
+        restriction = FamilyUserRestriction(tenant_id=tenant.id, user_id=owner_id, updated_by_id=user.id); session.add(restriction)
+    restriction.posting_disabled, restriction.likes_disabled, restriction.messages_disabled = posting_disabled, likes_disabled, messages_disabled
+    restriction.reason, restriction.updated_by_id, restriction.updated_at = reason.strip()[:500] or None, user.id, datetime.now(timezone.utc)
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type="user", target_id=owner_id,
+        action="restriction_update", details=f"posting={posting_disabled}, likes={likes_disabled}, messages={messages_disabled}"))
+    session.commit(); return RedirectResponse("/family/restrictions/manage", status_code=303)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
@@ -4931,7 +5062,8 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
     message_button = ""
     target_user = session.get(User, profile.user_id)
     if profile.user_id != user.id and target_user and family_kennel_tenant_ids(user, session) & family_kennel_tenant_ids(target_user, session):
-        message_button = f'''<form method="post" action="/family/messages/start/{profile.public_id}"><button>メッセージを送る</button></form>'''
+        common_tenant = min(family_kennel_tenant_ids(user, session) & family_kennel_tenant_ids(target_user, session))
+        message_button = f'''<form method="post" action="/family/messages/start/{profile.public_id}"><button>メッセージを送る</button></form><p><a href="/family/safety/report?target_type=profile&amp;target_id={profile.user_id}&amp;tenant_id={common_tenant}"><small>このプロフィールを犬舎へ通報</small></a></p>'''
     dogs_section = ""
     records = []
     if profile.show_dogs:
