@@ -17,7 +17,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
-from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, create_engine, func, select, text
+from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, and_, create_engine, func, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -385,6 +385,15 @@ class FamilyAnnouncement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class FamilyAnnouncementRead(Base):
+    __tablename__ = "family_announcement_reads"
+    __table_args__ = (UniqueConstraint("announcement_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    announcement_id: Mapped[int] = mapped_column(ForeignKey("family_announcements.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class FamilyConversation(Base):
     __tablename__ = "family_conversations"
     __table_args__ = (UniqueConstraint("tenant_id", "user1_id", "user2_id"),)
@@ -538,12 +547,13 @@ def require_tenant_user(request: Request, user: User = Depends(require_user), se
     return user, tenant
 
 
-def layout(title: str, body: str, user: User | None = None, owner_mode: bool = False) -> str:
+def layout(title: str, body: str, user: User | None = None, owner_mode: bool = False, notification_count: int = 0) -> str:
     nav = ""
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
+        notification_badge = f'<span class="nav-count">{notification_count}</span>' if notification_count else ""
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/notifications">通知{notification_badge}</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -584,6 +594,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
 *{{box-sizing:border-box}}body{{margin:0;background:var(--cream);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif;line-height:1.55}}.sidebar{{position:fixed;inset:0 auto 0 0;width:260px;background:linear-gradient(180deg,#68404f 0%,#55333f 100%);color:#fff;display:flex;flex-direction:column;z-index:10;box-shadow:6px 0 24px #4b26331a}}.brand{{height:84px;display:flex;align-items:center;gap:13px;padding:18px 22px;color:#fff;text-decoration:none;border-bottom:1px solid #ffffff1f}}.brand-mark{{display:grid;place-items:center;width:42px;height:42px;border-radius:13px;background:#f0d8dc;color:var(--wine);font-family:Georgia,serif;font-size:25px}}.brand strong{{display:block;letter-spacing:1.8px;font-family:Georgia,serif}}.brand small,.sidebar-user small{{display:block;color:#ead5da;font-size:11px}}.sidebar nav{{padding:12px 13px;overflow-y:auto;flex:1}}.sidebar nav a{{display:flex;align-items:center;gap:12px;color:#f8eef1;text-decoration:none;padding:10px 13px;border-radius:10px;font-size:14px;margin:2px 0}}.sidebar nav a:hover{{background:#ffffff17;color:#fff}}.sidebar nav a span{{width:20px;text-align:center;color:#eac3cb}}.nav-label{{margin:14px 12px 5px;color:#cbaeb5;font-size:10px;letter-spacing:1.5px;font-weight:700}}.sidebar-user{{display:flex;align-items:center;gap:10px;padding:15px;border-top:1px solid #ffffff1f;background:#452934}}.sidebar-user .avatar{{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;background:#e7c6cc;color:var(--wine);font-weight:700}}.sidebar-user strong{{display:block;max-width:125px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}}.sidebar-user form{{margin-left:auto}}.sidebar-user button{{margin:0;padding:8px;background:transparent;color:#fff;font-size:18px}}main{{max-width:1280px;margin-left:260px;padding:38px 42px}}.card{{background:var(--paper);padding:34px;border:1px solid #f1e7e8;border-radius:20px;box-shadow:0 10px 35px #63404c0d}}h1{{margin:0 0 22px;font-size:28px;letter-spacing:.02em}}h2{{margin-top:34px;padding-bottom:8px;border-bottom:1px solid var(--line);font-size:20px}}label{{display:block;margin:15px 0 6px;font-size:13px;font-weight:650;color:#665159}}input,select,textarea{{width:100%;padding:11px 13px;border:1px solid #dacdd0;border-radius:10px;background:#fff;font-size:15px;color:var(--ink);outline:none}}input:focus,select:focus,textarea:focus{{border-color:var(--rose);box-shadow:0 0 0 3px #b66f7c18}}textarea{{min-height:84px;resize:vertical}}button,.button{{display:inline-block;margin-top:17px;padding:11px 18px;border:0;border-radius:10px;background:var(--rose);color:#fff;text-decoration:none;font-weight:650;cursor:pointer;box-shadow:0 4px 12px #b66f7c28}}button:hover,.button:hover{{filter:brightness(.95)}}.secondary{{background:#89747b}}.danger{{background:var(--danger)}}.success{{background:var(--green)}}.inline{{display:inline}}.inline button{{margin:3px;padding:7px 10px;font-size:12px}}.error{{background:#fff0f0;color:#963c43;padding:13px;border-left:4px solid var(--danger);border-radius:8px}}table{{width:100%;border-collapse:separate;border-spacing:0;margin-top:18px;font-size:14px;overflow:hidden}}th{{background:#f6edef;color:#694d57;font-size:12px;letter-spacing:.03em}}th,td{{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}}tr:hover td{{background:#fdf8f8}}.badge{{display:inline-block;padding:5px 10px;border-radius:99px;background:var(--rose-light);color:var(--wine);font-size:12px;font-weight:700}}.tenant{{padding:18px;background:#f7edef;border:1px solid #ecdadd;border-radius:14px;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:18px}}.module{{position:relative;display:block;min-height:118px;padding:21px;border:1px solid var(--line);border-radius:15px;text-decoration:none;color:var(--ink);background:linear-gradient(145deg,#fff 0%,#fdf8f7 100%);transition:.2s}}.module:after{{content:"›";position:absolute;right:18px;top:15px;color:#c18a94;font-size:24px}}.module:hover{{transform:translateY(-2px);border-color:#d6a7af;box-shadow:0 9px 22px #70445414}}.module h3{{margin:0 25px 9px 0;font-size:17px;color:#66404e}}.module p{{margin:0;color:var(--muted);font-size:13px}}
 .brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.title-crown{{display:inline-flex;align-items:center;gap:2px;margin:2px 5px 2px 0;font-size:20px;font-weight:800}}.title-crown small{{font-size:9px;color:var(--ink)}}.crown-silver{{color:#9da3aa;text-shadow:0 1px #fff}}.crown-gold{{color:#d4a72c;text-shadow:0 1px #fff}}.crown-rose{{color:#cf788b}}.crown-purple{{color:#9167a8}}.crown-blue{{color:#668caf}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
 .owner-header{{position:sticky;top:0;z-index:20;min-height:68px;padding:11px 28px;background:#633b4a;color:#fff;display:flex;align-items:center;gap:28px;box-shadow:0 5px 20px #4b263326}}.owner-brand{{color:#fff;text-decoration:none;font-family:Georgia,serif;letter-spacing:1.3px;white-space:nowrap}}.owner-header nav{{display:flex;gap:7px;flex:1}}.owner-header nav a{{color:#f8eef1;text-decoration:none;padding:9px 12px;border-radius:9px}}.owner-header nav a:hover{{background:#ffffff17}}.owner-account{{display:flex;align-items:center;gap:10px;font-size:13px}}.owner-account form{{margin:0}}.owner-account button{{margin:0;padding:8px 12px;background:#ffffff1c;box-shadow:none}}.owner-view main{{margin:0 auto;max-width:1180px;padding:34px 28px}}
+.nav-count{{display:inline-grid;place-items:center;min-width:19px;height:19px;margin-left:4px;padding:0 5px;border-radius:10px;background:#fff;color:var(--wine);font-size:11px;font-weight:800}}.notification-item{{display:block;margin:12px 0;padding:18px;border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);text-decoration:none}}.notification-item.unread{{border-left:5px solid var(--rose);background:#fffafb}}.notification-item p{{margin:5px 0}}.notification-kind{{display:inline-block;margin-right:7px;color:var(--wine);font-size:12px;font-weight:750}}
 .family-photo-stage{{width:100%;min-height:260px;max-height:70vh;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:18px;background:linear-gradient(145deg,#f7edef,#fff);border:1px solid var(--line);margin-bottom:18px}}.family-dog-photo{{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain}}.family-dog-thumb{{display:block;width:100%;height:190px;object-fit:contain;border-radius:12px;margin-bottom:12px;background:#f7edef}}
 .album-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;margin:18px 0}}.album-item{{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}}.album-item a{{display:flex;height:210px;align-items:center;justify-content:center;background:#f7edef}}.album-item img{{display:block;max-width:100%;max-height:210px;width:auto;height:auto;object-fit:contain}}.album-meta{{padding:13px}}.album-meta p{{margin:5px 0}}.album-meta form button{{margin-top:8px}}
 @media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
@@ -599,7 +610,8 @@ def family_layout(title: str, body: str, user: User, session: Session) -> str:
         ).limit(1)
     ) is not None
     owner_mode = not has_business_role
-    return layout(title, body, user, owner_mode=owner_mode)
+    count = family_notification_count(user, session) if owner_mode else 0
+    return layout(title, body, user, owner_mode=owner_mode, notification_count=count)
 
 
 mcp = FastMCP("Dog-kanri-app")
@@ -2688,9 +2700,36 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/messages">メッセージ</a> <a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <p><a class="button" href="/family/notifications">通知</a> <a class="button" href="/family/messages">メッセージ</a> <a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
+
+
+@app.get("/family/notifications", response_class=HTMLResponse)
+def family_notifications(user: User = Depends(require_user), session: Session = Depends(db)):
+    items: list[tuple[datetime, str]] = []
+    for conversation, message in family_unread_message_items(user, session):
+        other_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
+        preview = message.body[:80] + ("…" if len(message.body) > 80 else "")
+        card = f'''<a class="notification-item unread" href="/family/messages/{conversation.id}">
+        <span class="notification-kind">新着メッセージ</span><span class="badge">未読</span>
+        <p><strong>{html.escape(family_message_name(other_id, session))}さんから届きました</strong></p>
+        <p>{html.escape(preview)}</p><small>{message.sent_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
+        items.append((message.sent_at, card))
+    for announcement, tenant in family_unread_announcements(user, session):
+        event = f" ／ 開催日 {announcement.event_date.strftime('%Y年%m月%d日')}" if announcement.event_date else ""
+        card = f'''<a class="notification-item unread" href="/family/announcements/view/{announcement.id}">
+        <span class="notification-kind">犬舎からのお知らせ</span><span class="badge">未読</span>
+        <p><strong>{html.escape(announcement.title)}</strong></p><p>{html.escape(tenant.name)}{event}</p>
+        <small>{announcement.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
+        items.append((announcement.created_at, card))
+    cards = "".join(card for _, card in sorted(items, key=lambda item: item[0], reverse=True))
+    if not cards:
+        cards = '<div class="tenant"><p>新しい通知はありません。</p><p><small>新着メッセージと犬舎からのお知らせを、ここでまとめて確認できます。</small></p></div>'
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>通知</h1>
+    <p>未読のメッセージと、まだ確認していない犬舎からのお知らせです。</p>{cards}
+    <p><a class="button secondary" href="/family/anniversaries">誕生日・お迎え記念日を確認</a></p>'''
+    return family_layout("通知｜FAMILY", body, user, session)
 
 
 def next_family_anniversary(month: int, day: int, today: date) -> date:
@@ -2772,12 +2811,39 @@ def family_announcements(user: User = Depends(require_user), session: Session = 
         event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
         cards += f'''<article class="tenant"><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime("%Y年%m月%d日")}掲載</small></p>
         <h2 style="margin-top:8px">{html.escape(announcement.title)}</h2>{event}
-        <div style="white-space:pre-wrap">{html.escape(announcement.body)}</div></article>'''
+        <div style="white-space:pre-wrap">{html.escape(announcement.body)}</div><p><a class="button secondary" href="/family/announcements/view/{announcement.id}">詳しく見る</a></p></article>'''
     if not cards:
         cards = '<div class="tenant"><p>現在、犬舎からのお知らせはありません。</p></div>'
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>犬舎からのお知らせ</h1>
     <p>愛犬を迎えた犬舎からの、FAMILY会・イベント・大切なご案内を表示しています。</p>{cards}'''
     return family_layout("犬舎からのお知らせ｜FAMILY", body, user, session)
+
+
+@app.get("/family/announcements/view/{announcement_id}", response_class=HTMLResponse)
+def family_announcement_detail(announcement_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    record = session.execute(
+        select(FamilyAnnouncement, Tenant).join(Tenant, Tenant.id == FamilyAnnouncement.tenant_id)
+        .where(FamilyAnnouncement.id == announcement_id, FamilyAnnouncement.tenant_id.in_(tenant_ids),
+               FamilyAnnouncement.active.is_(True), Tenant.active.is_(True), Tenant.deleted.is_(False))
+    ).first() if tenant_ids else None
+    if not record:
+        raise HTTPException(status_code=404, detail="お知らせが見つかりません")
+    announcement, tenant = record
+    read = session.scalar(select(FamilyAnnouncementRead).where(
+        FamilyAnnouncementRead.announcement_id == announcement.id,
+        FamilyAnnouncementRead.user_id == user.id,
+    ))
+    if read:
+        read.read_at = datetime.now(timezone.utc)
+    else:
+        session.add(FamilyAnnouncementRead(announcement_id=announcement.id, user_id=user.id))
+    session.commit()
+    event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
+    body = f'''<a class="button secondary" href="/family/announcements">お知らせ一覧へ戻る</a>
+    <h1>{html.escape(announcement.title)}</h1><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime('%Y年%m月%d日')}掲載</small></p>
+    {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>'''
+    return family_layout(f"{announcement.title}｜FAMILY", body, user, session)
 
 
 @app.get("/family/announcements/manage", response_class=HTMLResponse)
@@ -3242,6 +3308,55 @@ def family_kennel_tenant_ids(user: User, session: Session) -> set[int]:
             select(Tenant.id).where(Tenant.active.is_(True), Tenant.deleted.is_(False))
         ).all())
     return tenant_ids
+
+
+def family_unread_message_items(user: User, session: Session) -> list[tuple[FamilyConversation, FamilyMessage]]:
+    """利用者宛ての、会話ごとの最新未読メッセージを返す。"""
+    conversations = session.scalars(
+        select(FamilyConversation).where(
+            (FamilyConversation.user1_id == user.id) | (FamilyConversation.user2_id == user.id)
+        )
+    ).all()
+    unread: list[tuple[FamilyConversation, FamilyMessage]] = []
+    for conversation in conversations:
+        latest = session.scalar(
+            select(FamilyMessage).where(
+                FamilyMessage.conversation_id == conversation.id,
+                FamilyMessage.sender_id != user.id,
+                FamilyMessage.withdrawn_at.is_(None),
+                FamilyMessage.hidden_at.is_(None),
+            ).order_by(FamilyMessage.sent_at.desc()).limit(1)
+        )
+        if not latest:
+            continue
+        read = session.scalar(select(FamilyMessageRead).where(
+            FamilyMessageRead.conversation_id == conversation.id,
+            FamilyMessageRead.user_id == user.id,
+        ))
+        if not read or latest.sent_at > read.last_read_at:
+            unread.append((conversation, latest))
+    return sorted(unread, key=lambda item: item[1].sent_at, reverse=True)
+
+
+def family_unread_announcements(user: User, session: Session) -> list[tuple[FamilyAnnouncement, Tenant]]:
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    if not tenant_ids:
+        return []
+    return list(session.execute(
+        select(FamilyAnnouncement, Tenant).join(Tenant, Tenant.id == FamilyAnnouncement.tenant_id)
+        .outerjoin(FamilyAnnouncementRead, and_(
+            FamilyAnnouncementRead.announcement_id == FamilyAnnouncement.id,
+            FamilyAnnouncementRead.user_id == user.id,
+        ))
+        .where(
+            FamilyAnnouncement.tenant_id.in_(tenant_ids), FamilyAnnouncement.active.is_(True),
+            Tenant.active.is_(True), Tenant.deleted.is_(False), FamilyAnnouncementRead.id.is_(None),
+        ).order_by(FamilyAnnouncement.created_at.desc()).limit(100)
+    ).all())
+
+
+def family_notification_count(user: User, session: Session) -> int:
+    return len(family_unread_message_items(user, session)) + len(family_unread_announcements(user, session))
 
 
 def family_message_name(user_id: int, session: Session) -> str:
