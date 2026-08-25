@@ -6,6 +6,8 @@ import json
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import subprocess
 import tempfile
 from datetime import date, datetime, timedelta, timezone
@@ -13,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
+from email.message import EmailMessage
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -543,6 +546,24 @@ class FamilyNotificationSetting(Base):
     announcements: Mapped[bool] = mapped_column(Boolean, default=True)
     likes: Mapped[bool] = mapped_column(Boolean, default=True)
     anniversaries: Mapped[bool] = mapped_column(Boolean, default=True)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class EmailDelivery(Base):
+    __tablename__ = "email_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    recipient: Mapped[str] = mapped_column(String(255), index=True)
+    purpose: Mapped[str] = mapped_column(String(50), index=True)
+    subject: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FamilyAnniversaryDismissal(Base):
@@ -567,6 +588,65 @@ def normalize_email(value: str) -> str:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def smtp_ready() -> bool:
+    return bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_FROM_EMAIL"))
+
+
+def send_email_content(recipient: str, subject: str, body: str) -> str | None:
+    """送信成功時はNone、失敗時は安全に短縮した理由を返す。"""
+    if not smtp_ready():
+        return "メール配信サービスが未設定です"
+    message = EmailMessage()
+    message["From"] = f'{os.environ.get("SMTP_FROM_NAME", "ESTRELLA FAMILY")} <{os.environ["SMTP_FROM_EMAIL"]}>'
+    message["To"] = recipient
+    message["Subject"] = subject
+    message.set_content(body)
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    security = os.environ.get("SMTP_SECURITY", "starttls").lower()
+    username, password = os.environ.get("SMTP_USERNAME"), os.environ.get("SMTP_PASSWORD")
+    try:
+        if security == "ssl":
+            client = smtplib.SMTP_SSL(host, port, timeout=15, context=ssl.create_default_context())
+        else:
+            client = smtplib.SMTP(host, port, timeout=15)
+            if security == "starttls":
+                client.starttls(context=ssl.create_default_context())
+        with client:
+            if username:
+                client.login(username, password or "")
+            client.send_message(message)
+        return None
+    except Exception as exc:
+        return f"{type(exc).__name__}: {str(exc)[:420]}"
+
+
+def deliver_email(delivery: EmailDelivery, session: Session) -> bool:
+    delivery.attempts += 1
+    error = send_email_content(delivery.recipient, delivery.subject, delivery.body)
+    if error:
+        delivery.status, delivery.error = ("pending" if not smtp_ready() else "failed"), error
+        return False
+    delivery.status, delivery.error, delivery.sent_at = "sent", None, datetime.now(timezone.utc)
+    return True
+
+
+def queue_email(session: Session, recipient: str, purpose: str, subject: str, body: str, tenant_id: int | None = None, user_id: int | None = None, dedupe_key: str | None = None) -> EmailDelivery | None:
+    if dedupe_key and session.scalar(select(EmailDelivery.id).where(EmailDelivery.dedupe_key == dedupe_key)):
+        return None
+    delivery = EmailDelivery(tenant_id=tenant_id, user_id=user_id, recipient=normalize_email(recipient), purpose=purpose,
+                             subject=subject[:200], body=body, dedupe_key=dedupe_key)
+    session.add(delivery)
+    session.flush()
+    deliver_email(delivery, session)
+    return delivery
+
+
+def email_notification_allowed(user: User, category: str, session: Session) -> bool:
+    setting = family_notification_setting(user, session)
+    return bool(setting.email_enabled and getattr(setting, category, False))
 
 
 def platform_admin_exists(session: Session) -> bool:
@@ -674,6 +754,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
           <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
+          <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
@@ -763,6 +844,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_capacity INTEGER"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
@@ -779,6 +861,48 @@ def startup():
             for user in users:
                 session.add(Membership(tenant_id=tenant.id, user_id=user.id, role=user.role))
             session.commit()
+
+
+def dispatch_scheduled_emails():
+    if not smtp_ready():
+        return
+    with SessionLocal() as session:
+        pending = session.scalars(select(EmailDelivery).where(
+            EmailDelivery.status.in_(["pending", "failed"]), EmailDelivery.purpose != "password_reset", EmailDelivery.attempts < 5,
+        ).order_by(EmailDelivery.created_at).limit(100)).all()
+        for delivery in pending:
+            deliver_email(delivery, session)
+        session.commit()
+        settings = session.scalars(select(FamilyNotificationSetting).where(
+            FamilyNotificationSetting.email_enabled.is_(True), FamilyNotificationSetting.anniversaries.is_(True)
+        )).all()
+        base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+        for setting in settings:
+            owner = session.get(User, setting.user_id)
+            if not owner or not owner.active:
+                continue
+            for dog, event_type, event_date, days in family_anniversary_notification_items(owner, session):
+                label = "誕生日" if event_type == "birthday" else "お迎え記念日"
+                timing = "本日" if days == 0 else ("明日" if days == 1 else "7日後")
+                queue_email(session, owner.email, "anniversary", f"【ESTRELLA FAMILY】{dog.call_name}の{label}が{timing}です",
+                            f"{owner.name} 様\n\n{dog.call_name}の{label}は{event_date.strftime('%Y年%m月%d日')}です。大切な記念日をご確認ください。\n{base_url}/family/anniversaries",
+                            dog.tenant_id, owner.id, f"anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}")
+        session.commit()
+
+
+async def email_scheduler_loop():
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await asyncio.to_thread(dispatch_scheduled_emails)
+        except Exception:
+            pass
+        await asyncio.sleep(3600)
+
+
+@app.on_event("startup")
+async def start_email_scheduler():
+    asyncio.create_task(email_scheduler_loop())
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -869,7 +993,22 @@ def forgot_password_request(email: str = Form(...), session: Session = Depends(d
             PasswordResetRequest.requested_at >= datetime.now(timezone.utc) - timedelta(minutes=15),
         ))
         if not recent:
-            session.add(PasswordResetRequest(user_id=account.id))
+            reset_request = PasswordResetRequest(user_id=account.id)
+            session.add(reset_request)
+            if smtp_ready():
+                raw_token = secrets.token_urlsafe(32)
+                reset = PasswordResetToken(user_id=account.id, token_hash=token_hash(raw_token), expires_at=datetime.now(timezone.utc) + timedelta(minutes=30))
+                session.add(reset)
+                base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+                subject = "【ESTRELLA FAMILY】パスワード再設定"
+                body = f"{account.name} 様\n\n以下のリンクから30分以内に新しいパスワードを設定してください。\n{base_url}/reset-password/{raw_token}\n\nお心当たりがない場合は、このメールを破棄してください。"
+                error = send_email_content(account.email, subject, body)
+                delivery = EmailDelivery(user_id=account.id, recipient=account.email, purpose="password_reset", subject=subject,
+                                         body="セキュリティ保護のため再設定リンク本文は保存していません。", attempts=1,
+                                         status="failed" if error else "sent", error=error, sent_at=None if error else datetime.now(timezone.utc))
+                session.add(delivery)
+                if not error:
+                    reset_request.resolved_at = datetime.now(timezone.utc)
             session.commit()
     return layout("受付完了", '<h1>受付しました</h1><p>登録状況にかかわらず、安全のため同じ案内を表示しています。犬舎からの連絡をお待ちください。</p><p><a href="/login">ログインへ戻る</a></p>')
 
@@ -2903,7 +3042,7 @@ def family_notification_setting(user: User, session: Session) -> FamilyNotificat
     if not setting:
         setting = FamilyNotificationSetting(user_id=user.id)
         session.add(setting)
-        session.commit()
+        session.flush()
     return setting
 
 
@@ -2912,6 +3051,8 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
     setting = family_notification_setting(user, session)
     checked = lambda value: "checked" if value else ""
     body = f'''<a class="button secondary" href="/family/notifications">通知へ戻る</a><h1>通知設定</h1><form method="post">
+    <div class="tenant"><label><input style="width:auto" type="checkbox" name="email_enabled" value="true" {checked(setting.email_enabled)}> 登録メールアドレスでも通知を受け取る</label>
+    <p><small>メール配信サービスの設定後に送信されます。画面内通知はこの設定にかかわらず利用できます。</small></p></div>
     <label><input style="width:auto" type="checkbox" name="messages" value="true" {checked(setting.messages)}> 新着メッセージ</label>
     <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
     <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
@@ -2921,9 +3062,10 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
 
 
 @app.post("/family/notification-settings")
-def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), email_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
     setting = family_notification_setting(user, session)
     setting.messages, setting.announcements, setting.likes, setting.anniversaries = messages, announcements, likes, anniversaries
+    setting.email_enabled = email_enabled
     session.commit()
     return RedirectResponse("/family/notification-settings", status_code=303)
 
@@ -3161,6 +3303,7 @@ def family_event_response_save(
     response.note = note.strip() or None
     response.updated_at = datetime.now(timezone.utc)
     session.flush()
+    promoted: list[FamilyEventResponse] = []
     if announcement.event_capacity and announcement.waitlist_enabled:
         attending_total = session.scalar(select(func.coalesce(func.sum(FamilyEventResponse.party_size), 0)).where(
             FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.status == "attending",
@@ -3172,6 +3315,19 @@ def family_event_response_save(
             if attending_total + waiting_response.party_size <= announcement.event_capacity:
                 waiting_response.status = "attending"
                 attending_total += waiting_response.party_size
+                promoted.append(waiting_response)
+    response_owner = session.get(User, user.id)
+    if response_owner and email_notification_allowed(response_owner, "announcements", session):
+        status_label = {"attending": "参加", "waitlisted": "キャンセル待ち", "maybe": "検討中", "declined": "不参加"}.get(response.status, response.status)
+        queue_email(session, response_owner.email, "event_response", f"【ESTRELLA FAMILY】{announcement.title}の回答を受け付けました",
+                    f"{response_owner.name} 様\n\n回答：{status_label}\n参加人数：{response.party_size}名\n愛犬：{response.dog_names or 'なし'}\n\n回答期限まではFAMILYのお知らせ画面から変更できます。",
+                    announcement.tenant_id, response_owner.id)
+    for promoted_response in promoted:
+        promoted_owner = session.get(User, promoted_response.user_id)
+        if promoted_owner and email_notification_allowed(promoted_owner, "announcements", session):
+            queue_email(session, promoted_owner.email, "event_promoted", f"【ESTRELLA FAMILY】{announcement.title}の参加枠をご用意できました",
+                        f"{promoted_owner.name} 様\n\nキャンセル待ちから「参加」へ繰り上がりました。参加人数：{promoted_response.party_size}名",
+                        announcement.tenant_id, promoted_owner.id)
     session.commit()
     return RedirectResponse(f"/family/announcements/view/{announcement.id}", status_code=303)
 
@@ -3260,10 +3416,20 @@ def family_announcement_create(title: str = Form(...), body: str = Form(...), ev
         raise HTTPException(status_code=400, detail="開催日・時刻・定員・回答期限を確認してください")
     if not parsed_event_date and any([event_time, event_location.strip(), parsed_capacity, parsed_deadline, waitlist_enabled]):
         raise HTTPException(status_code=400, detail="イベント情報を設定する場合は開催日が必要です")
-    session.add(FamilyAnnouncement(tenant_id=tenant.id, title=title, body=body, event_date=parsed_event_date,
-                                   event_time=event_time or None, event_location=event_location.strip()[:300] or None,
-                                   event_capacity=parsed_capacity, response_deadline=parsed_deadline,
-                                   waitlist_enabled=waitlist_enabled, created_by_id=user.id))
+    announcement = FamilyAnnouncement(tenant_id=tenant.id, title=title, body=body, event_date=parsed_event_date,
+                                      event_time=event_time or None, event_location=event_location.strip()[:300] or None,
+                                      event_capacity=parsed_capacity, response_deadline=parsed_deadline,
+                                      waitlist_enabled=waitlist_enabled, created_by_id=user.id)
+    session.add(announcement)
+    session.flush()
+    owner_ids = set(session.scalars(select(DogOwnership.user_id).where(DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
+    base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+    for owner_id in owner_ids:
+        owner = session.get(User, owner_id)
+        if owner and owner.active and email_notification_allowed(owner, "announcements", session):
+            queue_email(session, owner.email, "announcement", f"【{tenant.name}】{title}",
+                        f"{owner.name} 様\n\n{body[:1000]}\n\n詳しく見る：{base_url}/family/announcements/view/{announcement.id}",
+                        tenant.id, owner.id, f"announcement:{announcement.id}:user:{owner.id}")
     session.commit()
     return RedirectResponse("/family/announcements/manage", status_code=303)
 
@@ -3996,7 +4162,18 @@ def family_message_send(conversation_id: int, body: str = Form(...), user: User 
         raise HTTPException(status_code=400, detail="メッセージは1〜1000文字で入力してください")
     if not conversation.active or family_message_blocked(conversation, session):
         raise HTTPException(status_code=403, detail="現在、この会話には送信できません")
-    session.add(FamilyMessage(conversation_id=conversation.id, sender_id=user.id, body=message_body))
+    recipient_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
+    recipient = session.get(User, recipient_id)
+    send_email = bool(recipient and email_notification_allowed(recipient, "messages", session))
+    message = FamilyMessage(conversation_id=conversation.id, sender_id=user.id, body=message_body)
+    session.add(message)
+    session.flush()
+    if send_email:
+        base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+        preview = message_body[:120] + ("…" if len(message_body) > 120 else "")
+        queue_email(session, recipient.email, "new_message", "【ESTRELLA FAMILY】新しいメッセージが届きました",
+                    f"{recipient.name} 様\n\n{family_message_name(user.id, session)}さんからメッセージが届きました。\n\n{preview}\n\n確認する：{base_url}/family/messages/{conversation.id}",
+                    conversation.tenant_id, recipient.id, f"message:{message.id}")
     session.commit()
     return RedirectResponse(f"/family/messages/{conversation.id}", status_code=303)
 
@@ -4171,15 +4348,25 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
 
 @app.post("/family/timeline/{item_id}/like")
 def family_timeline_like_toggle(item_id: int, return_to: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
-    if item_id not in family_timeline_items(user, session):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record:
         raise HTTPException(status_code=404)
+    item, dog, tenant, _ = record
     like = session.scalar(select(FamilyTimelineLike).where(
         FamilyTimelineLike.album_item_id == item_id, FamilyTimelineLike.user_id == user.id
     ))
     if like:
         session.delete(like)
     else:
-        session.add(FamilyTimelineLike(album_item_id=item_id, user_id=user.id))
+        like = FamilyTimelineLike(album_item_id=item_id, user_id=user.id)
+        session.add(like)
+        session.flush()
+        owner = session.get(User, item.uploaded_by_id)
+        if owner and owner.id != user.id and email_notification_allowed(owner, "likes", session):
+            base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+            queue_email(session, owner.email, "timeline_like", f"【ESTRELLA FAMILY】{dog.call_name}の写真にいいねが届きました",
+                        f"{owner.name} 様\n\n{family_message_name(user.id, session)}さんが{dog.call_name}の写真にいいねしました。\n{base_url}/family/timeline/{item.id}",
+                        tenant.id, owner.id, f"like:{like.id}")
     session.commit()
     destination = f"/family/timeline/{item_id}" if return_to == "detail" else "/family/timeline"
     return RedirectResponse(destination, status_code=303)
@@ -4605,6 +4792,15 @@ def family_owner_email_update(
         tenant_id=tenant.id, target_user_id=target.id, changed_by_id=actor.id,
         old_email=old_email, new_email=normalized, linked_customers_updated=len(linked_customers),
     ))
+    notice = f'''{target.name} 様
+
+ESTRELLA FAMILYの登録メールアドレスが変更されました。
+変更前：{old_email}
+変更後：{normalized}
+
+今後は新しいメールアドレスでログインしてください。お心当たりがない場合は、すぐに犬舎へご連絡ください。'''
+    queue_email(session, old_email, "email_changed", "【ESTRELLA FAMILY】登録メールアドレス変更のお知らせ", notice, tenant.id, target.id)
+    queue_email(session, normalized, "email_changed", "【ESTRELLA FAMILY】登録メールアドレス変更のお知らせ", notice, tenant.id, target.id)
     session.execute(text("DELETE FROM login_sessions WHERE user_id = :user_id"), {"user_id": target.id})
     session.commit()
     return RedirectResponse(f"/family/owners/{target.id}/email", status_code=303)
@@ -4678,6 +4874,41 @@ def password_reset_manage(access=Depends(require_tenant_admin), session: Session
     body = f'''<h1>パスワード再設定申込み</h1><p>本人確認後に一度だけ使える再設定リンクを発行し、オーナー様へ安全な方法でお伝えください。有効期限は30分です。</p>
     <table><tr><th>お名前</th><th>登録メール</th><th>申込日時</th><th>対応</th></tr>{rows or '<tr><td colspan="4">未対応の申込みはありません。</td></tr>'}</table>'''
     return layout("パスワード再設定管理", body, actor)
+
+
+@app.get("/admin/email-deliveries", response_class=HTMLResponse)
+def email_deliveries_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    related_ids = set(session.scalars(select(DogOwnership.user_id).where(DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
+    condition = EmailDelivery.tenant_id == tenant.id
+    if related_ids:
+        condition = condition | EmailDelivery.user_id.in_(related_ids)
+    records = session.scalars(select(EmailDelivery).where(condition).order_by(EmailDelivery.created_at.desc()).limit(200)).all()
+    rows = ""
+    for delivery in records:
+        retry = f'<form method="post" action="/admin/email-deliveries/{delivery.id}/retry"><button class="secondary">再送</button></form>' if delivery.status != "sent" and delivery.purpose != "password_reset" else "－"
+        rows += f'''<tr><td>{delivery.created_at.strftime('%Y-%m-%d %H:%M')}</td><td>{html.escape(delivery.recipient)}</td><td>{html.escape(delivery.subject)}</td>
+        <td>{html.escape(delivery.status)}</td><td>{delivery.attempts}</td><td>{html.escape(delivery.error or "－")}</td><td>{retry}</td></tr>'''
+    state = "送信可能" if smtp_ready() else "未設定（SMTP_HOST・SMTP_FROM_EMAIL等を設定してください）"
+    body = f'''<h1>メール送信履歴</h1><div class="tenant"><p><strong>配信設定：</strong>{state}</p><p>失敗した通常通知は設定修正後に再送できます。パスワード再設定リンクは安全のため再送せず、新しいリンクを発行します。</p></div>
+    <table><tr><th>作成日時</th><th>宛先</th><th>件名</th><th>状態</th><th>試行</th><th>エラー</th><th>操作</th></tr>{rows or '<tr><td colspan="7">送信履歴はありません。</td></tr>'}</table>'''
+    return layout("メール送信履歴", body, actor)
+
+
+@app.post("/admin/email-deliveries/{delivery_id}/retry")
+def email_delivery_retry(delivery_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    delivery = session.get(EmailDelivery, delivery_id)
+    if not delivery or delivery.status == "sent" or delivery.purpose == "password_reset":
+        raise HTTPException(status_code=404)
+    related = delivery.tenant_id == tenant.id or (delivery.user_id and session.scalar(select(DogOwnership.id).where(
+        DogOwnership.tenant_id == tenant.id, DogOwnership.user_id == delivery.user_id, DogOwnership.active.is_(True)
+    )))
+    if not related:
+        raise HTTPException(status_code=404)
+    deliver_email(delivery, session)
+    session.commit()
+    return RedirectResponse("/admin/email-deliveries", status_code=303)
 
 
 @app.post("/admin/password-resets/{request_id}/issue", response_class=HTMLResponse)
