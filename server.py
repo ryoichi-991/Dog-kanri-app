@@ -389,6 +389,7 @@ def layout(title: str, body: str, user: User | None = None) -> str:
           <a href="/modules/resident-dogs"><span>🐕</span>在籍犬一覧</a>
           <a href="/modules/dog-list/puppy"><span>◌</span>仔犬一覧</a>
           <a href="/modules/sale-dogs"><span>¥</span>販売犬一覧</a>
+          <a href="/modules/transferred-dogs"><span>↗</span>譲渡済一覧</a>
           <a href="/modules/dog-list/parent"><span>♙</span>親犬一覧</a>
           <a href="/modules/dog-list/external"><span>◇</span>外部犬一覧</a>
           <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a>
@@ -1218,8 +1219,15 @@ def pedigree_document_metadata(raw_text: str, metadata: dict[str, str]) -> dict[
     is_import = "REGISTRATION CERTIFICATE FOR IMPORTED DOG" in upper or "輸入犬登録証明書" in raw_text
     is_export = "CERTIFIED EXPORT PEDIGREE" in upper or "EXPORT PEDIGREE" in upper
     kath = re.search(r"\bKATH\s*[- ]?\s*(\d{7,12})\b", upper)
-    jkc = re.search(r"\bJKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z]))?", upper)
-    jkc_no = f"JKC-{jkc.group(1)}-{jkc.group(2)}/{jkc.group(3)}" + (f"-{jkc.group(4)}" if jkc and jkc.group(4) else "") if jkc else ""
+    jkc = re.search(r"\bJKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z1]))?", upper)
+    # 国内の通常血統書へOCRが推測した -K/-P 等を付けない。
+    # 輸入犬登録証明書で明記される -I（OCRでは -1）だけを許可する。
+    suffix = (jkc.group(4) or "").upper() if jkc else ""
+    if suffix == "1" and is_import:
+        suffix = "I"
+    if suffix != "I" or not is_import:
+        suffix = ""
+    jkc_no = f"JKC-{jkc.group(1)}-{jkc.group(2)}/{jkc.group(3)}" + (f"-{suffix}" if suffix else "") if jkc else ""
     trusted_jkc = metadata.get("pedigree_no", "")
     if trusted_jkc.upper().startswith("JKC-") and (not jkc_no or len(trusted_jkc) > len(jkc_no)):
         jkc_no = trusted_jkc
@@ -1336,6 +1344,45 @@ def tenant_dog(session: Session, tenant_id: int, dog_id: int) -> Dog:
     if not dog:
         raise HTTPException(status_code=400, detail="対象犬が見つかりません")
     return dog
+
+
+def reuse_registered_pedigree(
+    session: Session,
+    tenant_id: int,
+    names: list[str],
+    titles: list[list[str]],
+    colors: list[str],
+) -> tuple[list[str], list[list[str]], list[str], str]:
+    """父母が登録済みなら、人が確認済みの血統を同腹犬へ再利用する。"""
+    if len(names) < 3 or not names[1] or not names[2]:
+        return names, titles, colors, ""
+
+    def find_registered(name: str, sex: str) -> Dog | None:
+        return session.scalar(
+            select(Dog).where(
+                Dog.tenant_id == tenant_id,
+                Dog.sex == sex,
+                func.lower(Dog.registered_name) == name.strip().lower(),
+            ).limit(1)
+        )
+
+    sire = find_registered(names[1], "male")
+    dam = find_registered(names[2], "female")
+    if not sire or not dam:
+        return names, titles, colors, ""
+
+    def copy_node(index: int, dog: Dog | None) -> None:
+        if not dog or index > 14:
+            return
+        names[index] = dog.registered_name or dog.call_name
+        titles[index] = [key for key in (dog.titles or "").split(",") if key in TITLE_LABELS]
+        colors[index] = dog.color or ""
+        copy_node(2 * index + 1, session.get(Dog, dog.sire_id) if dog.sire_id else None)
+        copy_node(2 * index + 2, session.get(Dog, dog.dam_id) if dog.dam_id else None)
+
+    copy_node(1, sire)
+    copy_node(2, dam)
+    return names, titles, colors, "父母が一致した登録済み血統を再利用しました。先祖情報も原本と照合してください。"
 
 
 def pedigree_relationship(session: Session, tenant_id: int, first_id: int, second_id: int) -> float:
@@ -1505,16 +1552,26 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     names = (candidates + [""] * 15)[:15]
     titles_by_dog = (detected_titles + [[] for _ in range(15)])[:15]
     colors_by_dog = (detected_colors + [""] * 15)[:15]
+    names, titles_by_dog, colors_by_dog, reused_notice = reuse_registered_pedigree(
+        session, tenant.id, names, titles_by_dog, colors_by_dog
+    )
     def title_select(index: int) -> str:
         options = "".join(f'<option value="{key}" {"selected" if key in titles_by_dog[index] else ""}>{label[2]}</option>' for key, label in TITLE_LABELS.items())
         return f'<label>タイトル（複数選択可）</label><select name="title_{index}" multiple size="5">{options}</select>'
     pedigree_fields = "".join(
-        f'<div><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{f"<label>毛色</label><input name=\"ancestor_color_{index}\" value=\"{html.escape(colors_by_dog[index])}\" maxlength=\"100\" placeholder=\"例：SALT &amp; PEPPER\">" if index else ""}{title_select(index)}</div>'
+        f'<div class="review-field"><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{f"<label>毛色</label><input name=\"ancestor_color_{index}\" value=\"{html.escape(colors_by_dog[index])}\" maxlength=\"100\" placeholder=\"例：SALT &amp; PEPPER\">" if index else ""}{title_select(index)}<label class="review-check"><input type="checkbox" name="verified_fields" value="ancestor_{index}" {"required" if name else ""}> <span>{"原本と照合済み" if name else "未読（入力する場合は照合してください）"}</span></label></div>'
         for index, name in enumerate(names)
     )
     existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
     detected_chip = metadata.get("microchip_no", "")
-    matched_dog_id = next((dog.id for dog in existing_dogs if detected_chip and dog.microchip_no == detected_chip), None)
+    detected_domestic_no = document_metadata.get("domestic_no", "")
+    detected_origin_no = document_metadata.get("origin_no", "")
+    matched_dog_id = next((
+        dog.id for dog in existing_dogs
+        if (detected_chip and dog.microchip_no == detected_chip)
+        or (detected_domestic_no and dog.pedigree_no == detected_domestic_no)
+        or (detected_origin_no and dog.origin_registration_no == detected_origin_no)
+    ), None)
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(
         f'<option value="{dog.id}" {"selected" if dog.id == matched_dog_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}／国内番号：{html.escape(dog.pedigree_no or "未登録")}／海外番号：{html.escape(dog.origin_registration_no or "未登録")}／MC：{html.escape(dog.microchip_no or "未登録")}</option>'
         for dog in existing_dogs
@@ -1522,10 +1579,11 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     sex_value = metadata.get("sex", "")
     sex_options = f'<option value="" {"selected" if not sex_value else ""}>選択してください</option><option value="male" {"selected" if sex_value == "male" else ""}>牡</option><option value="female" {"selected" if sex_value == "female" else ""}>牝</option>'
     document_type_options = "".join(f'<option value="{key}" {"selected" if document_metadata["type"] == key else ""}>{label}</option>' for key, label in PEDIGREE_DOCUMENT_TYPES.items())
-    matched_notice = '<p class="tenant"><strong>同じマイクロチップ番号の登録犬を見つけたため、上書き対象に選択しました。</strong> 別の犬の場合は選択を変更してください。</p>' if matched_dog_id else ''
-    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前・毛色と父母の位置を修正してください。空欄の祖先は登録されません。</p>{matched_notice}
-    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label for="existing-dog-search">登録犬を検索</label><input id="existing-dog-search" type="search" placeholder="呼び名・血統書名・国内番号・海外番号・マイクロチップ番号を入力" autocomplete="off"><p id="existing-dog-result" style="margin:6px 0;color:#765f68;font-size:12px"></p><label for="existing-dog-select">登録方法</label><select id="existing-dog-select" name="existing_dog_id">{existing_options}</select><p><small>同一犬の海外血統書と日本の輸入犬登録証明書は、同じ登録犬を選んでください。マイクロチップ番号が一致する場合は自動選択します。</small></p><h2>今回アップロードした書類</h2><div class="grid"><div><label>書類の種類</label><select name="document_type">{document_type_options}</select></div><div><label>この書類に記載された登録番号</label><input name="document_registration_no" value="{html.escape(document_metadata['registration_no'])}"></div><div><label>発行団体</label><input name="document_organization" value="{html.escape(document_metadata['organization'])}"></div><div><label>発行国</label><input name="document_country" value="{html.escape(document_metadata['country'])}"></div><div><label>発行日</label><input type="date" name="document_issued_on"></div></div><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>国内メイン番号（JKC）</label><input name="pedigree_no" value="{html.escape(document_metadata['domestic_no'])}" placeholder="例：JKC-MS-07782/25-I"></div><div><label>出生国・海外登録番号</label><input name="origin_registration_no" value="{html.escape(document_metadata['origin_no'])}" placeholder="例：KATH116090377"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>出生国</label><input name="origin_registration_country" value="{html.escape(document_metadata['origin_country'])}"></div><div><label>海外発行団体</label><input name="origin_registration_organization" value="{html.escape(document_metadata['origin_organization'])}"></div><input type="hidden" name="pedigree_country" value="日本"><input type="hidden" name="pedigree_organization" value="JKC"></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
-    <script>(function(){{const search=document.getElementById('existing-dog-search');const select=document.getElementById('existing-dog-select');const result=document.getElementById('existing-dog-result');const dogs=Array.from(select.options).slice(1).map(option=>({{value:option.value,text:option.textContent}}));function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');const matches=keyword?dogs.filter(dog=>dog.text.toLocaleLowerCase('ja').includes(keyword)):dogs;const selected=select.value;select.replaceChildren(new Option('新しい犬として登録',''),...matches.map(dog=>new Option(dog.text,dog.value)));if(matches.some(dog=>dog.value===selected))select.value=selected;result.textContent=keyword?matches.length+'頭が見つかりました':dogs.length+'頭から検索できます';}}search.addEventListener('input',render);render();}})();</script>
+    matched_notice = '<p class="tenant"><strong>同じマイクロチップ番号または登録番号の犬を見つけたため、上書き対象に選択しました。</strong> 別の犬の場合は選択を変更してください。</p>' if matched_dog_id else ''
+    lineage_notice = f'<p class="tenant"><strong>登録済み血統を再利用</strong><br>{html.escape(reused_notice)}</p>' if reused_notice else ''
+    body = f'''<style>.review-field{{padding:12px;border:1px solid #eadadd;border-radius:12px;background:#fffafb}}.review-check{{display:flex;align-items:center;gap:8px;margin-top:10px;color:#8b3f53}}.review-check input{{width:auto;accent-color:#b66f7c}}#pedigree-submit:disabled{{background:#b9adb1;cursor:not-allowed;box-shadow:none}}</style><h1>血統書の読み取り結果</h1><p><span class="badge">確認付き半自動登録</span></p><p class="error"><strong>OCR結果は未確定です。</strong> 読めない文字を推測して正式登録しません。原本と照合して修正し、各「原本と照合済み」を選択してください。</p>{matched_notice}{lineage_notice}
+    <form id="pedigree-review-form" method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label for="existing-dog-search">登録犬を検索</label><input id="existing-dog-search" type="search" placeholder="呼び名・血統書名・国内番号・海外番号・マイクロチップ番号を入力" autocomplete="off"><p id="existing-dog-result" style="margin:6px 0;color:#765f68;font-size:12px"></p><label for="existing-dog-select">登録方法</label><select id="existing-dog-select" name="existing_dog_id">{existing_options}</select><p><small>同一犬の海外血統書と日本の輸入犬登録証明書は、同じ登録犬を選んでください。マイクロチップ番号が一致する場合は自動選択します。</small></p><h2>今回アップロードした書類</h2><div class="grid"><div><label>書類の種類</label><select name="document_type">{document_type_options}</select></div><div class="review-field"><label>この書類に記載された登録番号</label><input name="document_registration_no" value="{html.escape(document_metadata['registration_no'])}"><label class="review-check"><input type="checkbox" name="verified_fields" value="document_registration_no" required> 原本と照合済み</label></div><div><label>発行団体</label><input name="document_organization" value="{html.escape(document_metadata['organization'])}"></div><div><label>発行国</label><input name="document_country" value="{html.escape(document_metadata['country'])}"></div><div><label>発行日</label><input type="date" name="document_issued_on"></div></div><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div class="review-field"><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"><label class="review-check"><input type="checkbox" name="verified_fields" value="breed" required> 原本と照合済み</label></div><div class="review-field"><label>性別</label><select name="sex" required>{sex_options}</select><label class="review-check"><input type="checkbox" name="verified_fields" value="sex" required> 原本と照合済み</label></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div class="review-field"><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"><label class="review-check"><input type="checkbox" name="verified_fields" value="birth_date" required> 原本と照合済み</label></div><div class="review-field"><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"><label class="review-check"><input type="checkbox" name="verified_fields" value="color" required> 原本と照合済み</label></div><div class="review-field"><label>国内メイン番号（JKC）</label><input name="pedigree_no" value="{html.escape(document_metadata['domestic_no'])}" placeholder="例：JKC-MS-07782/25-I"><label class="review-check"><input type="checkbox" name="verified_fields" value="pedigree_no" required> 原本と照合済み</label></div><div><label>出生国・海外登録番号</label><input name="origin_registration_no" value="{html.escape(document_metadata['origin_no'])}" placeholder="例：KATH116090377"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>出生国</label><input name="origin_registration_country" value="{html.escape(document_metadata['origin_country'])}"></div><div><label>海外発行団体</label><input name="origin_registration_organization" value="{html.escape(document_metadata['origin_organization'])}"></div><input type="hidden" name="pedigree_country" value="日本"><input type="hidden" name="pedigree_organization" value="JKC"></div><h2>血統名・タイトル・親子関係</h2><p><small>読み取れなかった先祖は空欄のままで構いません。入力されている各個体は、犬名・毛色・タイトルを原本と照合してください。</small></p><div class="grid">{pedigree_fields}</div><button id="pedigree-submit" disabled>未確認の項目があります</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    <script>(function(){{const search=document.getElementById('existing-dog-search');const select=document.getElementById('existing-dog-select');const result=document.getElementById('existing-dog-result');const dogs=Array.from(select.options).slice(1).map(option=>({{value:option.value,text:option.textContent}}));function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');const matches=keyword?dogs.filter(dog=>dog.text.toLocaleLowerCase('ja').includes(keyword)):dogs;const selected=select.value;select.replaceChildren(new Option('新しい犬として登録',''),...matches.map(dog=>new Option(dog.text,dog.value)));if(matches.some(dog=>dog.value===selected))select.value=selected;result.textContent=keyword?matches.length+'頭が見つかりました':dogs.length+'頭から検索できます';}}search.addEventListener('input',render);render();const form=document.getElementById('pedigree-review-form');const submit=document.getElementById('pedigree-submit');function reviewState(){{for(let index=0;index<15;index++){{const field=form.querySelector('[name="ancestor_'+index+'"]');const check=form.querySelector('input[value="ancestor_'+index+'"]');if(field&&check){{check.required=Boolean(field.value.trim());check.parentElement.querySelector('span').textContent=check.required?'原本と照合済み':'未読（入力する場合は照合してください）';}}}}const checks=Array.from(form.querySelectorAll('input[name="verified_fields"]:required'));const ready=checks.every(check=>check.checked);submit.disabled=!ready;submit.textContent=ready?'確認した内容で登録・更新する':'未確認の項目があります';}}form.addEventListener('change',reviewState);form.addEventListener('input',reviewState);reviewState();}})();</script>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
 
@@ -1539,6 +1597,7 @@ def pedigree_import(
     origin_registration_no: str = Form(""), origin_registration_country: str = Form(""), origin_registration_organization: str = Form(""),
     document_type: str = Form("other"), document_registration_no: str = Form(""), document_country: str = Form(""),
     document_organization: str = Form(""), document_issued_on: str = Form(""),
+    verified_fields: list[str] = Form([]),
     ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
     ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
     ancestor_7: str = Form(""), ancestor_8: str = Form(""), ancestor_9: str = Form(""), ancestor_10: str = Form(""),
@@ -1564,6 +1623,23 @@ def pedigree_import(
     titles = [[key for key in values if key in TITLE_LABELS] for values in titles]
     if not names[0]:
         raise HTTPException(status_code=400, detail="登録する犬の血統書名が必要です")
+    verified = set(verified_fields)
+    required_reviews = {"document_registration_no", "breed", "sex", "birth_date", "color", "pedigree_no", "ancestor_0"}
+    required_reviews.update(f"ancestor_{index}" for index, name in enumerate(names[1:], start=1) if name)
+    missing_reviews = sorted(required_reviews - verified)
+    if missing_reviews:
+        raise HTTPException(status_code=400, detail="原本との照合が完了していない項目があります")
+    if pedigree_no.strip() and not re.fullmatch(r"JKC-[A-Z]{1,4}-\d{5}/\d{2}(?:-I)?", pedigree_no.strip().upper()):
+        raise HTTPException(status_code=400, detail="国内メイン番号を確認してください（例：JKC-MS-05878/21）")
+    if birth_date:
+        try:
+            parsed_birth_date = date.fromisoformat(birth_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="生年月日を確認してください")
+        if parsed_birth_date > date.today() or parsed_birth_date.year < 1980:
+            raise HTTPException(status_code=400, detail="生年月日の年・月・日を原本で確認してください")
+    else:
+        parsed_birth_date = None
 
     nodes: dict[int, Dog] = {}
     for index in range(14, -1, -1):
@@ -1609,7 +1685,7 @@ def pedigree_import(
     # 血統書の上書き更新で「販売済」「譲渡済」などの運用状態を在舎中へ戻さない。
     if not existing_dog_id:
         root.status = "resident"
-    root.birth_date = date.fromisoformat(birth_date) if birth_date else root.birth_date
+    root.birth_date = parsed_birth_date or root.birth_date
     root.color = colors[0] or root.color
     # 国内番号と出生国番号は別管理。海外血統書の追加で既存JKC番号を上書きしない。
     root.pedigree_no = pedigree_no.strip() or root.pedigree_no
@@ -1750,6 +1826,36 @@ def resident_dogs_page(access=Depends(require_tenant_user), session: Session = D
         rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{birth_count}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
     body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>犬種</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>生涯出産回数</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="12">在籍犬はまだ登録されていません。</td></tr>'}</table>'''
     return layout("在籍犬一覧", body, user)
+
+
+@app.get("/modules/transferred-dogs", response_class=HTMLResponse)
+def transferred_dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(
+        Dog.tenant_id == tenant.id,
+        Dog.active.is_(True),
+        Dog.status == "transferred",
+        Dog.category != "external",
+    ).order_by(Dog.birth_date.desc(), Dog.call_name)).all()
+    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id).order_by(PuppySale.id)).all()
+    sales_by_dog = {sale.dog_id: sale for sale in sales}
+    male_count = sum(dog.sex == "male" for dog in dogs)
+    female_count = sum(dog.sex == "female" for dog in dogs)
+    puppy_count = sum(dog.category == "puppy" for dog in dogs)
+    parent_count = sum(dog.category == "parent" for dog in dogs)
+    metrics = f'''<div class="grid"><div class="module"><h3>譲渡済合計</h3><p><strong style="font-size:28px">{len(dogs)}</strong>頭</p></div><div class="module"><h3>牡／牝</h3><p><strong>{male_count}</strong>頭 ／ <strong>{female_count}</strong>頭</p></div><div class="module"><h3>仔犬</h3><p><strong style="font-size:28px">{puppy_count}</strong>頭</p></div><div class="module"><h3>親犬</h3><p><strong style="font-size:28px">{parent_count}</strong>頭</p></div></div>'''
+    rows = ""
+    for dog in dogs:
+        sale = sales_by_dog.get(dog.id)
+        customer = session.get(Customer, sale.customer_id) if sale and sale.customer_id else None
+        recipient = customer.name if customer else sale.customer_name if sale else "-"
+        sire = session.get(Dog, dog.sire_id) if dog.sire_id else None
+        dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
+        category = {"parent": "親犬", "puppy": "仔犬"}.get(dog.category, dog.category)
+        handover_date = sale.handover_date if sale and sale.handover_date else "-"
+        rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{category}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}</td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{html.escape(recipient)}</td><td>{handover_date}</td><td><a class="button secondary" href="/modules/dogs/{dog.id}">詳細</a> <a class="button" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
+    body = f'''<h1>譲渡済一覧</h1><p>{html.escape(tenant.name)}で「譲渡済」に設定した犬を表示しています。血統参照用の外部犬は含みません。</p><p><small>有償で販売した仔犬は「販売犬一覧」で管理し、無償譲渡や引退犬の譲渡などをこの画面で確認できます。</small></p>{metrics}<table><tr><th>犬名</th><th>区分</th><th>性別</th><th>犬種</th><th>生年月日</th><th>毛色</th><th>父犬</th><th>母犬</th><th>譲渡先</th><th>引渡し日</th><th>操作</th></tr>{rows or '<tr><td colspan="11">譲渡済みの犬はいません。</td></tr>'}</table>'''
+    return layout("譲渡済一覧", body, user)
 
 
 @app.get("/modules/dog-list/{category}", response_class=HTMLResponse)
