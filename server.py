@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import hashlib
 import html
 import io
@@ -27,6 +28,10 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, defer, mapped_colum
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pypdf import PdfReader
 import pytesseract
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfgen import canvas
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
@@ -335,6 +340,8 @@ class FamilyDogAlbumItem(Base):
     taken_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
     caption: Mapped[str | None] = mapped_column(String(300), nullable=True)
     visibility: Mapped[str] = mapped_column(String(20), default="private", index=True)
+    post_group: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    photo_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -472,6 +479,25 @@ class FamilyEventResponse(Base):
     dog_names: Mapped[str | None] = mapped_column(String(300), nullable=True)
     note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FamilyEventReport(Base):
+    __tablename__ = "family_event_reports"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    announcement_id: Mapped[int] = mapped_column(ForeignKey("family_announcements.id", ondelete="CASCADE"), unique=True, index=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyEventReportPhoto(Base):
+    __tablename__ = "family_event_report_photos"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("family_event_reports.id", ondelete="CASCADE"), index=True)
+    photo_data: Mapped[bytes] = mapped_column(LargeBinary)
+    photo_content_type: Mapped[str] = mapped_column(String(50), default="image/jpeg")
+    photo_order: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class FamilyConversation(Base):
@@ -887,6 +913,8 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
@@ -3293,10 +3321,36 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
         response_form = f'''<section class="tenant"><h2 style="margin-top:0">イベント参加回答</h2><p>現在の回答：<span class="badge">{current}</span></p>
         <p><strong>回答期限：{deadline_label}</strong></p>{form}
         <p><small>回答期限までは何度でも変更できます。定員到達後は、設定されている場合にキャンセル待ちとなります。</small></p></section>'''
+    activity = ""
+    report = session.scalar(select(FamilyEventReport).where(FamilyEventReport.announcement_id == announcement.id))
+    if report:
+        attending = session.scalar(select(FamilyEventResponse.id).where(FamilyEventResponse.announcement_id == announcement.id,
+            FamilyEventResponse.user_id == user.id, FamilyEventResponse.status == "attending"))
+        photos = session.scalars(select(FamilyEventReportPhoto).where(FamilyEventReportPhoto.report_id == report.id).order_by(FamilyEventReportPhoto.photo_order)).all() if attending else []
+        gallery = ''.join(f'<img src="/family/announcements/reports/photos/{photo.id}" alt="イベント写真" style="width:100%;height:220px;object-fit:contain;background:#f7edef;border-radius:12px">' for photo in photos)
+        limited = '<p><small>集合写真はイベント参加者限定で公開しています。</small></p>' if not attending else ""
+        activity = f'''<section class="tenant"><h2 style="margin-top:0">イベント活動報告</h2><div style="white-space:pre-wrap">{html.escape(report.body)}</div>{limited}<div class="grid">{gallery}</div></section>'''
     body = f'''<a class="button secondary" href="/family/announcements">お知らせ一覧へ戻る</a>
     <h1>{html.escape(announcement.title)}</h1><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime('%Y年%m月%d日')}掲載</small></p>
-    {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>{response_form}'''
+    {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>{activity}{response_form}'''
     return family_layout(f"{announcement.title}｜FAMILY", body, user, session)
+
+
+@app.get("/family/announcements/reports/photos/{photo_id}")
+def family_event_report_photo(photo_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = session.execute(select(FamilyEventReportPhoto, FamilyEventReport, FamilyAnnouncement)
+        .join(FamilyEventReport, FamilyEventReport.id == FamilyEventReportPhoto.report_id)
+        .join(FamilyAnnouncement, FamilyAnnouncement.id == FamilyEventReport.announcement_id)
+        .where(FamilyEventReportPhoto.id == photo_id)).first()
+    if not record:
+        raise HTTPException(status_code=404)
+    photo, report, announcement = record
+    allowed = announcement.tenant_id in family_kennel_tenant_ids(user, session) and session.scalar(select(FamilyEventResponse.id).where(
+        FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.user_id == user.id,
+        FamilyEventResponse.status == "attending"))
+    if not allowed:
+        raise HTTPException(status_code=404)
+    return Response(content=photo.photo_data, media_type=photo.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.post("/family/announcements/view/{announcement_id}/response")
@@ -3443,9 +3497,103 @@ def family_event_responses_manage(announcement_id: int, access=Depends(require_t
     <div class="module"><h3>キャンセル待ち</h3><p><strong>{summary['waitlisted']}組</strong></p></div>
     <div class="module"><h3>検討中</h3><p><strong>{summary['maybe']}組</strong></p></div>
     <div class="module"><h3>不参加</h3><p><strong>{summary['declined']}組</strong></p></div></div>
+    <p><a class="button" href="/family/announcements/manage/{announcement.id}/report">活動報告を作成</a> <a class="button secondary" href="/family/announcements/manage/{announcement.id}/responses.csv">CSV出力</a> <a class="button secondary" href="/family/announcements/manage/{announcement.id}/responses.pdf">PDF出力</a></p>
     <table><tr><th>オーナー</th><th>回答</th><th>人数</th><th>愛犬</th><th>連絡事項</th><th>更新日時</th></tr>
     {rows or '<tr><td colspan="6">回答はまだありません。</td></tr>'}</table>'''
     return layout("イベント参加回答", body, user)
+
+
+@app.get("/family/announcements/manage/{announcement_id}/report", response_class=HTMLResponse)
+def family_event_report_manage(announcement_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    announcement = session.scalar(select(FamilyAnnouncement).where(FamilyAnnouncement.id == announcement_id,
+        FamilyAnnouncement.tenant_id == tenant.id, FamilyAnnouncement.event_date.is_not(None)))
+    if not announcement:
+        raise HTTPException(status_code=404)
+    report = session.scalar(select(FamilyEventReport).where(FamilyEventReport.announcement_id == announcement.id))
+    count = session.scalar(select(func.count(FamilyEventReportPhoto.id)).where(FamilyEventReportPhoto.report_id == report.id)) if report else 0
+    body = f'''<a class="button secondary" href="/family/announcements/manage/{announcement.id}/responses">参加回答へ戻る</a><h1>イベント活動報告</h1><p>{html.escape(announcement.title)}</p><form method="post" enctype="multipart/form-data"><label>開催報告（2,000文字まで）</label><textarea name="body" maxlength="2000" required>{html.escape(report.body if report else '')}</textarea><label>参加者限定写真（最大10枚・各8MBまで）</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple><p><small>現在 {count or 0}枚。新しい写真を選択すると既存写真を置き換えます。</small></p><button>活動報告を公開する</button></form>'''
+    return layout("イベント活動報告", body, user)
+
+
+@app.post("/family/announcements/manage/{announcement_id}/report")
+async def family_event_report_save(announcement_id: int, body: str = Form(...), photos: list[UploadFile] = File([]), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    announcement = session.scalar(select(FamilyAnnouncement).where(FamilyAnnouncement.id == announcement_id,
+        FamilyAnnouncement.tenant_id == tenant.id, FamilyAnnouncement.event_date.is_not(None)))
+    body = body.strip()
+    if not announcement or not body or len(body) > 2000 or len([p for p in photos if p.filename]) > 10:
+        raise HTTPException(status_code=400, detail="活動報告の内容を確認してください")
+    report = session.scalar(select(FamilyEventReport).where(FamilyEventReport.announcement_id == announcement.id))
+    if not report:
+        report = FamilyEventReport(announcement_id=announcement.id, body=body, created_by_id=user.id); session.add(report); session.flush()
+    report.body, report.updated_at = body, datetime.now(timezone.utc)
+    selected = [p for p in photos if p.filename]
+    if selected:
+        for old in session.scalars(select(FamilyEventReportPhoto).where(FamilyEventReportPhoto.report_id == report.id)).all(): session.delete(old)
+        for position, photo in enumerate(selected):
+            content = await photo.read(8 * 1024 * 1024 + 1)
+            if not content or len(content) > 8 * 1024 * 1024: raise HTTPException(status_code=400, detail="写真は1枚8MB以下にしてください")
+            try:
+                with Image.open(io.BytesIO(content)) as source:
+                    image = ImageOps.exif_transpose(source); image.thumbnail((1800, 1800), Image.Resampling.LANCZOS); image = image.convert("RGB"); output = io.BytesIO(); image.save(output, "JPEG", quality=88, optimize=True)
+            except Exception: raise HTTPException(status_code=400, detail="写真形式を確認してください")
+            session.add(FamilyEventReportPhoto(report_id=report.id, photo_data=output.getvalue(), photo_order=position))
+    session.commit()
+    return RedirectResponse(f"/family/announcements/manage/{announcement.id}/report", status_code=303)
+
+
+def family_event_export_records(announcement_id: int, tenant_id: int, session: Session):
+    announcement = session.scalar(select(FamilyAnnouncement).where(
+        FamilyAnnouncement.id == announcement_id, FamilyAnnouncement.tenant_id == tenant_id,
+        FamilyAnnouncement.event_date.is_not(None)))
+    if not announcement:
+        raise HTTPException(status_code=404, detail="イベントが見つかりません")
+    records = session.execute(select(FamilyEventResponse, User).join(User, User.id == FamilyEventResponse.user_id)
+        .where(FamilyEventResponse.announcement_id == announcement.id).order_by(FamilyEventResponse.status, User.name)).all()
+    return announcement, records
+
+
+@app.get("/family/announcements/manage/{announcement_id}/responses.csv")
+def family_event_responses_csv(announcement_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    announcement, records = family_event_export_records(announcement_id, tenant.id, session)
+    labels = {"attending": "参加", "waitlisted": "キャンセル待ち", "maybe": "検討中", "declined": "不参加"}
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["オーナー", "回答", "人数", "愛犬", "連絡事項", "更新日時"])
+    for response, owner in records:
+        writer.writerow([owner.name, labels.get(response.status, response.status), response.party_size,
+                         response.dog_names or "", response.note or "", response.updated_at.strftime("%Y-%m-%d %H:%M")])
+    filename = f"event-{announcement.id}-participants.csv"
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@app.get("/family/announcements/manage/{announcement_id}/responses.pdf")
+def family_event_responses_pdf(announcement_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    announcement, records = family_event_export_records(announcement_id, tenant.id, session)
+    labels = {"attending": "参加", "waitlisted": "キャンセル待ち", "maybe": "検討中", "declined": "不参加"}
+    output = io.BytesIO()
+    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    pdf = canvas.Canvas(output, pagesize=landscape(A4))
+    width, height = landscape(A4)
+    def header():
+        pdf.setFont("HeiseiKakuGo-W5", 15); pdf.drawString(35, height - 35, f"{announcement.title} 参加者名簿")
+        pdf.setFont("HeiseiKakuGo-W5", 9); pdf.drawString(35, height - 52, f"開催日：{announcement.event_date.strftime('%Y年%m月%d日')}　出力日：{date.today().strftime('%Y年%m月%d日')}")
+        pdf.drawString(35, height - 72, "オーナー"); pdf.drawString(175, height - 72, "回答"); pdf.drawString(275, height - 72, "人数"); pdf.drawString(320, height - 72, "愛犬"); pdf.drawString(500, height - 72, "連絡事項")
+    header(); y = height - 90
+    for response, owner in records:
+        if y < 35:
+            pdf.showPage(); header(); y = height - 90
+        values = [owner.name[:22], labels.get(response.status, response.status), f"{response.party_size}名", (response.dog_names or "－")[:28], (response.note or "－")[:45]]
+        for x, value in zip([35, 175, 275, 320, 500], values):
+            pdf.drawString(x, y, value)
+        y -= 18
+    pdf.save()
+    return Response(content=output.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="event-{announcement.id}-participants.pdf"'})
 
 
 @app.post("/family/announcements/manage")
@@ -3527,8 +3675,13 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     introduction = f'<div class="tenant"><strong>オーナー様からの紹介</strong><p style="white-space:pre-wrap">{html.escape(profile.introduction)}</p></div>' if profile and profile.introduction else ''
     album_items = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.dog_id == dog.id).order_by(FamilyDogAlbumItem.taken_on.desc(), FamilyDogAlbumItem.created_at.desc())).all()
     album_cards = ""
+    album_groups: set[str] = set()
     visibility_labels = {"private": "非公開", "relatives": "親戚犬まで", "family": "FAMILY全体"}
     for item in album_items:
+        if item.post_group and item.post_group in album_groups:
+            continue
+        if item.post_group:
+            album_groups.add(item.post_group)
         if item.visibility == "private" and item.uploaded_by_id != user.id:
             continue
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else "撮影日未設定"
@@ -3539,11 +3692,12 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
         <label>公開範囲</label><select name="visibility"><option value="private" {'selected' if item.visibility == 'private' else ''}>非公開（自分だけ）</option>
         <option value="relatives" {'selected' if item.visibility == 'relatives' else ''}>親戚犬のオーナーまで</option><option value="family" {'selected' if item.visibility == 'family' else ''}>FAMILY全体</option></select>
         <button>変更を保存</button></form></details>''' if item.uploaded_by_id == user.id else ''
+        group_count = session.scalar(select(func.count(FamilyDogAlbumItem.id)).where(FamilyDogAlbumItem.post_group == item.post_group)) if item.post_group else 1
         album_cards += f'''<article class="album-item"><a href="/family/dogs/{dog.id}/album/{item.id}/photo" target="_blank"><img src="/family/dogs/{dog.id}/album/{item.id}/photo" alt="{html.escape(item.caption or dog.call_name)}"></a>
-        <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span></p><p>{html.escape(item.caption or "コメントなし")}</p>{edit_form}{delete_button}</div></article>'''
+        <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span> {'<span class="badge">写真 ' + str(group_count) + '枚</span>' if group_count > 1 else ''}</p><p>{html.escape(item.caption or "コメントなし")}</p>{edit_form}{delete_button}</div></article>'''
     album_section = f'''<h2>成長アルバム</h2><p>写真を押すと大きく表示できます。</p><div class="album-grid">{album_cards or '<p>成長アルバムの写真はまだありません。</p>'}</div>
     <div class="tenant"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
-    <label>写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required>
+    <label>写真（1投稿につき最大10枚／各8MBまで）</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
     <label>撮影日</label><input type="date" name="taken_on">
     <label>コメント（300文字まで）</label><textarea name="caption" maxlength="300" placeholder="初めてのお散歩、1歳のお誕生日など"></textarea>
     <label>公開範囲</label><select name="visibility"><option value="private">非公開（自分だけ）</option><option value="relatives">親戚犬のオーナーまで</option><option value="family">FAMILY全体</option></select>
@@ -3636,7 +3790,7 @@ def family_dog_photo_delete(dog_id: int, user: User = Depends(require_user), ses
 
 
 @app.post("/family/dogs/{dog_id}/album")
-async def family_dog_album_add(dog_id: int, photo: UploadFile = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
+async def family_dog_album_add(dog_id: int, photos: list[UploadFile] = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
     if not family_owned_dog(dog_id, user, session):
         raise HTTPException(status_code=403, detail="この犬のアルバムへ追加できません")
     caption = caption.strip()
@@ -3646,26 +3800,27 @@ async def family_dog_album_add(dog_id: int, photo: UploadFile = File(...), taken
         taken_date = date.fromisoformat(taken_on) if taken_on else None
     except ValueError:
         raise HTTPException(status_code=400, detail="撮影日を確認してください")
-    content = await photo.read(8 * 1024 * 1024 + 1)
-    if not content or len(content) > 8 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="8MB以下の写真を選択してください")
-    try:
-        with Image.open(io.BytesIO(content)) as source:
-            if source.width * source.height > 25_000_000:
-                raise ValueError("image dimensions are too large")
-            image = ImageOps.exif_transpose(source)
-            image.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
-            if image.mode in {"RGBA", "LA"}:
-                background = Image.new("RGB", image.size, "white")
-                background.paste(image, mask=image.getchannel("A"))
-                image = background
-            else:
-                image = image.convert("RGB")
-            output = io.BytesIO()
-            image.save(output, format="JPEG", quality=88, optimize=True)
-    except Exception:
-        raise HTTPException(status_code=400, detail="JPG・PNG・WebP形式の写真を選択してください")
-    session.add(FamilyDogAlbumItem(dog_id=dog_id, uploaded_by_id=user.id, photo_data=output.getvalue(), photo_content_type="image/jpeg", taken_on=taken_date, caption=caption or None, visibility=visibility))
+    photos = [photo for photo in photos if photo.filename]
+    if not photos or len(photos) > 10:
+        raise HTTPException(status_code=400, detail="写真は1枚から10枚まで選択してください")
+    group = secrets.token_hex(16)
+    for position, photo in enumerate(photos):
+        content = await photo.read(8 * 1024 * 1024 + 1)
+        if not content or len(content) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="写真は1枚8MB以下にしてください")
+        try:
+            with Image.open(io.BytesIO(content)) as source:
+                if source.width * source.height > 25_000_000:
+                    raise ValueError("image dimensions are too large")
+                image = ImageOps.exif_transpose(source); image.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+                if image.mode in {"RGBA", "LA"}:
+                    background = Image.new("RGB", image.size, "white"); background.paste(image, mask=image.getchannel("A")); image = background
+                else:
+                    image = image.convert("RGB")
+                output = io.BytesIO(); image.save(output, format="JPEG", quality=88, optimize=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="JPG・PNG・WebP形式の写真を選択してください")
+        session.add(FamilyDogAlbumItem(dog_id=dog_id, uploaded_by_id=user.id, photo_data=output.getvalue(), photo_content_type="image/jpeg", taken_on=taken_date, caption=caption or None, visibility=visibility, post_group=group, photo_order=position))
     session.commit()
     return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
@@ -3687,7 +3842,9 @@ def family_dog_album_delete(dog_id: int, item_id: int, user: User = Depends(requ
     item = session.scalar(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.id == item_id, FamilyDogAlbumItem.dog_id == dog_id, FamilyDogAlbumItem.uploaded_by_id == user.id))
     if not item:
         raise HTTPException(status_code=404)
-    session.delete(item)
+    targets = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.post_group == item.post_group)).all() if item.post_group else [item]
+    for target in targets:
+        session.delete(target)
     session.commit()
     return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
@@ -3706,7 +3863,9 @@ def family_dog_album_edit(dog_id: int, item_id: int, taken_on: str = Form(""), c
         parsed_taken_on = date.fromisoformat(taken_on) if taken_on else None
     except ValueError:
         raise HTTPException(status_code=400, detail="撮影日を確認してください")
-    item.taken_on, item.caption, item.visibility = parsed_taken_on, caption or None, visibility
+    targets = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.post_group == item.post_group)).all() if item.post_group else [item]
+    for target in targets:
+        target.taken_on, target.caption, target.visibility = parsed_taken_on, caption or None, visibility
     session.commit()
     return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
@@ -4337,9 +4496,10 @@ def family_timeline_items(user: User, session: Session) -> dict[int, tuple[Famil
         .where(FamilyDogAlbumItem.visibility.in_(["family", "relatives"]), Dog.active.is_(True),
                Tenant.active.is_(True), Tenant.deleted.is_(False), OwnerProfile.profile_public.is_(True),
                OwnerProfile.show_dogs.is_(True))
-        .order_by(FamilyDogAlbumItem.created_at.desc()).limit(1000)
+        .order_by(FamilyDogAlbumItem.created_at.desc(), FamilyDogAlbumItem.photo_order).limit(1000)
     ).all()
     visible: dict[int, tuple[FamilyDogAlbumItem, Dog, Tenant, OwnerProfile]] = {}
+    shown_groups: set[str] = set()
     for item, dog, tenant, profile in records:
         allowed = item.uploaded_by_id == user.id
         if item.visibility == "family" and dog.tenant_id in tenant_ids:
@@ -4347,6 +4507,10 @@ def family_timeline_items(user: User, session: Session) -> dict[int, tuple[Famil
         if item.visibility == "relatives" and any(family_relationship(session, source, dog) for source in source_dogs):
             allowed = True
         if allowed:
+            if item.post_group and item.post_group in shown_groups:
+                continue
+            if item.post_group:
+                shown_groups.add(item.post_group)
             visible[item.id] = (item, dog, tenant, profile)
     return visible
 
@@ -4385,9 +4549,10 @@ def family_timeline(kennel_id: int = 0, dog_id: int = 0, scope: str = "", page: 
     for item, dog, tenant, profile in page_records:
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
         like_count, comment_count = like_counts.get(item.id, 0), comment_counts.get(item.id, 0)
+        photo_count = session.scalar(select(func.count(FamilyDogAlbumItem.id)).where(FamilyDogAlbumItem.post_group == item.post_group)) if item.post_group else 1
         posts += f'''<a class="timeline-tile" href="/family/timeline/{item.id}">
         <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" loading="lazy">
-        <span class="timeline-overlay"><strong>{html.escape(dog.call_name)}</strong>
+        <span class="timeline-overlay"><strong>{html.escape(dog.call_name)}{'　▣ ' + str(photo_count) if photo_count > 1 else ''}</strong>
         <span class="timeline-stats"><span>{taken}</span><span>♥ {like_count}　💬 {comment_count}</span></span></span></a>'''
     if not posts:
         posts = '''<div class="tenant" style="grid-column:1/-1"><p>条件に一致する写真はありません。</p><p>絞り込み条件を変更してご確認ください。</p></div>'''
@@ -4471,6 +4636,8 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
         comments += f'''<div class="tenant" style="margin:10px 0;padding:12px"><p style="margin:0 0 5px"><strong>{html.escape(comment_name)}</strong> <small>{comment.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></p><p style="white-space:pre-wrap;margin:0">{html.escape(comment.body)}</p>{delete_form} {report_link}</div>'''
     comments = comments or '<p><small>最初のコメントを送りましょう。</small></p>'
     caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
+    post_photos = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.post_group == item.post_group).order_by(FamilyDogAlbumItem.photo_order)).all() if item.post_group else [item]
+    photo_gallery = ''.join(f'<div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/{photo_item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真 {index + 1}"></div>' for index, photo_item in enumerate(post_photos))
     photo_report = ""
     if item.uploaded_by_id != user.id:
         photo_report = '<small>犬舎へ通報済み</small>' if ("photo", item.id) in reported_targets else f'<a href="/family/timeline/{item.id}/report?target_type=photo&amp;target_id={item.id}"><small>この投稿を犬舎へ通報</small></a>'
@@ -4478,7 +4645,7 @@ def family_timeline_detail(item_id: int, user: User = Depends(require_user), ses
     <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
     <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
     <span class="badge">{html.escape(visibility)}</span></div>
-    <div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真"></div>
+    {photo_gallery}
     {caption}<p><small>撮影日：{taken}</small>　{photo_report}</p>
     <form class="inline" method="post" action="/family/timeline/{item.id}/like?return_to=detail"><button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}
     <section style="margin-top:25px"><h2>コメント</h2>{comments}<form method="post" action="/family/timeline/{item.id}/comments"><label>コメント（300文字まで）</label><textarea name="body" maxlength="300" required></textarea><button>コメントを送る</button></form><p><small>コメントは同じ写真を閲覧できるFAMILYに表示されます。不適切な内容は犬舎管理者が非表示にできます。</small></p></section></article>'''
@@ -4572,10 +4739,13 @@ def family_timeline_like_toggle(item_id: int, return_to: str = "", user: User = 
 
 @app.get("/family/timeline/{item_id}/photo")
 def family_timeline_photo(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
-    record = family_timeline_items(user, session).get(item_id)
-    if not record:
+    visible = family_timeline_items(user, session)
+    record = visible.get(item_id)
+    item = session.get(FamilyDogAlbumItem, item_id)
+    if not record and item and item.post_group:
+        record = next((value for value in visible.values() if value[0].post_group == item.post_group), None)
+    if not record or not item:
         raise HTTPException(status_code=404)
-    item = record[0]
     return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
