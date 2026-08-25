@@ -310,6 +310,17 @@ class DogOwnership(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyDogProfile(Base):
+    __tablename__ = "family_dog_profiles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), unique=True, index=True)
+    photo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    introduction: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -2578,7 +2589,10 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
     for ownership, dog, tenant in records:
         sex = {"male": "牡", "female": "牝"}.get(dog.sex, dog.sex)
         relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+        family_profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog.id))
+        photo = f'<img src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}" style="width:100%;height:190px;object-fit:cover;border-radius:12px;margin-bottom:12px">' if family_profile and family_profile.photo_data else ''
         cards += f'''<a class="module" href="/family/dogs/{dog.id}">
+          {photo}
           <h3>{html.escape(dog.call_name)}</h3>
           <p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
           <p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(sex)} ／ {html.escape(dog.color or "毛色未登録")}</p>
@@ -2608,16 +2622,101 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     birth = dog.birth_date.strftime("%Y年%m月%d日") if dog.birth_date else "未登録"
     status_label = {"resident": "在舎中", "reserved": "予約済", "sold": "販売済", "transferred": "譲渡済"}.get(dog.status, dog.status)
     relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog.id))
+    sire = session.get(Dog, dog.sire_id) if dog.sire_id else None
+    dam = session.get(Dog, dog.dam_id) if dog.dam_id else None
+    age = "未登録"
+    if dog.birth_date:
+        today = date.today()
+        months = (today.year - dog.birth_date.year) * 12 + today.month - dog.birth_date.month - (today.day < dog.birth_date.day)
+        age = f"{months // 12}歳{months % 12}か月" if months >= 12 else f"{max(months, 0)}か月"
+    photo = f'<img src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}" style="width:100%;max-height:520px;object-fit:cover;border-radius:18px">' if profile and profile.photo_data else '<div class="tenant" style="text-align:center;padding:55px">愛犬の写真はまだ登録されていません。</div>'
+    introduction = f'<div class="tenant"><strong>オーナー様からの紹介</strong><p style="white-space:pre-wrap">{html.escape(profile.introduction)}</p></div>' if profile and profile.introduction else ''
+    edit_form = f'''<h2>愛犬プロフィール写真・紹介文</h2><form method="post" action="/family/dogs/{dog.id}/profile" enctype="multipart/form-data">
+    <label>メイン写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp">
+    <label>愛犬の紹介（300文字まで）</label><textarea name="introduction" maxlength="300" placeholder="性格や好きなことなどをご紹介ください。">{html.escape(profile.introduction if profile and profile.introduction else '')}</textarea>
+    <button>愛犬プロフィールを保存</button></form>
+    {f'<form method="post" action="/family/dogs/{dog.id}/photo/delete"><button class="danger">写真を削除</button></form>' if profile and profile.photo_data else ''}''' if ownership.relationship == "primary" else '<p><small>写真と紹介文は主オーナーが変更できます。</small></p>'
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a>
-    <h1>{html.escape(dog.call_name)}</h1>
-    <p><span class="badge">{relation}</span></p>
+    <h1>{html.escape(dog.call_name)}</h1><p><span class="badge">{relation}</span> {title_marks(dog.titles)}</p>
+    {photo}{introduction}
     <div class="tenant"><strong>{html.escape(tenant.name)}</strong>から共有されています。</div>
     <table><tr><th>血統書名</th><td>{html.escape(dog.registered_name or "未登録")}</td></tr>
     <tr><th>犬種</th><td>{html.escape(dog.breed or "未登録")}</td></tr>
-    <tr><th>性別</th><td>{html.escape(sex)}</td></tr><tr><th>生年月日</th><td>{birth}</td></tr>
-    <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr></table>
-    <p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
+    <tr><th>性別</th><td>{html.escape(sex)}</td></tr><tr><th>生年月日・年齢</th><td>{birth}（{age}）</td></tr>
+    <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr>
+    <tr><th>父犬</th><td>{html.escape((sire.registered_name or sire.call_name) if sire else "未登録")} {title_marks(sire.titles) if sire else ''}</td></tr>
+    <tr><th>母犬</th><td>{html.escape((dam.registered_name or dam.call_name) if dam else "未登録")} {title_marks(dam.titles) if dam else ''}</td></tr></table>
+    {edit_form}<p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
     return family_layout(f"{dog.call_name}｜FAMILY", body, user, session)
+
+
+def family_owned_dog(dog_id: int, user: User, session: Session):
+    return session.execute(
+        select(DogOwnership, Dog).join(Dog, Dog.id == DogOwnership.dog_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.dog_id == dog_id, DogOwnership.active.is_(True))
+    ).first()
+
+
+@app.get("/family/dogs/{dog_id}/photo")
+def family_dog_photo(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404)
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog_id))
+    if not profile or not profile.photo_data:
+        raise HTTPException(status_code=404)
+    return Response(content=profile.photo_data, media_type=profile.photo_content_type or "image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.post("/family/dogs/{dog_id}/profile")
+async def family_dog_profile_save(dog_id: int, introduction: str = Form(""), photo: UploadFile | None = File(None), user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_owned_dog(dog_id, user, session)
+    if not record or record[0].relationship != "primary":
+        raise HTTPException(status_code=403, detail="主オーナーだけが愛犬プロフィールを変更できます")
+    introduction = introduction.strip()
+    if len(introduction) > 300:
+        raise HTTPException(status_code=400, detail="紹介文は300文字以内で入力してください")
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog_id))
+    if not profile:
+        profile = FamilyDogProfile(dog_id=dog_id, updated_by_id=user.id)
+        session.add(profile)
+    if photo and photo.filename:
+        content = await photo.read(8 * 1024 * 1024 + 1)
+        if len(content) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="写真は8MB以下にしてください")
+        try:
+            with Image.open(io.BytesIO(content)) as source:
+                if source.width * source.height > 25_000_000:
+                    raise ValueError("image dimensions are too large")
+                image = ImageOps.exif_transpose(source)
+                image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+                if image.mode in {"RGBA", "LA"}:
+                    background = Image.new("RGB", image.size, "white")
+                    background.paste(image, mask=image.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+                output = io.BytesIO()
+                image.save(output, format="JPEG", quality=88, optimize=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="JPG・PNG・WebP形式の写真を選択してください")
+        profile.photo_data, profile.photo_content_type = output.getvalue(), "image/jpeg"
+    profile.introduction, profile.updated_by_id, profile.updated_at = introduction or None, user.id, datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
+
+
+@app.post("/family/dogs/{dog_id}/photo/delete")
+def family_dog_photo_delete(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_owned_dog(dog_id, user, session)
+    if not record or record[0].relationship != "primary":
+        raise HTTPException(status_code=403)
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog_id))
+    if profile:
+        profile.photo_data, profile.photo_content_type = None, None
+        profile.updated_by_id, profile.updated_at = user.id, datetime.now(timezone.utc)
+        session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
 
 def owner_profile_for(user: User, session: Session) -> OwnerProfile:
