@@ -367,6 +367,8 @@ class OwnerProfile(Base):
     show_dogs: Mapped[bool] = mapped_column(Boolean, default=False)
     show_parents: Mapped[bool] = mapped_column(Boolean, default=False)
     show_relatives: Mapped[bool] = mapped_column(Boolean, default=False)
+    instagram_username: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    show_instagram: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -582,6 +584,8 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_dogs BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_parents BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_relatives BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS instagram_username VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_instagram BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dog_transfers ADD COLUMN IF NOT EXISTS amount INTEGER"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -2905,6 +2909,9 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_prefecture" value="true" {checked(profile.show_prefecture)}> 都道府県を公開する</label>
     <label>自己紹介（500文字まで）</label><textarea name="bio" maxlength="500" placeholder="愛犬との暮らしや、ご自身についてご紹介ください。">{html.escape(profile.bio or '')}</textarea>
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_bio" value="true" {checked(profile.show_bio)}> 自己紹介を公開する</label>
+    <label>Instagram（ユーザーネームまたはプロフィールURL）</label><input name="instagram" value="{html.escape(profile.instagram_username or '')}" maxlength="100" placeholder="例：@estrella_dog または https://www.instagram.com/estrella_dog/">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_instagram" value="true" {checked(profile.show_instagram)}> Instagramを公開する</label>
+    <p><small>公開すると、プロフィールからInstagramを別画面で開けます。パスワードは入力しないでください。</small></p>
     <label>プロフィール写真（JPG・PNG・WebP／8MBまで）</label><input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_photo" value="true" {checked(profile.show_photo)}> プロフィール写真を公開する</label>
     <h2>愛犬・血統の公開設定</h2>
@@ -2912,7 +2919,7 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_parents" value="true" {checked(profile.show_parents)}> 愛犬の父犬・母犬も公開する</label>
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_relatives" value="true" {checked(profile.show_relatives)}> 同腹兄弟・親戚犬を自動表示する</label>
     <p><small>父母を公開しても、血統書番号・マイクロチップ番号・所有者情報は表示されません。</small></p>
-    <div class="tenant"><label style="font-size:16px"><input style="width:auto" type="checkbox" name="profile_public" value="true" {checked(profile.profile_public)}> プロフィール全体をFAMILYメンバーへ公開する</label>
+    <div class="tenant"><label style="font-size:16px"><input style="width:auto" type="checkbox" name="profile_public" value="true" {checked(profile.profile_public)}> プロフィール全体を犬舎FAMILY会へ公開する</label>
     <p><small>ここをオフにすると、各項目がオンでもプロフィール全体が非公開になります。</small></p></div>
     <button>設定を保存</button></form>
     {f'<form method="post" action="/family/profile/photo/delete"><button class="danger">登録写真を削除</button></form>' if profile.photo_data else ''}'''
@@ -2921,10 +2928,10 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
 
 @app.post("/family/profile")
 async def family_profile_save(
-    account_name: str = Form(""), nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
+    account_name: str = Form(""), nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), instagram: str = Form(""), photo: UploadFile | None = File(None),
     profile_public: bool = Form(False), show_nickname: bool = Form(False), show_prefecture: bool = Form(False),
     show_bio: bool = Form(False), show_photo: bool = Form(False), show_dogs: bool = Form(False), show_parents: bool = Form(False),
-    show_relatives: bool = Form(False),
+    show_relatives: bool = Form(False), show_instagram: bool = Form(False),
     user: User = Depends(require_user), session: Session = Depends(db),
 ):
     normalized_account_name = " ".join(account_name.split())
@@ -2934,6 +2941,11 @@ async def family_profile_save(
         raise HTTPException(status_code=400, detail="都道府県を確認してください")
     if len(nickname.strip()) > 60 or len(bio.strip()) > 500:
         raise HTTPException(status_code=400, detail="プロフィールの文字数を確認してください")
+    instagram_value = instagram.strip().rstrip("/")
+    instagram_match = re.fullmatch(r"(?:https?://)?(?:www\.)?instagram\.com/([A-Za-z0-9._]{1,30})", instagram_value, re.IGNORECASE)
+    instagram_username = instagram_match.group(1) if instagram_match else instagram_value.removeprefix("@")
+    if instagram_username and not re.fullmatch(r"[A-Za-z0-9._]{1,30}", instagram_username):
+        return HTMLResponse(family_layout("Instagram入力エラー", '<p class="error">Instagramのユーザーネーム、または instagram.com のプロフィールURLを入力してください。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=400)
     profile = owner_profile_for(user, session)
     if photo and photo.filename:
         content = await photo.read(8 * 1024 * 1024 + 1)
@@ -2965,10 +2977,12 @@ async def family_profile_save(
     profile.nickname = nickname.strip() or None
     profile.prefecture = prefecture or None
     profile.bio = bio.strip() or None
+    profile.instagram_username = instagram_username or None
     profile.profile_public, profile.show_nickname = profile_public, show_nickname
     profile.show_prefecture, profile.show_bio, profile.show_photo = show_prefecture, show_bio, show_photo
     profile.show_dogs, profile.show_parents = show_dogs, show_parents and show_dogs
     profile.show_relatives = show_relatives and show_dogs
+    profile.show_instagram = show_instagram and bool(instagram_username)
     profile.updated_at = datetime.now(timezone.utc)
     session.commit()
     return RedirectResponse("/family/profile", status_code=303)
@@ -3120,8 +3134,9 @@ def family_kennel_page(user: User = Depends(require_user), session: Session = De
             if len(dogs) > 4:
                 dog_names += f" ほか{len(dogs) - 4}頭"
             own_badge = ' <span class="badge">あなた</span>' if profile.user_id == user.id else ""
+            instagram = f'<p>Instagram：@{html.escape(profile.instagram_username)}</p>' if profile.show_instagram and profile.instagram_username else ""
             member_cards += f'''<a class="module" href="/family/members/{profile.public_id}">{photo}<h3>{html.escape(member_name)}{own_badge}</h3>
-            <p>{html.escape(location)}</p><p><strong>愛犬：</strong>{dog_names}</p><p><span class="badge">{len(dogs)}頭</span></p></a>'''
+            <p>{html.escape(location)}</p>{instagram}<p><strong>愛犬：</strong>{dog_names}</p><p><span class="badge">{len(dogs)}頭</span></p></a>'''
         sections += f'''<section class="tenant"><h2 style="margin-top:0">{html.escape(tenant.name)} FAMILY会</h2>
         <p>同じ犬舎から愛犬を迎えた、公開中のオーナー様です。</p><div class="grid">{member_cards or '<p>公開中のメンバーはまだいません。</p>'}</div></section>'''
     if not sections:
@@ -3252,6 +3267,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
     photo = f'<img src="/family/members/{profile.public_id}/photo" alt="プロフィール写真" style="width:180px;height:180px;object-fit:cover;border-radius:50%;border:5px solid #ead0d5">' if profile.show_photo and profile.photo_data else ""
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
     bio = f'<div class="tenant" style="white-space:pre-wrap">{html.escape(profile.bio)}</div>' if profile.show_bio and profile.bio else ""
+    instagram = f'''<p><a class="button" href="https://www.instagram.com/{html.escape(profile.instagram_username)}/" target="_blank" rel="noopener noreferrer">Instagram @{html.escape(profile.instagram_username)} を見る ↗</a></p>''' if profile.show_instagram and profile.instagram_username else ""
     dogs_section = ""
     records = []
     if profile.show_dogs:
@@ -3319,7 +3335,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
             {f'<h3>親戚犬</h3><div class="grid">{relative_cards}</div>' if relative_cards else ''}'''
         else:
             relatives_section = '<h2>同腹兄弟・親戚犬</h2><p>現在、公開中のFAMILYメンバーには該当する犬がいません。</p>'
-    body = f'''<a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}{relatives_section}
+    body = f'''<a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{instagram}{bio}{dogs_section}{relatives_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
     return family_layout(f"{title}｜FAMILY", body, user, session)
 
