@@ -13,7 +13,7 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 
@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
 from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, and_, create_engine, func, select, text
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, defer, mapped_column, sessionmaker
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pypdf import PdfReader
@@ -4331,12 +4331,13 @@ def family_timeline_items(user: User, session: Session) -> dict[int, tuple[Famil
     tenant_ids = family_kennel_tenant_ids(user, session)
     records = session.execute(
         select(FamilyDogAlbumItem, Dog, Tenant, OwnerProfile)
+        .options(defer(FamilyDogAlbumItem.photo_data))
         .join(Dog, Dog.id == FamilyDogAlbumItem.dog_id).join(Tenant, Tenant.id == Dog.tenant_id)
         .join(OwnerProfile, OwnerProfile.user_id == FamilyDogAlbumItem.uploaded_by_id)
         .where(FamilyDogAlbumItem.visibility.in_(["family", "relatives"]), Dog.active.is_(True),
                Tenant.active.is_(True), Tenant.deleted.is_(False), OwnerProfile.profile_public.is_(True),
                OwnerProfile.show_dogs.is_(True))
-        .order_by(FamilyDogAlbumItem.created_at.desc()).limit(200)
+        .order_by(FamilyDogAlbumItem.created_at.desc()).limit(1000)
     ).all()
     visible: dict[int, tuple[FamilyDogAlbumItem, Dog, Tenant, OwnerProfile]] = {}
     for item, dog, tenant, profile in records:
@@ -4351,24 +4352,59 @@ def family_timeline_items(user: User, session: Session) -> dict[int, tuple[Famil
 
 
 @app.get("/family/timeline", response_class=HTMLResponse)
-def family_timeline(user: User = Depends(require_user), session: Session = Depends(db)):
+def family_timeline(kennel_id: int = 0, dog_id: int = 0, scope: str = "", page: int = 1,
+                    user: User = Depends(require_user), session: Session = Depends(db)):
     visible = family_timeline_items(user, session)
+    all_records = list(visible.values())
+    kennels = {tenant.id: tenant.name for _, _, tenant, _ in all_records}
+    dogs = {dog.id: dog.call_name for _, dog, _, _ in all_records if not kennel_id or dog.tenant_id == kennel_id}
+    filtered = []
+    for record in all_records:
+        item, dog, tenant, _ = record
+        if kennel_id and tenant.id != kennel_id:
+            continue
+        if dog_id and dog.id != dog_id:
+            continue
+        if scope == "mine" and item.uploaded_by_id != user.id:
+            continue
+        if scope in {"family", "relatives"} and item.visibility != scope:
+            continue
+        filtered.append(record)
+    page_size = 48
+    total = len(filtered)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(max(page, 1), total_pages)
+    page_records = filtered[(page - 1) * page_size:page * page_size]
+    page_ids = [item.id for item, _, _, _ in page_records]
+    like_counts = dict(session.execute(select(FamilyTimelineLike.album_item_id, func.count(FamilyTimelineLike.id)).where(
+        FamilyTimelineLike.album_item_id.in_(page_ids)).group_by(FamilyTimelineLike.album_item_id)).all()) if page_ids else {}
+    comment_counts = dict(session.execute(select(FamilyTimelineComment.album_item_id, func.count(FamilyTimelineComment.id)).where(
+        FamilyTimelineComment.album_item_id.in_(page_ids), FamilyTimelineComment.deleted_at.is_(None),
+        FamilyTimelineComment.hidden_at.is_(None)).group_by(FamilyTimelineComment.album_item_id)).all()) if page_ids else {}
     posts = ""
-    for item, dog, tenant, profile in list(visible.values())[:50]:
+    for item, dog, tenant, profile in page_records:
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
-        like_count = session.scalar(select(func.count(FamilyTimelineLike.id)).where(FamilyTimelineLike.album_item_id == item.id)) or 0
-        comment_count = session.scalar(select(func.count(FamilyTimelineComment.id)).where(
-            FamilyTimelineComment.album_item_id == item.id, FamilyTimelineComment.deleted_at.is_(None),
-            FamilyTimelineComment.hidden_at.is_(None))) or 0
+        like_count, comment_count = like_counts.get(item.id, 0), comment_counts.get(item.id, 0)
         posts += f'''<a class="timeline-tile" href="/family/timeline/{item.id}">
         <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" loading="lazy">
         <span class="timeline-overlay"><strong>{html.escape(dog.call_name)}</strong>
         <span class="timeline-stats"><span>{taken}</span><span>♥ {like_count}　💬 {comment_count}</span></span></span></a>'''
     if not posts:
-        posts = '''<div class="tenant" style="grid-column:1/-1"><p>タイムラインに表示できる写真はまだありません。</p>
-        <p>「うちの子」から愛犬を開き、成長アルバムへ写真を追加してください。公開範囲を「同じ犬舎のFAMILY」または「兄弟・親戚犬」にすると表示されます。</p></div>'''
+        posts = '''<div class="tenant" style="grid-column:1/-1"><p>条件に一致する写真はありません。</p><p>絞り込み条件を変更してご確認ください。</p></div>'''
+    kennel_options = '<option value="0">すべての犬舎</option>' + "".join(
+        f'<option value="{key}" {"selected" if kennel_id == key else ""}>{html.escape(value)}</option>' for key, value in sorted(kennels.items(), key=lambda row: row[1]))
+    dog_options = '<option value="0">すべての愛犬</option>' + "".join(
+        f'<option value="{key}" {"selected" if dog_id == key else ""}>{html.escape(value)}</option>' for key, value in sorted(dogs.items(), key=lambda row: row[1]))
+    scope_options = "".join(f'<option value="{key}" {"selected" if scope == key else ""}>{label}</option>' for key, label in [
+        ("", "すべての公開投稿"), ("family", "同じ犬舎のFAMILY"), ("relatives", "兄弟・親戚犬"), ("mine", "自分の投稿")])
+    base_params = {"kennel_id": kennel_id, "dog_id": dog_id, "scope": scope}
+    prev_link = f'<a class="button secondary" href="/family/timeline?{urlencode({**base_params, "page": page - 1})}">新しい写真へ</a>' if page > 1 else ""
+    next_link = f'<a class="button secondary" href="/family/timeline?{urlencode({**base_params, "page": page + 1})}">過去の写真へ</a>' if page < total_pages else ""
+    pager = f'<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:22px 0">{prev_link}<span>{page} / {total_pages}ページ</span>{next_link}</div>' if total else ""
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYタイムライン</h1>
-    <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。写真を押すと詳細を確認できます。</p><div class="timeline-grid">{posts}</div>
+    <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。</p>
+    <form method="get" action="/family/timeline" class="tenant"><div class="grid"><div><label>犬舎</label><select name="kennel_id">{kennel_options}</select></div><div><label>愛犬</label><select name="dog_id">{dog_options}</select></div><div><label>公開区分</label><select name="scope">{scope_options}</select></div></div><button>この条件で表示</button> <a class="button secondary" href="/family/timeline">条件を解除</a></form>
+    <p><strong>{total}件</strong>の写真が見つかりました。</p><div class="timeline-grid">{posts}</div>{pager}
     <p><small>「自分だけ」に設定した写真はタイムラインには表示されません。</small></p>'''
     return family_layout("FAMILYタイムライン", body, user, session)
 
