@@ -321,6 +321,19 @@ class FamilyDogProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyDogAlbumItem(Base):
+    __tablename__ = "family_dog_album_items"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    photo_data: Mapped[bytes] = mapped_column(LargeBinary)
+    photo_content_type: Mapped[str] = mapped_column(String(50), default="image/jpeg")
+    taken_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    caption: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(20), default="private", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -503,6 +516,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
 .brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.title-crown{{display:inline-flex;align-items:center;gap:2px;margin:2px 5px 2px 0;font-size:20px;font-weight:800}}.title-crown small{{font-size:9px;color:var(--ink)}}.crown-silver{{color:#9da3aa;text-shadow:0 1px #fff}}.crown-gold{{color:#d4a72c;text-shadow:0 1px #fff}}.crown-rose{{color:#cf788b}}.crown-purple{{color:#9167a8}}.crown-blue{{color:#668caf}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
 .owner-header{{position:sticky;top:0;z-index:20;min-height:68px;padding:11px 28px;background:#633b4a;color:#fff;display:flex;align-items:center;gap:28px;box-shadow:0 5px 20px #4b263326}}.owner-brand{{color:#fff;text-decoration:none;font-family:Georgia,serif;letter-spacing:1.3px;white-space:nowrap}}.owner-header nav{{display:flex;gap:7px;flex:1}}.owner-header nav a{{color:#f8eef1;text-decoration:none;padding:9px 12px;border-radius:9px}}.owner-header nav a:hover{{background:#ffffff17}}.owner-account{{display:flex;align-items:center;gap:10px;font-size:13px}}.owner-account form{{margin:0}}.owner-account button{{margin:0;padding:8px 12px;background:#ffffff1c;box-shadow:none}}.owner-view main{{margin:0 auto;max-width:1180px;padding:34px 28px}}
 .family-photo-stage{{width:100%;min-height:260px;max-height:70vh;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:18px;background:linear-gradient(145deg,#f7edef,#fff);border:1px solid var(--line);margin-bottom:18px}}.family-dog-photo{{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain}}.family-dog-thumb{{display:block;width:100%;height:190px;object-fit:contain;border-radius:12px;margin-bottom:12px;background:#f7edef}}
+.album-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;margin:18px 0}}.album-item{{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}}.album-item a{{display:flex;height:210px;align-items:center;justify-content:center;background:#f7edef}}.album-item img{{display:block;max-width:100%;max-height:210px;width:auto;height:auto;object-fit:contain}}.album-meta{{padding:13px}}.album-meta p{{margin:5px 0}}.album-meta form button{{margin-top:8px}}
 @media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
 
@@ -2633,6 +2647,23 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
         age = f"{months // 12}歳{months % 12}か月" if months >= 12 else f"{max(months, 0)}か月"
     photo = f'<div class="family-photo-stage"><img class="family-dog-photo" src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}"></div>' if profile and profile.photo_data else '<div class="tenant" style="text-align:center;padding:55px">愛犬の写真はまだ登録されていません。</div>'
     introduction = f'<div class="tenant"><strong>オーナー様からの紹介</strong><p style="white-space:pre-wrap">{html.escape(profile.introduction)}</p></div>' if profile and profile.introduction else ''
+    album_items = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.dog_id == dog.id).order_by(FamilyDogAlbumItem.taken_on.desc(), FamilyDogAlbumItem.created_at.desc())).all()
+    album_cards = ""
+    visibility_labels = {"private": "非公開", "relatives": "親戚犬まで", "family": "FAMILY全体"}
+    for item in album_items:
+        if item.visibility == "private" and item.uploaded_by_id != user.id:
+            continue
+        taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else "撮影日未設定"
+        delete_button = f'<form method="post" action="/family/dogs/{dog.id}/album/{item.id}/delete"><button class="danger">削除</button></form>' if item.uploaded_by_id == user.id else ''
+        album_cards += f'''<article class="album-item"><a href="/family/dogs/{dog.id}/album/{item.id}/photo" target="_blank"><img src="/family/dogs/{dog.id}/album/{item.id}/photo" alt="{html.escape(item.caption or dog.call_name)}"></a>
+        <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span></p><p>{html.escape(item.caption or "コメントなし")}</p>{delete_button}</div></article>'''
+    album_section = f'''<h2>成長アルバム</h2><p>写真を押すと大きく表示できます。</p><div class="album-grid">{album_cards or '<p>成長アルバムの写真はまだありません。</p>'}</div>
+    <div class="tenant"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
+    <label>写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required>
+    <label>撮影日</label><input type="date" name="taken_on">
+    <label>コメント（300文字まで）</label><textarea name="caption" maxlength="300" placeholder="初めてのお散歩、1歳のお誕生日など"></textarea>
+    <label>公開範囲</label><select name="visibility"><option value="private">非公開（自分だけ）</option><option value="relatives">親戚犬のオーナーまで</option><option value="family">FAMILY全体</option></select>
+    <button>アルバムへ追加</button></form></div>'''
     edit_form = f'''<h2>愛犬プロフィール写真・紹介文</h2><form method="post" action="/family/dogs/{dog.id}/profile" enctype="multipart/form-data">
     <label>メイン写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp">
     <label>愛犬の紹介（300文字まで）</label><textarea name="introduction" maxlength="300" placeholder="性格や好きなことなどをご紹介ください。">{html.escape(profile.introduction if profile and profile.introduction else '')}</textarea>
@@ -2648,7 +2679,7 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr>
     <tr><th>父犬</th><td>{html.escape((sire.registered_name or sire.call_name) if sire else "未登録")} {title_marks(sire.titles) if sire else ''}</td></tr>
     <tr><th>母犬</th><td>{html.escape((dam.registered_name or dam.call_name) if dam else "未登録")} {title_marks(dam.titles) if dam else ''}</td></tr></table>
-    {edit_form}<p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
+    {album_section}{edit_form}<p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
     return family_layout(f"{dog.call_name}｜FAMILY", body, user, session)
 
 
@@ -2717,6 +2748,63 @@ def family_dog_photo_delete(dog_id: int, user: User = Depends(require_user), ses
         profile.photo_data, profile.photo_content_type = None, None
         profile.updated_by_id, profile.updated_at = user.id, datetime.now(timezone.utc)
         session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
+
+
+@app.post("/family/dogs/{dog_id}/album")
+async def family_dog_album_add(dog_id: int, photo: UploadFile = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=403, detail="この犬のアルバムへ追加できません")
+    caption = caption.strip()
+    if len(caption) > 300 or visibility not in {"private", "relatives", "family"}:
+        raise HTTPException(status_code=400, detail="コメントまたは公開範囲を確認してください")
+    try:
+        taken_date = date.fromisoformat(taken_on) if taken_on else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="撮影日を確認してください")
+    content = await photo.read(8 * 1024 * 1024 + 1)
+    if not content or len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="8MB以下の写真を選択してください")
+    try:
+        with Image.open(io.BytesIO(content)) as source:
+            if source.width * source.height > 25_000_000:
+                raise ValueError("image dimensions are too large")
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((1800, 1800), Image.Resampling.LANCZOS)
+            if image.mode in {"RGBA", "LA"}:
+                background = Image.new("RGB", image.size, "white")
+                background.paste(image, mask=image.getchannel("A"))
+                image = background
+            else:
+                image = image.convert("RGB")
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="JPG・PNG・WebP形式の写真を選択してください")
+    session.add(FamilyDogAlbumItem(dog_id=dog_id, uploaded_by_id=user.id, photo_data=output.getvalue(), photo_content_type="image/jpeg", taken_on=taken_date, caption=caption or None, visibility=visibility))
+    session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
+
+
+@app.get("/family/dogs/{dog_id}/album/{item_id}/photo")
+def family_dog_album_photo(dog_id: int, item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404)
+    item = session.scalar(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.id == item_id, FamilyDogAlbumItem.dog_id == dog_id))
+    if not item or (item.visibility == "private" and item.uploaded_by_id != user.id):
+        raise HTTPException(status_code=404)
+    return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.post("/family/dogs/{dog_id}/album/{item_id}/delete")
+def family_dog_album_delete(dog_id: int, item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404)
+    item = session.scalar(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.id == item_id, FamilyDogAlbumItem.dog_id == dog_id, FamilyDogAlbumItem.uploaded_by_id == user.id))
+    if not item:
+        raise HTTPException(status_code=404)
+    session.delete(item)
+    session.commit()
     return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
 
