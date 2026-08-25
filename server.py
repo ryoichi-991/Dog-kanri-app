@@ -288,6 +288,19 @@ class DogTransfer(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class DogOwnership(Base):
+    __tablename__ = "dog_ownerships"
+    __table_args__ = (UniqueConstraint("tenant_id", "dog_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
+    relationship: Mapped[str] = mapped_column(String(30), default="primary")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class LegalDocument(Base):
     __tablename__ = "legal_documents"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -398,6 +411,7 @@ def layout(title: str, body: str, user: User | None = None) -> str:
         <nav>
           <p class="nav-label">メイン</p>
           <a href="/dashboard"><span>⌂</span>ダッシュボード</a>
+          <a href="/family"><span>♢</span>FAMILY</a>
           <a href="/modules/todo"><span>✓</span>Todoリスト</a>
           <a href="/modules/calendar"><span>▦</span>カレンダー</a>
           <p class="nav-label">繁殖・生体</p>
@@ -561,7 +575,9 @@ def login(email: str = Form(...), password: str = Form(...), session: Session = 
     raw = secrets.token_urlsafe(32)
     session.add(LoginSession(token_hash=token_hash(raw), user_id=user.id, expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)))
     session.commit()
-    response = RedirectResponse("/dashboard", status_code=303)
+    has_tenant = bool(accessible_tenants(user, session))
+    has_dog = session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).limit(1)) is not None
+    response = RedirectResponse("/dashboard" if has_tenant or not has_dog else "/family", status_code=303)
     response.set_cookie("dog_session", raw, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=SESSION_DAYS * 86400)
     return response
 
@@ -592,6 +608,8 @@ def switch_tenant(tenant_id: int = Form(...), user: User = Depends(require_user)
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
     tenants = accessible_tenants(user, session)
+    if not tenants and session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).limit(1)) is not None:
+        return RedirectResponse("/family", status_code=303)
     tenant = selected_tenant(request, user, session)
     options = "".join(f'<option value="{t.id}" {"selected" if tenant and t.id == tenant.id else ""}>{html.escape(t.name)}</option>' for t in tenants)
     switcher = f'<div class="tenant"><form method="post" action="/tenant/switch"><label>表示する会社・犬舎</label><select name="tenant_id">{options}</select><button>切り替える</button></form></div>' if tenants else '<p class="error">所属テナントがありません。管理者へ連絡してください。</p>'
@@ -2465,6 +2483,125 @@ def tenant_action(tenant_id: int, action: str = Form(...), user: User = Depends(
     return RedirectResponse("/platform/tenants", status_code=303)
 
 
+@app.get("/family", response_class=HTMLResponse)
+def family_home(user: User = Depends(require_user), session: Session = Depends(db)):
+    records = session.execute(
+        select(DogOwnership, Dog, Tenant)
+        .join(Dog, Dog.id == DogOwnership.dog_id)
+        .join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True))
+        .order_by(Tenant.name, Dog.call_name)
+    ).all()
+    cards = ""
+    for ownership, dog, tenant in records:
+        sex = {"male": "牡", "female": "牝"}.get(dog.sex, dog.sex)
+        relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+        cards += f'''<a class="module" href="/family/dogs/{dog.id}">
+          <h3>{html.escape(dog.call_name)}</h3>
+          <p>{html.escape(dog.registered_name or "血統書名未登録")}</p>
+          <p>{html.escape(dog.breed or "犬種未登録")} ／ {html.escape(sex)} ／ {html.escape(dog.color or "毛色未登録")}</p>
+          <p>{html.escape(tenant.name)}　<span class="badge">{relation}</span></p>
+        </a>'''
+    if not cards:
+        cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
+    body = f'''<h1>FAMILY ホーム</h1>
+    <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
+    <div class="grid">{cards}</div>'''
+    return layout("FAMILY", body, user)
+
+
+@app.get("/family/dogs/{dog_id}", response_class=HTMLResponse)
+def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = session.execute(
+        select(DogOwnership, Dog, Tenant)
+        .join(Dog, Dog.id == DogOwnership.dog_id)
+        .join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.dog_id == dog_id, DogOwnership.active.is_(True))
+    ).first()
+    if not record:
+        raise HTTPException(status_code=404, detail="閲覧できる犬が見つかりません")
+    ownership, dog, tenant = record
+    sex = {"male": "牡", "female": "牝"}.get(dog.sex, dog.sex)
+    birth = dog.birth_date.strftime("%Y年%m月%d日") if dog.birth_date else "未登録"
+    status_label = {"resident": "在舎中", "reserved": "予約済", "sold": "販売済", "transferred": "譲渡済"}.get(dog.status, dog.status)
+    relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a>
+    <h1>{html.escape(dog.call_name)}</h1>
+    <p><span class="badge">{relation}</span></p>
+    <div class="tenant"><strong>{html.escape(tenant.name)}</strong>から共有されています。</div>
+    <table><tr><th>血統書名</th><td>{html.escape(dog.registered_name or "未登録")}</td></tr>
+    <tr><th>犬種</th><td>{html.escape(dog.breed or "未登録")}</td></tr>
+    <tr><th>性別</th><td>{html.escape(sex)}</td></tr><tr><th>生年月日</th><td>{birth}</td></tr>
+    <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr></table>
+    <p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
+    return layout(f"{dog.call_name}｜FAMILY", body, user)
+
+
+@app.get("/family/owners", response_class=HTMLResponse)
+def family_owner_links(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(
+        select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category != "external").order_by(Dog.call_name)
+    ).all()
+    dog_options = "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}（{html.escape(dog.registered_name or "血統書名未登録")}）</option>' for dog in dogs)
+    records = session.execute(
+        select(DogOwnership, Dog, User)
+        .join(Dog, Dog.id == DogOwnership.dog_id)
+        .join(User, User.id == DogOwnership.user_id)
+        .where(DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))
+        .order_by(Dog.call_name, User.name)
+    ).all()
+    rows = ""
+    for ownership, dog, owner in records:
+        relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
+        rows += f'''<tr><td>{html.escape(dog.call_name)}</td><td>{html.escape(owner.name)}</td><td>{html.escape(owner.email)}</td><td>{relation}</td>
+        <td><form class="inline" method="post" action="/family/owners/{ownership.id}/remove"><button class="secondary">連携解除</button></form></td></tr>'''
+    body = f'''<a class="button secondary" href="/admin/users">ユーザー管理へ戻る</a>
+    <h1>{html.escape(tenant.name)} オーナー連携</h1>
+    <p>オーナーが登録したメールアドレスと犬を結び付けます。1人に複数頭、ご家族に同じ犬を連携できます。</p>
+    <form method="post"><label>犬</label><select name="dog_id" required>{dog_options}</select>
+    <label>登録済みオーナーのメールアドレス</label><input name="email" type="email" required>
+    <label>関係</label><select name="relationship"><option value="primary">主オーナー</option><option value="family">ご家族</option></select>
+    <button>犬とオーナーを連携</button></form>
+    <h2>現在の連携</h2><table><tr><th>犬</th><th>オーナー</th><th>メール</th><th>関係</th><th>操作</th></tr>{rows}</table>'''
+    return layout("オーナー連携", body, user)
+
+
+@app.post("/family/owners")
+def family_owner_link_add(dog_id: int = Form(...), email: str = Form(...), relationship: str = Form("primary"), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if relationship not in {"primary", "family"}:
+        raise HTTPException(status_code=400, detail="関係の指定が正しくありません")
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if not dog.active or dog.category == "external":
+        raise HTTPException(status_code=400, detail="この犬はオーナー連携できません")
+    normalized = normalize_email(email)
+    owner = session.scalar(select(User).where(User.email == normalized, User.active.is_(True)))
+    if not owner:
+        return HTMLResponse(layout("連携エラー", '<p class="error">このメールアドレスのアカウントがありません。先にオーナー様に「お客様登録」をしていただいてください。</p><a class="button secondary" href="/family/owners">戻る</a>', user), status_code=400)
+    customer = session.scalar(select(Customer).where(Customer.tenant_id == tenant.id, func.lower(Customer.email) == normalized).limit(1))
+    ownership = session.scalar(select(DogOwnership).where(DogOwnership.tenant_id == tenant.id, DogOwnership.dog_id == dog.id, DogOwnership.user_id == owner.id))
+    if ownership:
+        ownership.relationship = relationship
+        ownership.customer_id = customer.id if customer else ownership.customer_id
+        ownership.active = True
+    else:
+        session.add(DogOwnership(tenant_id=tenant.id, dog_id=dog.id, user_id=owner.id, customer_id=customer.id if customer else None, relationship=relationship))
+    session.commit()
+    return RedirectResponse("/family/owners", status_code=303)
+
+
+@app.post("/family/owners/{ownership_id}/remove")
+def family_owner_link_remove(ownership_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    ownership = session.scalar(select(DogOwnership).where(DogOwnership.id == ownership_id, DogOwnership.tenant_id == tenant.id))
+    if not ownership:
+        raise HTTPException(status_code=404, detail="連携が見つかりません")
+    ownership.active = False
+    session.commit()
+    return RedirectResponse("/family/owners", status_code=303)
+
+
 @app.get("/admin/users", response_class=HTMLResponse)
 def user_list(request: Request, access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -2473,7 +2610,7 @@ def user_list(request: Request, access=Depends(require_tenant_admin), session: S
     for member in memberships:
         account = session.get(User, member.user_id)
         rows += f"<tr><td>{html.escape(account.name)}</td><td>{html.escape(account.email)}</td><td>{member.role.value}</td></tr>"
-    body = f'<h1>{html.escape(tenant.name)}のユーザー</h1><form method="post"><label>登録済みユーザーのメールアドレス</label><input name="email" type="email" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>所属を追加</button></form><table><tr><th>名前</th><th>メール</th><th>権限</th></tr>{rows}</table>'
+    body = f'<h1>{html.escape(tenant.name)}のユーザー</h1><a class="button" href="/family/owners">オーナーと犬を連携</a><form method="post"><label>登録済みユーザーのメールアドレス</label><input name="email" type="email" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>所属を追加</button></form><table><tr><th>名前</th><th>メール</th><th>権限</th></tr>{rows}</table>'
     return layout("ユーザー管理", body, user)
 
 
