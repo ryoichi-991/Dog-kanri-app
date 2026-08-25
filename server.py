@@ -618,9 +618,11 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
 .brand-logo-wrap{{width:48px;height:48px;flex:0 0 48px;overflow:hidden;display:grid;place-items:center}}.brand-logo{{display:block;width:48px;height:48px;object-fit:contain}}.title-crown{{display:inline-flex;align-items:center;gap:2px;margin:2px 5px 2px 0;font-size:20px;font-weight:800}}.title-crown small{{font-size:9px;color:var(--ink)}}.crown-silver{{color:#9da3aa;text-shadow:0 1px #fff}}.crown-gold{{color:#d4a72c;text-shadow:0 1px #fff}}.crown-rose{{color:#cf788b}}.crown-purple{{color:#9167a8}}.crown-blue{{color:#668caf}}.guest main{{max-width:760px;margin:45px auto;padding:24px}}
 .owner-header{{position:sticky;top:0;z-index:20;min-height:68px;padding:11px 28px;background:#633b4a;color:#fff;display:flex;align-items:center;gap:28px;box-shadow:0 5px 20px #4b263326}}.owner-brand{{color:#fff;text-decoration:none;font-family:Georgia,serif;letter-spacing:1.3px;white-space:nowrap}}.owner-header nav{{display:flex;gap:7px;flex:1}}.owner-header nav a{{color:#f8eef1;text-decoration:none;padding:9px 12px;border-radius:9px}}.owner-header nav a:hover{{background:#ffffff17}}.owner-account{{display:flex;align-items:center;gap:10px;font-size:13px}}.owner-account form{{margin:0}}.owner-account button{{margin:0;padding:8px 12px;background:#ffffff1c;box-shadow:none}}.owner-view main{{margin:0 auto;max-width:1180px;padding:34px 28px}}
 .nav-count{{display:inline-grid;place-items:center;min-width:19px;height:19px;margin-left:4px;padding:0 5px;border-radius:10px;background:#fff;color:var(--wine);font-size:11px;font-weight:800}}.notification-item{{display:block;margin:12px 0;padding:18px;border:1px solid var(--line);border-radius:14px;background:#fff;color:var(--ink);text-decoration:none}}.notification-item.unread{{border-left:5px solid var(--rose);background:#fffafb}}.notification-item p{{margin:5px 0}}.notification-kind{{display:inline-block;margin-right:7px;color:var(--wine);font-size:12px;font-weight:750}}
+.timeline-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:22px 0}}.timeline-tile{{position:relative;display:block;aspect-ratio:1;overflow:hidden;background:#f1e7e9;color:#fff;text-decoration:none}}.timeline-tile img{{display:block;width:100%;height:100%;object-fit:cover;transition:transform .2s ease}}.timeline-tile:hover img{{transform:scale(1.025)}}.timeline-overlay{{position:absolute;inset:auto 0 0;padding:28px 10px 8px;background:linear-gradient(transparent,#2d1924cc);font-size:12px}}.timeline-overlay strong{{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.timeline-stats{{display:flex;justify-content:space-between;gap:6px;margin-top:2px;font-size:11px}}
 .family-photo-stage{{width:100%;min-height:260px;max-height:70vh;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:18px;background:linear-gradient(145deg,#f7edef,#fff);border:1px solid var(--line);margin-bottom:18px}}.family-dog-photo{{display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain}}.family-dog-thumb{{display:block;width:100%;height:190px;object-fit:contain;border-radius:12px;margin-bottom:12px;background:#f7edef}}
 .album-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;margin:18px 0}}.album-item{{overflow:hidden;border:1px solid var(--line);border-radius:15px;background:#fff}}.album-item a{{display:flex;height:210px;align-items:center;justify-content:center;background:#f7edef}}.album-item img{{display:block;max-width:100%;max-height:210px;width:auto;height:auto;object-fit:contain}}.album-meta{{padding:13px}}.album-meta p{{margin:5px 0}}.album-meta form button{{margin-top:8px}}
-@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}}}
+@media(max-width:950px){{.timeline-grid{{grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}}}}
+@media(max-width:850px){{.sidebar{{position:relative;width:100%;height:auto}}.sidebar nav{{display:grid;grid-template-columns:repeat(2,1fr)}}.nav-label{{grid-column:1/-1}}.sidebar-user{{display:none}}main{{margin-left:0;padding:20px 14px}}.card{{padding:22px}}.brand{{height:70px}}.owner-header{{position:relative;display:block;padding:14px}}.owner-header nav{{display:grid;grid-template-columns:repeat(2,1fr);gap:3px;margin-top:10px}}.owner-header nav a{{padding:8px 4px;text-align:center;font-size:12px}}.owner-account{{position:absolute;right:12px;top:9px}}.owner-account span{{display:none}}.owner-account button{{font-size:11px;padding:6px 8px}}.owner-view main{{padding:15px 10px}}.timeline-grid{{gap:3px;margin-left:-10px;margin-right:-10px}}.timeline-overlay{{padding:20px 6px 5px;font-size:10px}}.timeline-stats{{font-size:9px}}}}
 </style></head><body class="{body_class}">{nav}<main><div class="card">{body}</div></main></body></html>'''
 
 
@@ -3781,45 +3783,58 @@ def family_timeline(user: User = Depends(require_user), session: Session = Depen
     visible = family_timeline_items(user, session)
     posts = ""
     for item, dog, tenant, profile in list(visible.values())[:50]:
-        owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
-        visibility = "同じ犬舎のFAMILYに公開" if item.visibility == "family" else "兄弟・親戚犬に公開"
-        caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
-        likes = session.execute(
-            select(FamilyTimelineLike, OwnerProfile).outerjoin(OwnerProfile, OwnerProfile.user_id == FamilyTimelineLike.user_id)
-            .where(FamilyTimelineLike.album_item_id == item.id).order_by(FamilyTimelineLike.created_at)
-        ).all()
-        liked = any(like.user_id == user.id for like, _ in likes)
-        like_names = []
-        for like, like_profile in likes[:5]:
-            if like.user_id == user.id:
-                like_names.append("あなた")
-            elif like_profile and like_profile.profile_public and like_profile.show_nickname and like_profile.nickname:
-                like_names.append(like_profile.nickname)
-            else:
-                like_names.append("FAMILYメンバー")
-        more = f" ほか{len(likes) - 5}人" if len(likes) > 5 else ""
-        liked_by = f'<small>{html.escape("、".join(like_names))}{more}</small>' if like_names else '<small>最初のいいねを送りましょう</small>'
-        posts += f'''<article class="tenant" style="max-width:760px;margin:0 auto 22px">
-        <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
-        <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
-        <span class="badge">{html.escape(visibility)}</span></div>
-        <a href="/family/timeline/{item.id}/photo" target="_blank" style="display:flex;align-items:center;justify-content:center;min-height:240px;max-height:520px;background:#fff;border-radius:14px;overflow:hidden;margin-top:12px">
-        <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" style="display:block;max-width:100%;max-height:520px;width:auto;height:auto;object-fit:contain"></a>
-        {caption}<p><small>撮影日：{taken}</small></p>
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><form class="inline" method="post" action="/family/timeline/{item.id}/like">
-        <button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}</div></article>'''
+        like_count = session.scalar(select(func.count(FamilyTimelineLike.id)).where(FamilyTimelineLike.album_item_id == item.id)) or 0
+        posts += f'''<a class="timeline-tile" href="/family/timeline/{item.id}">
+        <img src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真" loading="lazy">
+        <span class="timeline-overlay"><strong>{html.escape(dog.call_name)}</strong>
+        <span class="timeline-stats"><span>{taken}</span><span>♥ {like_count}</span></span></span></a>'''
     if not posts:
-        posts = '''<div class="tenant"><p>タイムラインに表示できる写真はまだありません。</p>
+        posts = '''<div class="tenant" style="grid-column:1/-1"><p>タイムラインに表示できる写真はまだありません。</p>
         <p>「うちの子」から愛犬を開き、成長アルバムへ写真を追加してください。公開範囲を「同じ犬舎のFAMILY」または「兄弟・親戚犬」にすると表示されます。</p></div>'''
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYタイムライン</h1>
-    <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。</p>{posts}
+    <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。写真を押すと詳細を確認できます。</p><div class="timeline-grid">{posts}</div>
     <p><small>「自分だけ」に設定した写真はタイムラインには表示されません。</small></p>'''
     return family_layout("FAMILYタイムライン", body, user, session)
 
 
+@app.get("/family/timeline/{item_id}", response_class=HTMLResponse)
+def family_timeline_detail(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record:
+        raise HTTPException(status_code=404)
+    item, dog, tenant, profile = record
+    owner_name = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+    taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else item.created_at.date().strftime("%Y年%m月%d日")
+    visibility = "同じ犬舎のFAMILYに公開" if item.visibility == "family" else "兄弟・親戚犬に公開"
+    likes = session.execute(
+        select(FamilyTimelineLike, OwnerProfile).outerjoin(OwnerProfile, OwnerProfile.user_id == FamilyTimelineLike.user_id)
+        .where(FamilyTimelineLike.album_item_id == item.id).order_by(FamilyTimelineLike.created_at)
+    ).all()
+    liked = any(like.user_id == user.id for like, _ in likes)
+    like_names = []
+    for like, like_profile in likes[:10]:
+        if like.user_id == user.id:
+            like_names.append("あなた")
+        elif like_profile and like_profile.profile_public and like_profile.show_nickname and like_profile.nickname:
+            like_names.append(like_profile.nickname)
+        else:
+            like_names.append("FAMILYメンバー")
+    more = f" ほか{len(likes) - 10}人" if len(likes) > 10 else ""
+    liked_by = f'<p><small>{html.escape("、".join(like_names))}{more}</small></p>' if like_names else '<p><small>最初のいいねを送りましょう</small></p>'
+    caption = f'<p style="white-space:pre-wrap">{html.escape(item.caption)}</p>' if item.caption else ""
+    body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><article style="max-width:820px;margin:20px auto 0">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:start"><div><strong>{html.escape(owner_name)}</strong>
+    <p style="margin:3px 0"><a href="/family/members/{profile.public_id}">{html.escape(dog.call_name)}</a>　<small>{html.escape(tenant.name)}</small></p></div>
+    <span class="badge">{html.escape(visibility)}</span></div>
+    <div class="family-photo-stage"><img class="family-dog-photo" src="/family/timeline/{item.id}/photo" alt="{html.escape(dog.call_name)}の成長写真"></div>
+    {caption}<p><small>撮影日：{taken}</small></p>
+    <form class="inline" method="post" action="/family/timeline/{item.id}/like?return_to=detail"><button class="{'secondary' if liked else ''}" aria-pressed="{'true' if liked else 'false'}">{'♥ いいね済み' if liked else '♡ いいね'}　{len(likes)}</button></form>{liked_by}</article>'''
+    return family_layout(f"{dog.call_name}｜FAMILYタイムライン", body, user, session)
+
+
 @app.post("/family/timeline/{item_id}/like")
-def family_timeline_like_toggle(item_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+def family_timeline_like_toggle(item_id: int, return_to: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     if item_id not in family_timeline_items(user, session):
         raise HTTPException(status_code=404)
     like = session.scalar(select(FamilyTimelineLike).where(
@@ -3830,7 +3845,8 @@ def family_timeline_like_toggle(item_id: int, user: User = Depends(require_user)
     else:
         session.add(FamilyTimelineLike(album_item_id=item_id, user_id=user.id))
     session.commit()
-    return RedirectResponse("/family/timeline", status_code=303)
+    destination = f"/family/timeline/{item_id}" if return_to == "detail" else "/family/timeline"
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.get("/family/timeline/{item_id}/photo")
