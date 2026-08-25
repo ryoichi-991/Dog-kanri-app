@@ -476,7 +476,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -2617,9 +2617,74 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <p><a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
+
+
+def next_family_anniversary(month: int, day: int, today: date) -> date:
+    """今年または来年の記念日を返す。2月29日は平年には2月28日として祝う。"""
+    def occurrence(year: int) -> date:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            return date(year, 2, 28)
+
+    candidate = occurrence(today.year)
+    return candidate if candidate >= today else occurrence(today.year + 1)
+
+
+@app.get("/family/anniversaries", response_class=HTMLResponse)
+def family_anniversaries(user: User = Depends(require_user), session: Session = Depends(db)):
+    records = session.execute(
+        select(DogOwnership, Dog, Tenant).join(Dog, Dog.id == DogOwnership.dog_id)
+        .join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True),
+               Tenant.active.is_(True), Tenant.deleted.is_(False))
+        .order_by(Dog.call_name)
+    ).all()
+    today = date.today()
+    events: list[tuple[int, str]] = []
+    missing_handover: list[str] = []
+    for ownership, dog, tenant in records:
+        profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog.id))
+        photo = f'<img class="family-dog-thumb" src="/family/dogs/{dog.id}/photo" alt="{html.escape(dog.call_name)}">' if profile and profile.photo_data else ""
+        if dog.birth_date:
+            upcoming = next_family_anniversary(dog.birth_date.month, dog.birth_date.day, today)
+            days = (upcoming - today).days
+            turning = upcoming.year - dog.birth_date.year
+            timing = "今日です！" if days == 0 else f"あと{days}日"
+            events.append((days, f'''<a class="module" href="/family/dogs/{dog.id}">{photo}<h3>🎂 {html.escape(dog.call_name)}の誕生日</h3>
+            <p>{upcoming.strftime('%Y年%m月%d日')}（{timing}）</p><p><strong>{turning}歳</strong>になります</p><p>{html.escape(tenant.name)}</p></a>'''))
+
+        handover = session.scalar(
+            select(PuppySale.handover_date).where(PuppySale.tenant_id == dog.tenant_id, PuppySale.dog_id == dog.id,
+                                                   PuppySale.handover_date.is_not(None))
+            .order_by(PuppySale.handover_date.desc()).limit(1)
+        )
+        if not handover:
+            handover = session.scalar(
+                select(DogTransfer.transferred_on).where(DogTransfer.tenant_id == dog.tenant_id, DogTransfer.dog_id == dog.id)
+                .order_by(DogTransfer.transferred_on.desc()).limit(1)
+            )
+        if handover:
+            upcoming = next_family_anniversary(handover.month, handover.day, today)
+            days = (upcoming - today).days
+            years = upcoming.year - handover.year
+            timing = "今日です！" if days == 0 else f"あと{days}日"
+            events.append((days, f'''<a class="module" href="/family/dogs/{dog.id}">{photo}<h3>🏠 {html.escape(dog.call_name)}のお迎え記念日</h3>
+            <p>{upcoming.strftime('%Y年%m月%d日')}（{timing}）</p><p><strong>{years}周年</strong>です</p><p>お迎え日：{handover.strftime('%Y年%m月%d日')}</p></a>'''))
+        else:
+            missing_handover.append(html.escape(dog.call_name))
+
+    cards = "".join(card for _, card in sorted(events, key=lambda event: event[0]))
+    if not cards:
+        cards = '<div class="tenant"><p>表示できる記念日がまだありません。</p><p>犬の生年月日や、販売・譲渡管理の引渡し日を登録すると自動表示されます。</p></div>'
+    notice = f'''<div class="tenant"><strong>お迎え日の登録待ち</strong><p>{"、".join(missing_handover)}</p>
+    <p><small>犬舎側の販売管理または譲渡先管理で引渡し日を登録すると、お迎え記念日が表示されます。</small></p></div>''' if missing_handover else ""
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>誕生日・お迎え記念日</h1>
+    <p>うちの子の大切な記念日を、近い順に表示しています。</p><div class="grid">{cards}</div>{notice}'''
+    return family_layout("誕生日・お迎え記念日｜FAMILY", body, user, session)
 
 
 @app.get("/family/dogs/{dog_id}", response_class=HTMLResponse)
