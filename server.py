@@ -92,6 +92,9 @@ class Dog(Base):
     color: Mapped[str | None] = mapped_column(String(100), nullable=True)
     microchip_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     pedigree_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    origin_registration_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    origin_registration_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    origin_registration_organization: Mapped[str | None] = mapped_column(String(100), nullable=True)
     titles: Mapped[str | None] = mapped_column(Text, nullable=True)
     pedigree_country: Mapped[str | None] = mapped_column(String(100), nullable=True)
     pedigree_organization: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -111,6 +114,12 @@ class PedigreeUpload(Base):
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
     file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    registration_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    organization: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    issued_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -429,8 +438,17 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_organization VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS pedigree_updated_at TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS breed VARCHAR(150)"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS origin_registration_no VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS origin_registration_country VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS origin_registration_organization VARCHAR(100)"))
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS document_type VARCHAR(50)"))
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS registration_no VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS organization VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS country VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS issued_on DATE"))
+        conn.execute(text("ALTER TABLE IF EXISTS pedigree_uploads ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS inquiry_date DATE"))
         conn.execute(text("ALTER TABLE IF EXISTS puppy_sales ADD COLUMN IF NOT EXISTS inquiry_channel VARCHAR(50)"))
@@ -1107,6 +1125,33 @@ def extract_pedigree_text(path: Path, content_type: str) -> str:
         return full_text
 
 
+PEDIGREE_DOCUMENT_TYPES = {
+    "domestic_pedigree": "国内血統証明書",
+    "import_registration": "輸入犬登録証明書（日本）",
+    "export_pedigree": "出生国・輸出血統証明書",
+    "updated_pedigree": "更新後の血統証明書",
+    "other": "その他",
+}
+
+
+def pedigree_document_metadata(raw_text: str, metadata: dict[str, str]) -> dict[str, str]:
+    """原本単位の番号を判定する。犬本体の国内番号と海外番号は混ぜない。"""
+    upper = raw_text.upper().replace("’", "'")
+    is_import = "REGISTRATION CERTIFICATE FOR IMPORTED DOG" in upper or "輸入犬登録証明書" in raw_text
+    is_export = "CERTIFIED EXPORT PEDIGREE" in upper or "EXPORT PEDIGREE" in upper
+    kath = re.search(r"\bKATH\s*[- ]?\s*(\d{7,12})\b", upper)
+    jkc = re.search(r"\bJKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z]))?", upper)
+    jkc_no = f"JKC-{jkc.group(1)}-{jkc.group(2)}/{jkc.group(3)}" + (f"-{jkc.group(4)}" if jkc and jkc.group(4) else "") if jkc else ""
+    kath_no = f"KATH{kath.group(1)}" if kath else ""
+    if is_import:
+        return {"type": "import_registration", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": "JKC", "country": "日本", "domestic_no": jkc_no, "origin_no": kath_no, "origin_country": "タイ", "origin_organization": "KCTH", "primary": "true"}
+    if is_export or kath_no:
+        return {"type": "export_pedigree", "registration_no": kath_no or metadata.get("pedigree_no", ""), "organization": "KCTH", "country": "タイ", "domestic_no": "", "origin_no": kath_no, "origin_country": "タイ", "origin_organization": "KCTH", "primary": "false"}
+    organization = metadata.get("organization", "")
+    country = metadata.get("country", "")
+    return {"type": "domestic_pedigree", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": organization, "country": country, "domestic_no": jkc_no or metadata.get("pedigree_no", ""), "origin_no": "", "origin_country": "", "origin_organization": "", "primary": "true" if organization.upper() == "JKC" else "false"}
+
+
 def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]], list[str]]:
     """OCR結果から本人情報と血統名候補を作る。最終確定前に必ず編集画面を表示する。"""
     clean = re.sub(r"[\t ]+", " ", raw_text.replace("\r", "\n"))
@@ -1367,6 +1412,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
             source.write_bytes(content)
             raw_text = extract_pedigree_text(source, pedigree_file.content_type or "")
         metadata, candidates, detected_titles, detected_colors = pedigree_candidates(raw_text)
+        document_metadata = pedigree_document_metadata(raw_text, metadata)
     except (subprocess.SubprocessError, OSError, RuntimeError, ValueError) as exc:
         return HTMLResponse(layout("読み取りエラー", f'<h1>読み取りできませんでした</h1><p class="error">画像が不鮮明、または対応できないPDFです。撮り直すか別形式でお試しください。</p><p><small>{html.escape(type(exc).__name__)}</small></p><a class="button secondary" href="/modules/dogs">戻る</a>', user), status_code=422)
 
@@ -1384,14 +1430,18 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
         for index, name in enumerate(names)
     )
     existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
+    detected_chip = metadata.get("microchip_no", "")
+    matched_dog_id = next((dog.id for dog in existing_dogs if detected_chip and dog.microchip_no == detected_chip), None)
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(
-        f'<option value="{dog.id}">{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}／血統書番号：{html.escape(dog.pedigree_no or "未登録")}／MC：{html.escape(dog.microchip_no or "未登録")}</option>'
+        f'<option value="{dog.id}" {"selected" if dog.id == matched_dog_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}／国内番号：{html.escape(dog.pedigree_no or "未登録")}／海外番号：{html.escape(dog.origin_registration_no or "未登録")}／MC：{html.escape(dog.microchip_no or "未登録")}</option>'
         for dog in existing_dogs
     )
     sex_value = metadata.get("sex", "")
     sex_options = f'<option value="" {"selected" if not sex_value else ""}>選択してください</option><option value="male" {"selected" if sex_value == "male" else ""}>牡</option><option value="female" {"selected" if sex_value == "female" else ""}>牝</option>'
-    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前・毛色と父母の位置を修正してください。空欄の祖先は登録されません。</p>
-    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label for="existing-dog-search">登録犬を検索</label><input id="existing-dog-search" type="search" placeholder="呼び名・血統書名・血統書番号・マイクロチップ番号を入力" autocomplete="off"><p id="existing-dog-result" style="margin:6px 0;color:#765f68;font-size:12px"></p><label for="existing-dog-select">登録方法</label><select id="existing-dog-select" name="existing_dog_id">{existing_options}</select><p><small>チャンピオン登録後など、新しい血統書へ更新する場合は既存の犬を選択してください。健康・繁殖・出産履歴を残したまま血統情報だけを更新します。</small></p><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(metadata.get('pedigree_no',''))}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(metadata.get('country',''))}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(metadata.get('organization',''))}"></div></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
+    document_type_options = "".join(f'<option value="{key}" {"selected" if document_metadata["type"] == key else ""}>{label}</option>' for key, label in PEDIGREE_DOCUMENT_TYPES.items())
+    matched_notice = '<p class="tenant"><strong>同じマイクロチップ番号の登録犬を見つけたため、上書き対象に選択しました。</strong> 別の犬の場合は選択を変更してください。</p>' if matched_dog_id else ''
+    body = f'''<h1>血統書の読み取り結果</h1><p><span class="badge">確認してから登録</span></p><p>OCRは文字を読み間違える場合があります。血統書と照らし合わせ、犬種・名前・毛色と父母の位置を修正してください。空欄の祖先は登録されません。</p>{matched_notice}
+    <form method="post" action="/modules/dogs/pedigree/import"><input type="hidden" name="upload_id" value="{upload.id}"><h2>新規登録または上書き更新</h2><label for="existing-dog-search">登録犬を検索</label><input id="existing-dog-search" type="search" placeholder="呼び名・血統書名・国内番号・海外番号・マイクロチップ番号を入力" autocomplete="off"><p id="existing-dog-result" style="margin:6px 0;color:#765f68;font-size:12px"></p><label for="existing-dog-select">登録方法</label><select id="existing-dog-select" name="existing_dog_id">{existing_options}</select><p><small>同一犬の海外血統書と日本の輸入犬登録証明書は、同じ登録犬を選んでください。マイクロチップ番号が一致する場合は自動選択します。</small></p><h2>今回アップロードした書類</h2><div class="grid"><div><label>書類の種類</label><select name="document_type">{document_type_options}</select></div><div><label>この書類に記載された登録番号</label><input name="document_registration_no" value="{html.escape(document_metadata['registration_no'])}"></div><div><label>発行団体</label><input name="document_organization" value="{html.escape(document_metadata['organization'])}"></div><div><label>発行国</label><input name="document_country" value="{html.escape(document_metadata['country'])}"></div><div><label>発行日</label><input type="date" name="document_issued_on"></div></div><h2>登録する犬の情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(names[0])}" required maxlength="100"></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(metadata.get('breed',''))}" maxlength="150" placeholder="例：MINIATURE SCHNAUZER"></div><div><label>性別</label><select name="sex" required>{sex_options}</select></div><div><label>区分</label><select name="category"><option value="parent">親犬</option><option value="puppy">子犬</option><option value="external">外部犬</option></select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{html.escape(metadata.get('birth_date',''))}"></div><div><label>毛色</label><input name="color" value="{html.escape(metadata.get('color',''))}"></div><div><label>国内メイン番号（JKC）</label><input name="pedigree_no" value="{html.escape(document_metadata['domestic_no'])}" placeholder="例：JKC-MS-07782/25-I"></div><div><label>出生国・海外登録番号</label><input name="origin_registration_no" value="{html.escape(document_metadata['origin_no'])}" placeholder="例：KATH116090377"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(metadata.get('microchip_no',''))}"></div><div><label>出生国</label><input name="origin_registration_country" value="{html.escape(document_metadata['origin_country'])}"></div><div><label>海外発行団体</label><input name="origin_registration_organization" value="{html.escape(document_metadata['origin_organization'])}"></div><input type="hidden" name="pedigree_country" value="日本"><input type="hidden" name="pedigree_organization" value="JKC"></div><h2>血統名・タイトル・親子関係</h2><p><small>Macでは⌘キー、WindowsではCtrlキーを押しながら選ぶと複数タイトルを選択できます。</small></p><div class="grid">{pedigree_fields}</div><button>確認した内容で登録・更新する</button> <a class="button secondary" href="/modules/dogs">キャンセル</a></form>
     <script>(function(){{const search=document.getElementById('existing-dog-search');const select=document.getElementById('existing-dog-select');const result=document.getElementById('existing-dog-result');const dogs=Array.from(select.options).slice(1).map(option=>({{value:option.value,text:option.textContent}}));function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');const matches=keyword?dogs.filter(dog=>dog.text.toLocaleLowerCase('ja').includes(keyword)):dogs;const selected=select.value;select.replaceChildren(new Option('新しい犬として登録',''),...matches.map(dog=>new Option(dog.text,dog.value)));if(matches.some(dog=>dog.value===selected))select.value=selected;result.textContent=keyword?matches.length+'頭が見つかりました':dogs.length+'頭から検索できます';}}search.addEventListener('input',render);render();}})();</script>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     return layout("血統書読み取り確認", body, user)
@@ -1403,6 +1453,9 @@ def pedigree_import(
     upload_id: int = Form(...),
     breed: str = Form(""), birth_date: str = Form(""), color: str = Form(""), pedigree_no: str = Form(""), microchip_no: str = Form(""),
     existing_dog_id: str = Form(""), pedigree_country: str = Form(""), pedigree_organization: str = Form(""),
+    origin_registration_no: str = Form(""), origin_registration_country: str = Form(""), origin_registration_organization: str = Form(""),
+    document_type: str = Form("other"), document_registration_no: str = Form(""), document_country: str = Form(""),
+    document_organization: str = Form(""), document_issued_on: str = Form(""),
     ancestor_0: str = Form(...), ancestor_1: str = Form(""), ancestor_2: str = Form(""),
     ancestor_3: str = Form(""), ancestor_4: str = Form(""), ancestor_5: str = Form(""), ancestor_6: str = Form(""),
     ancestor_7: str = Form(""), ancestor_8: str = Form(""), ancestor_9: str = Form(""), ancestor_10: str = Form(""),
@@ -1419,7 +1472,7 @@ def pedigree_import(
     access=Depends(require_tenant_user), session: Session = Depends(db),
 ):
     user, tenant = access
-    if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"}:
+    if sex not in {"male", "female"} or category not in {"parent", "puppy", "external"} or document_type not in PEDIGREE_DOCUMENT_TYPES:
         raise HTTPException(status_code=400, detail="犬の情報を確認してください")
     names = [value.strip() for value in [ancestor_0, ancestor_1, ancestor_2, ancestor_3, ancestor_4, ancestor_5, ancestor_6, ancestor_7, ancestor_8, ancestor_9, ancestor_10, ancestor_11, ancestor_12, ancestor_13, ancestor_14]]
     raw_colors = [color, ancestor_color_1, ancestor_color_2, ancestor_color_3, ancestor_color_4, ancestor_color_5, ancestor_color_6, ancestor_color_7, ancestor_color_8, ancestor_color_9, ancestor_color_10, ancestor_color_11, ancestor_color_12, ancestor_color_13, ancestor_color_14]
@@ -1475,15 +1528,32 @@ def pedigree_import(
         root.status = "resident"
     root.birth_date = date.fromisoformat(birth_date) if birth_date else root.birth_date
     root.color = colors[0] or root.color
+    # 国内番号と出生国番号は別管理。海外血統書の追加で既存JKC番号を上書きしない。
     root.pedigree_no = pedigree_no.strip() or root.pedigree_no
+    root.origin_registration_no = origin_registration_no.strip() or root.origin_registration_no
+    root.origin_registration_country = origin_registration_country.strip() or root.origin_registration_country
+    root.origin_registration_organization = origin_registration_organization.strip() or root.origin_registration_organization
     root.microchip_no = microchip_no.strip() or root.microchip_no
-    root.pedigree_country = pedigree_country.strip() or None
-    root.pedigree_organization = pedigree_organization.strip() or None
+    if pedigree_no.strip():
+        root.pedigree_country = pedigree_country.strip() or root.pedigree_country
+        root.pedigree_organization = pedigree_organization.strip() or root.pedigree_organization
     root.pedigree_updated_at = datetime.now(timezone.utc)
     upload = session.scalar(select(PedigreeUpload).where(PedigreeUpload.id == upload_id, PedigreeUpload.tenant_id == tenant.id))
     if not upload or upload.dog_id is not None:
         raise HTTPException(status_code=400, detail="アップロードした血統書データが見つかりません")
     upload.dog_id = root.id
+    upload.document_type = document_type
+    upload.registration_no = document_registration_no.strip() or None
+    upload.organization = document_organization.strip() or None
+    upload.country = document_country.strip() or None
+    try:
+        upload.issued_on = date.fromisoformat(document_issued_on) if document_issued_on else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="書類の発行日を確認してください")
+    upload.is_primary = document_type in {"domestic_pedigree", "import_registration", "updated_pedigree"} and bool(root.pedigree_no)
+    if upload.is_primary:
+        for previous in session.scalars(select(PedigreeUpload).where(PedigreeUpload.tenant_id == tenant.id, PedigreeUpload.dog_id == root.id, PedigreeUpload.id != upload.id)).all():
+            previous.is_primary = False
     session.commit()
     return RedirectResponse("/modules/dogs", status_code=303)
 
@@ -1761,14 +1831,18 @@ def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: S
     for index, item in enumerate(uploads):
         source = f"/modules/dogs/{dog.id}/pedigree-files/{item.id}"
         preview = f'<img src="{source}" alt="血統書" style="max-width:100%;max-height:900px;object-fit:contain">' if item.content_type.startswith("image/") else f'<iframe src="{source}" title="血統書PDF" style="width:100%;height:800px;border:1px solid #eadde1;border-radius:10px"></iframe>' if item.content_type == "application/pdf" else ""
-        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
+        kind = PEDIGREE_DOCUMENT_TYPES.get(item.document_type or "other", "その他")
+        primary = ' <span class="badge">国内メイン</span>' if item.is_primary else ''
+        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(kind)}／{html.escape(item.registration_no or "番号未登録")}{primary}</summary><p>{html.escape(item.organization or "団体未登録")}／{html.escape(item.country or "国未登録")}／発行日 {item.issued_on or "未登録"}／保存日 {item.uploaded_at.date()}</p><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
     document_section = f'''<div class="tenant"><h2 style="margin-top:0">アップロード済み血統書</h2>{upload_views or '<p>血統書原本はまだ保存されていません。</p>'}</div>'''
     flow = pedigree_flow_chart(session, tenant.id, dog)
     info = [
         ("呼び名", dog.call_name), ("血統書名", dog.registered_name or "－"), ("犬種", dog.breed or "－"),
         ("性別", "牡" if dog.sex == "male" else "牝"), ("区分", category_labels.get(dog.category, dog.category)),
         ("状態", status_labels.get(dog.status, dog.status)), ("生年月日", str(dog.birth_date or "－")),
-        ("毛色", dog.color or "－"), ("血統書番号", dog.pedigree_no or "－"),
+        ("毛色", dog.color or "－"), ("国内メイン番号（JKC）", dog.pedigree_no or "－"),
+        ("出生国・海外登録番号", dog.origin_registration_no or "－"),
+        ("出生国", dog.origin_registration_country or "－"), ("海外発行団体", dog.origin_registration_organization or "－"),
         ("マイクロチップ番号", dog.microchip_no or "－"), ("発行団体", dog.pedigree_organization or "－"),
         ("発行国", dog.pedigree_country or "－"), ("販売先", buyer or "－"),
     ]
@@ -1815,10 +1889,12 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
     for index, item in enumerate(uploads):
         source = f"/modules/dogs/{dog.id}/pedigree-files/{item.id}"
         preview = f'<img src="{source}" alt="血統書" style="max-width:100%;max-height:900px;object-fit:contain">' if item.content_type.startswith("image/") else f'<iframe src="{source}" title="血統書PDF" style="width:100%;height:800px;border:1px solid #eadde1;border-radius:10px"></iframe>' if item.content_type == "application/pdf" else ""
-        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(item.filename)}／{item.uploaded_at.date()}</summary><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
+        kind = PEDIGREE_DOCUMENT_TYPES.get(item.document_type or "other", "その他")
+        primary = ' <span class="badge">国内メイン</span>' if item.is_primary else ''
+        upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(kind)}／{html.escape(item.registration_no or "番号未登録")}{primary}</summary><p>{html.escape(item.organization or "団体未登録")}／{html.escape(item.country or "国未登録")}／発行日 {item.issued_on or "未登録"}／保存日 {item.uploaded_at.date()}</p><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
     document_section = f'<div class="tenant"><h2 style="margin-top:0">アップロードした血統書原本</h2>{upload_views or "<p>この犬には原本ファイルがまだ保存されていません。次回の血統書読み込みから自動保存されます。</p>"}</div>'
     body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{document_section}{pedigree_summary}
-    <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(dog.breed or '')}" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>血統書番号</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
+    <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(dog.breed or '')}" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>国内メイン番号（JKC）</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}" placeholder="例：JKC-MS-07782/25-I"></div><div><label>出生国・海外登録番号</label><input name="origin_registration_no" value="{html.escape(dog.origin_registration_no or '')}" placeholder="例：KATH116090377"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>国内発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>国内発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>出生国</label><input name="origin_registration_country" value="{html.escape(dog.origin_registration_country or '')}"></div><div><label>海外発行団体</label><input name="origin_registration_organization" value="{html.escape(dog.origin_registration_organization or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
     <label>タイトル（複数選択可）</label><select name="titles" multiple size="8">{title_options}</select><p><small>Macは⌘キー、WindowsはCtrlキーを押しながら選択すると複数指定できます。</small></p>
     <h2>販売先のお客様</h2><label>登録済みのお客様から選択</label><select name="customer_id">{customer_options}</select>
     <details><summary>新しいお客様をここで登録する</summary><div class="grid"><div><label>お客様名</label><input name="customer_name"></div><div><label>電話番号</label><input name="customer_phone"></div><div><label>メールアドレス</label><input type="email" name="customer_email"></div><div><label>住所</label><input name="customer_address"></div></div></details>
@@ -1840,7 +1916,8 @@ def pedigree_file(dog_id: int, upload_id: int, access=Depends(require_tenant_use
 def dog_edit(
     dog_id: int, call_name: str = Form(...), category: str = Form(...), status_value: str = Form(..., alias="status"),
     registered_name: str = Form(""), breed: str = Form(""), sex: str = Form(...), birth_date: str = Form(""), color: str = Form(""),
-    pedigree_no: str = Form(""), microchip_no: str = Form(""), pedigree_organization: str = Form(""), pedigree_country: str = Form(""),
+    pedigree_no: str = Form(""), origin_registration_no: str = Form(""), microchip_no: str = Form(""), pedigree_organization: str = Form(""), pedigree_country: str = Form(""),
+    origin_registration_country: str = Form(""), origin_registration_organization: str = Form(""),
     sire_id: str = Form(""), dam_id: str = Form(""), titles: list[str] = Form([]),
     customer_id: str = Form(""), customer_name: str = Form(""), customer_phone: str = Form(""),
     customer_email: str = Form(""), customer_address: str = Form(""), handover_date: str = Form(""),
@@ -1859,6 +1936,9 @@ def dog_edit(
     dog.category, dog.status = category, status_value
     dog.birth_date = date.fromisoformat(birth_date) if birth_date else None
     dog.color, dog.pedigree_no = color.strip() or None, pedigree_no.strip() or None
+    dog.origin_registration_no = origin_registration_no.strip() or None
+    dog.origin_registration_country = origin_registration_country.strip() or None
+    dog.origin_registration_organization = origin_registration_organization.strip() or None
     dog.microchip_no = microchip_no.strip() or None
     dog.pedigree_organization, dog.pedigree_country = pedigree_organization.strip() or None, pedigree_country.strip() or None
     dog.sire_id, dog.dam_id = sire.id if sire else None, dam.id if dam else None
