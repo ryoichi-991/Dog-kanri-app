@@ -373,6 +373,18 @@ class OwnerProfile(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyAnnouncement(Base):
+    __tablename__ = "family_announcements"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(150))
+    body: Mapped[str] = mapped_column(Text)
+    event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class LegalDocument(Base):
     __tablename__ = "legal_documents"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -478,7 +490,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -507,6 +519,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           <p class="nav-label">管理設定</p>
           <a href="/admin/users"><span>♙</span>ユーザー管理</a>
+          <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
           {platform_link}
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
@@ -2621,7 +2634,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <p><a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -2689,6 +2702,84 @@ def family_anniversaries(user: User = Depends(require_user), session: Session = 
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>誕生日・お迎え記念日</h1>
     <p>うちの子の大切な記念日を、近い順に表示しています。</p><div class="grid">{cards}</div>{notice}'''
     return family_layout("誕生日・お迎え記念日｜FAMILY", body, user, session)
+
+
+@app.get("/family/announcements", response_class=HTMLResponse)
+def family_announcements(user: User = Depends(require_user), session: Session = Depends(db)):
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    records = session.execute(
+        select(FamilyAnnouncement, Tenant).join(Tenant, Tenant.id == FamilyAnnouncement.tenant_id)
+        .where(FamilyAnnouncement.tenant_id.in_(tenant_ids), FamilyAnnouncement.active.is_(True),
+               Tenant.active.is_(True), Tenant.deleted.is_(False))
+        .order_by(FamilyAnnouncement.created_at.desc()).limit(100)
+    ).all() if tenant_ids else []
+    cards = ""
+    for announcement, tenant in records:
+        event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
+        cards += f'''<article class="tenant"><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime("%Y年%m月%d日")}掲載</small></p>
+        <h2 style="margin-top:8px">{html.escape(announcement.title)}</h2>{event}
+        <div style="white-space:pre-wrap">{html.escape(announcement.body)}</div></article>'''
+    if not cards:
+        cards = '<div class="tenant"><p>現在、犬舎からのお知らせはありません。</p></div>'
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>犬舎からのお知らせ</h1>
+    <p>愛犬を迎えた犬舎からの、FAMILY会・イベント・大切なご案内を表示しています。</p>{cards}'''
+    return family_layout("犬舎からのお知らせ｜FAMILY", body, user, session)
+
+
+@app.get("/family/announcements/manage", response_class=HTMLResponse)
+def family_announcements_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    announcements = session.scalars(
+        select(FamilyAnnouncement).where(FamilyAnnouncement.tenant_id == tenant.id)
+        .order_by(FamilyAnnouncement.created_at.desc()).limit(100)
+    ).all()
+    rows = ""
+    for announcement in announcements:
+        state = "公開中" if announcement.active else "掲載停止"
+        action = "stop" if announcement.active else "start"
+        action_label = "掲載を停止" if announcement.active else "再公開"
+        event = announcement.event_date.strftime("%Y-%m-%d") if announcement.event_date else "－"
+        rows += f'''<tr><td>{html.escape(announcement.title)}</td><td>{event}</td><td>{state}</td><td>{announcement.created_at.date()}</td>
+        <td><form class="inline" method="post" action="/family/announcements/manage/{announcement.id}/action"><input type="hidden" name="action" value="{action}"><button class="secondary">{action_label}</button></form></td></tr>'''
+    body = f'''<a class="button secondary" href="/dashboard">ダッシュボードへ戻る</a><h1>{html.escape(tenant.name)} FAMILYお知らせ管理</h1>
+    <p>この犬舎から愛犬を迎えたオーナー様だけに表示されます。</p>
+    <form method="post"><label>タイトル（150文字まで）</label><input name="title" maxlength="150" required placeholder="例：ESTRELLA FAMILY会開催のお知らせ">
+    <label>開催日（イベントの場合）</label><input type="date" name="event_date">
+    <label>お知らせ内容（2,000文字まで）</label><textarea name="body" maxlength="2000" required placeholder="日時、会場、持ち物、参加方法などをご案内ください。"></textarea>
+    <button>お知らせを公開する</button></form><h2>掲載履歴</h2>
+    <table><tr><th>タイトル</th><th>開催日</th><th>状態</th><th>掲載日</th><th>操作</th></tr>{rows or '<tr><td colspan="5">お知らせはまだありません。</td></tr>'}</table>'''
+    return layout("FAMILYお知らせ管理", body, user)
+
+
+@app.post("/family/announcements/manage")
+def family_announcement_create(title: str = Form(...), body: str = Form(...), event_date: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    title, body = title.strip(), body.strip()
+    if not title or len(title) > 150 or not body or len(body) > 2000:
+        raise HTTPException(status_code=400, detail="タイトルとお知らせ内容の文字数を確認してください")
+    try:
+        parsed_event_date = date.fromisoformat(event_date) if event_date else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="開催日を確認してください")
+    session.add(FamilyAnnouncement(tenant_id=tenant.id, title=title, body=body, event_date=parsed_event_date, created_by_id=user.id))
+    session.commit()
+    return RedirectResponse("/family/announcements/manage", status_code=303)
+
+
+@app.post("/family/announcements/manage/{announcement_id}/action")
+def family_announcement_action(announcement_id: int, action: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    announcement = session.scalar(select(FamilyAnnouncement).where(FamilyAnnouncement.id == announcement_id, FamilyAnnouncement.tenant_id == tenant.id))
+    if not announcement:
+        raise HTTPException(status_code=404, detail="お知らせが見つかりません")
+    if action == "stop":
+        announcement.active = False
+    elif action == "start":
+        announcement.active = True
+    else:
+        raise HTTPException(status_code=400, detail="操作を確認してください")
+    session.commit()
+    return RedirectResponse("/family/announcements/manage", status_code=303)
 
 
 @app.get("/family/dogs/{dog_id}", response_class=HTMLResponse)
