@@ -3264,6 +3264,8 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     <p>ログアウトボタンの横など、ご本人の画面に表示される名前です。公開プロフィールのニックネームとは別に管理されます。</p>
     <form method="post" enctype="multipart/form-data">
     <label>アカウント名（100文字まで）</label><input name="account_name" value="{html.escape(user.name)}" maxlength="100" required placeholder="例：内山 良一">
+    <label>登録メールアドレス</label><input type="email" value="{html.escape(user.email)}" readonly aria-readonly="true" style="background:#f5f0f1;color:#665159">
+    <p><small>このメールアドレスはログインと愛犬の連携に使用されています。FAMILYの他のメンバーには公開されません。変更が必要な場合は犬舎へご連絡ください。</small></p>
     <h2>公開プロフィール設定</h2>
     <p>プロフィール全体と、各項目の公開範囲をご自身で設定できます。非公開項目は他のメンバーに表示されません。</p>
     <div class="tenant">{photo}<p><a href="{public_url}">公開状態を確認する</a></p></div>
