@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -40,6 +41,13 @@ MODULES = {
     "genetics": ("遺伝子検査", "遺伝病検査結果と交配リスク"),
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
 }
+PREFECTURES = [
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
+    "埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
+    "岐阜県", "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県",
+    "鳥取県", "島根県", "岡山県", "広島県", "山口県", "徳島県", "香川県", "愛媛県", "高知県", "福岡県",
+    "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県", "海外",
+]
 
 
 class Base(DeclarativeBase):
@@ -315,6 +323,25 @@ class OwnerInvitation(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class OwnerProfile(Base):
+    __tablename__ = "owner_profiles"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    nickname: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    prefecture: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bio: Mapped[str | None] = mapped_column(Text, nullable=True)
+    photo_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    photo_content_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    profile_public: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_nickname: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_prefecture: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_bio: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_photo: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class LegalDocument(Base):
@@ -2538,6 +2565,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
+    <p><a class="button" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
     <div class="grid">{cards}</div>'''
     return layout("FAMILY", body, user)
 
@@ -2567,6 +2595,144 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     <tr><th>毛色</th><td>{html.escape(dog.color or "未登録")}</td></tr><tr><th>現在の状態</th><td>{html.escape(status_label)}</td></tr></table>
     <p>この画面では犬舎の顧客情報、金額、マイクロチップ番号などの非公開情報は表示しません。</p>'''
     return layout(f"{dog.call_name}｜FAMILY", body, user)
+
+
+def owner_profile_for(user: User, session: Session) -> OwnerProfile:
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.user_id == user.id))
+    if not profile:
+        profile = OwnerProfile(user_id=user.id, public_id=secrets.token_urlsafe(12))
+        session.add(profile)
+        session.commit()
+    return profile
+
+
+@app.get("/family/profile", response_class=HTMLResponse)
+def family_profile_edit(user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = owner_profile_for(user, session)
+    prefecture_options = '<option value="">未設定</option>' + "".join(
+        f'<option value="{value}" {"selected" if profile.prefecture == value else ""}>{value}</option>' for value in PREFECTURES
+    )
+    checked = lambda value: "checked" if value else ""
+    photo = f'<img src="/family/profile/photo" alt="プロフィール写真" style="width:150px;height:150px;object-fit:cover;border-radius:50%;border:4px solid #ead0d5">' if profile.photo_data else '<p>プロフィール写真は未登録です。</p>'
+    public_url = f'/family/members/{profile.public_id}'
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>公開プロフィール設定</h1>
+    <p>プロフィール全体と、各項目の公開範囲をご自身で設定できます。非公開項目は他のメンバーに表示されません。</p>
+    <div class="tenant">{photo}<p><a href="{public_url}">公開状態を確認する</a></p></div>
+    <form method="post" enctype="multipart/form-data">
+    <label>ニックネーム</label><input name="nickname" value="{html.escape(profile.nickname or '')}" maxlength="60" placeholder="例：りょう">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_nickname" value="true" {checked(profile.show_nickname)}> ニックネームを公開する</label>
+    <label>都道府県</label><select name="prefecture">{prefecture_options}</select>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_prefecture" value="true" {checked(profile.show_prefecture)}> 都道府県を公開する</label>
+    <label>自己紹介（500文字まで）</label><textarea name="bio" maxlength="500" placeholder="愛犬との暮らしや、ご自身についてご紹介ください。">{html.escape(profile.bio or '')}</textarea>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_bio" value="true" {checked(profile.show_bio)}> 自己紹介を公開する</label>
+    <label>プロフィール写真（JPG・PNG・WebP／8MBまで）</label><input name="photo" type="file" accept="image/jpeg,image/png,image/webp">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_photo" value="true" {checked(profile.show_photo)}> プロフィール写真を公開する</label>
+    <div class="tenant"><label style="font-size:16px"><input style="width:auto" type="checkbox" name="profile_public" value="true" {checked(profile.profile_public)}> プロフィール全体をFAMILYメンバーへ公開する</label>
+    <p><small>ここをオフにすると、各項目がオンでもプロフィール全体が非公開になります。</small></p></div>
+    <button>設定を保存</button></form>
+    {f'<form method="post" action="/family/profile/photo/delete"><button class="danger">登録写真を削除</button></form>' if profile.photo_data else ''}'''
+    return layout("公開プロフィール設定", body, user)
+
+
+@app.post("/family/profile")
+async def family_profile_save(
+    nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
+    profile_public: bool = Form(False), show_nickname: bool = Form(False), show_prefecture: bool = Form(False),
+    show_bio: bool = Form(False), show_photo: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db),
+):
+    if prefecture and prefecture not in PREFECTURES:
+        raise HTTPException(status_code=400, detail="都道府県を確認してください")
+    if len(nickname.strip()) > 60 or len(bio.strip()) > 500:
+        raise HTTPException(status_code=400, detail="プロフィールの文字数を確認してください")
+    profile = owner_profile_for(user, session)
+    if photo and photo.filename:
+        content = await photo.read(8 * 1024 * 1024 + 1)
+        if len(content) > 8 * 1024 * 1024:
+            return HTMLResponse(layout("写真エラー", '<p class="error">写真は8MB以下にしてください。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=400)
+        try:
+            with Image.open(io.BytesIO(content)) as source:
+                if source.width * source.height > 25_000_000:
+                    raise ValueError("image dimensions are too large")
+                image = ImageOps.exif_transpose(source)
+                image.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                if image.mode in {"RGBA", "LA"}:
+                    background = Image.new("RGB", image.size, "white")
+                    background.paste(image, mask=image.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+                output = io.BytesIO()
+                image.save(output, format="JPEG", quality=86, optimize=True)
+        except Exception:
+            return HTMLResponse(layout("写真エラー", '<p class="error">JPG・PNG・WebP形式の写真を選択してください。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=400)
+        profile.photo_data = output.getvalue()
+        profile.photo_content_type = "image/jpeg"
+    eligible = user.platform_admin or session.scalar(select(Membership.id).where(Membership.user_id == user.id).limit(1)) is not None \
+        or session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).limit(1)) is not None
+    if profile_public and not eligible:
+        return HTMLResponse(layout("公開設定エラー", '<p class="error">プロフィールを公開できるのは、犬舎に所属している方または犬と連携済みのオーナー様です。</p><a class="button secondary" href="/family/profile">戻る</a>', user), status_code=403)
+    profile.nickname = nickname.strip() or None
+    profile.prefecture = prefecture or None
+    profile.bio = bio.strip() or None
+    profile.profile_public, profile.show_nickname = profile_public, show_nickname
+    profile.show_prefecture, profile.show_bio, profile.show_photo = show_prefecture, show_bio, show_photo
+    profile.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse("/family/profile", status_code=303)
+
+
+@app.get("/family/profile/photo")
+def family_profile_own_photo(user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.user_id == user.id))
+    if not profile or not profile.photo_data:
+        raise HTTPException(status_code=404)
+    return Response(content=profile.photo_data, media_type=profile.photo_content_type or "image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.post("/family/profile/photo/delete")
+def family_profile_photo_delete(user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.user_id == user.id))
+    if profile:
+        profile.photo_data, profile.photo_content_type, profile.show_photo = None, None, False
+        profile.updated_at = datetime.now(timezone.utc)
+        session.commit()
+    return RedirectResponse("/family/profile", status_code=303)
+
+
+@app.get("/family/members", response_class=HTMLResponse)
+def family_member_list(user: User = Depends(require_user), session: Session = Depends(db)):
+    profiles = session.scalars(select(OwnerProfile).where(OwnerProfile.profile_public.is_(True)).order_by(OwnerProfile.updated_at.desc())).all()
+    cards = ""
+    for profile in profiles:
+        title = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+        location = profile.prefecture if profile.show_prefecture and profile.prefecture else "地域非公開"
+        photo = f'<img src="/family/members/{profile.public_id}/photo" alt="" style="width:84px;height:84px;object-fit:cover;border-radius:50%;margin-bottom:10px">' if profile.show_photo and profile.photo_data else '<div class="avatar" style="width:84px;height:84px;border-radius:50%;display:grid;place-items:center;background:#ead0d5;font-size:30px;margin-bottom:10px">♡</div>'
+        cards += f'<a class="module" href="/family/members/{profile.public_id}">{photo}<h3>{html.escape(title)}</h3><p>{html.escape(location)}</p></a>'
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYメンバー</h1>
+    <p>プロフィール公開に同意したメンバーだけを表示しています。</p><div class="grid">{cards or '<p>公開プロフィールはまだありません。</p>'}</div>'''
+    return layout("FAMILYメンバー", body, user)
+
+
+@app.get("/family/members/{public_id}", response_class=HTMLResponse)
+def family_member_detail(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True)))
+    if not profile:
+        return HTMLResponse(layout("非公開プロフィール", '<h1>プロフィールは非公開です</h1><p>現在、このプロフィールは公開されていません。</p><a class="button secondary" href="/family/members">戻る</a>', user), status_code=404)
+    title = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
+    photo = f'<img src="/family/members/{profile.public_id}/photo" alt="プロフィール写真" style="width:180px;height:180px;object-fit:cover;border-radius:50%;border:5px solid #ead0d5">' if profile.show_photo and profile.photo_data else ""
+    prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
+    bio = f'<div class="tenant" style="white-space:pre-wrap">{html.escape(profile.bio)}</div>' if profile.show_bio and profile.bio else ""
+    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}
+    <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
+    return layout(f"{title}｜FAMILY", body, user)
+
+
+@app.get("/family/members/{public_id}/photo")
+def family_member_photo(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
+    profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True), OwnerProfile.show_photo.is_(True)))
+    if not profile or not profile.photo_data:
+        raise HTTPException(status_code=404)
+    return Response(content=profile.photo_data, media_type=profile.photo_content_type or "image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 def active_owner_invitation(raw_token: str, session: Session) -> OwnerInvitation | None:
