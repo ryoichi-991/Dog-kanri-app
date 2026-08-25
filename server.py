@@ -1904,7 +1904,17 @@ def dog_detail_page(dog_id: int, access=Depends(require_tenant_user), session: S
         kind = PEDIGREE_DOCUMENT_TYPES.get(item.document_type or "other", "その他")
         primary = ' <span class="badge">国内メイン</span>' if item.is_primary else ''
         upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(kind)}／{html.escape(item.registration_no or "番号未登録")}{primary}</summary><p>{html.escape(item.organization or "団体未登録")}／{html.escape(item.country or "国未登録")}／発行日 {item.issued_on or "未登録"}／保存日 {item.uploaded_at.date()}</p><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
-    document_section = f'''<div class="tenant"><h2 style="margin-top:0">アップロード済み血統書</h2>{upload_views or '<p>血統書原本はまだ保存されていません。</p>'}</div>'''
+    document_section = f'''<style>
+    .pedigree-documents details{{margin:10px 0;border:1px solid #dfc8ce;border-radius:12px;background:#fff;overflow:hidden;transition:border-color .18s,box-shadow .18s,transform .18s}}
+    .pedigree-documents details:hover{{border-color:#b66f7c;box-shadow:0 6px 16px #70445420;transform:translateY(-1px)}}
+    .pedigree-documents details[open]{{border-color:#c9919c;box-shadow:0 5px 15px #70445417}}
+    .pedigree-documents summary{{position:relative;display:block;padding:15px 48px 15px 17px;cursor:pointer;font-weight:750;color:#63404c;background:#fff;transition:background .18s,color .18s;list-style:none}}
+    .pedigree-documents summary::-webkit-details-marker{{display:none}}.pedigree-documents summary:hover{{background:#f8e9ed;color:#8f4f60}}
+    .pedigree-documents summary:after{{content:'›';position:absolute;right:18px;top:50%;font-size:26px;line-height:1;transform:translateY(-50%) rotate(90deg);transition:transform .18s;color:#b66f7c}}
+    .pedigree-documents details[open] summary:after{{transform:translateY(-50%) rotate(-90deg)}}
+    .pedigree-documents .document-hint{{margin:4px 0 10px;color:#806b72;font-size:12px}}
+    .pedigree-documents details>p,.pedigree-documents details>img,.pedigree-documents details>iframe{{margin-left:17px;margin-right:17px;max-width:calc(100% - 34px)}}
+    </style><div class="tenant pedigree-documents"><h2 style="margin-top:0">アップロード済み血統書</h2><p class="document-hint">各項目をクリックすると、保存した血統書原本を表示できます。</p>{upload_views or '<p>血統書原本はまだ保存されていません。</p>'}</div>'''
     flow = pedigree_flow_chart(session, tenant.id, dog)
     info = [
         ("呼び名", dog.call_name), ("血統書名", dog.registered_name or "－"), ("犬種", dog.breed or "－"),
@@ -1962,7 +1972,16 @@ def dog_edit_page(dog_id: int, access=Depends(require_tenant_user), session: Ses
         kind = PEDIGREE_DOCUMENT_TYPES.get(item.document_type or "other", "その他")
         primary = ' <span class="badge">国内メイン</span>' if item.is_primary else ''
         upload_views += f'<details {"open" if index == 0 else ""}><summary>{html.escape(kind)}／{html.escape(item.registration_no or "番号未登録")}{primary}</summary><p>{html.escape(item.organization or "団体未登録")}／{html.escape(item.country or "国未登録")}／発行日 {item.issued_on or "未登録"}／保存日 {item.uploaded_at.date()}</p><p><a class="button secondary" href="{source}" target="_blank">原本を別画面で開く</a></p>{preview}</details>'
-    document_section = f'<div class="tenant"><h2 style="margin-top:0">アップロードした血統書原本</h2>{upload_views or "<p>この犬には原本ファイルがまだ保存されていません。次回の血統書読み込みから自動保存されます。</p>"}</div>'
+    document_section = f'''<style>
+    .pedigree-documents details{{margin:10px 0;border:1px solid #dfc8ce;border-radius:12px;background:#fff;overflow:hidden;transition:border-color .18s,box-shadow .18s,transform .18s}}
+    .pedigree-documents details:hover{{border-color:#b66f7c;box-shadow:0 6px 16px #70445420;transform:translateY(-1px)}}.pedigree-documents details[open]{{border-color:#c9919c}}
+    .pedigree-documents summary{{position:relative;display:block;padding:15px 48px 15px 17px;cursor:pointer;font-weight:750;color:#63404c;transition:background .18s,color .18s;list-style:none}}
+    .pedigree-documents summary::-webkit-details-marker{{display:none}}.pedigree-documents summary:hover{{background:#f8e9ed;color:#8f4f60}}
+    .pedigree-documents summary:after{{content:'›';position:absolute;right:18px;top:50%;font-size:26px;transform:translateY(-50%) rotate(90deg);transition:transform .18s;color:#b66f7c}}
+    .pedigree-documents details[open] summary:after{{transform:translateY(-50%) rotate(-90deg)}}
+    .pedigree-documents .document-hint{{margin:4px 0 10px;color:#806b72;font-size:12px}}
+    .pedigree-documents details>p,.pedigree-documents details>img,.pedigree-documents details>iframe{{margin-left:17px;margin-right:17px;max-width:calc(100% - 34px)}}
+    </style><div class="tenant pedigree-documents"><h2 style="margin-top:0">アップロードした血統書原本</h2><p class="document-hint">各項目をクリックすると、保存した血統書原本を表示できます。</p>{upload_views or "<p>この犬には原本ファイルがまだ保存されていません。次回の血統書読み込みから自動保存されます。</p>"}</div>'''
     body = f'''<h1>犬・血統書の詳細／編集</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p>{document_section}{pedigree_summary}
     <form method="post"><h2>基本情報・血統書情報</h2><div class="grid"><div><label>呼び名</label><input name="call_name" value="{html.escape(dog.call_name)}" required></div><div><label>犬種（自由入力可）</label><input name="breed" value="{html.escape(dog.breed or '')}" maxlength="150" placeholder="例：ミックス（シュナウザー×プードル）"></div><div><label>血統書名</label><input name="registered_name" value="{html.escape(dog.registered_name or '')}"></div><div><label>性別</label><select name="sex">{sex_options}</select></div><div><label>区分</label><select name="category">{category_options}</select></div><div><label>現在の状態</label><select name="status">{status_options}</select></div><div><label>生年月日</label><input type="date" name="birth_date" value="{dog.birth_date or ''}"></div><div><label>毛色</label><input name="color" value="{html.escape(dog.color or '')}"></div><div><label>国内メイン番号（JKC）</label><input name="pedigree_no" value="{html.escape(dog.pedigree_no or '')}" placeholder="例：JKC-MS-07782/25-I"></div><div><label>出生国・海外登録番号</label><input name="origin_registration_no" value="{html.escape(dog.origin_registration_no or '')}" placeholder="例：KATH116090377"></div><div><label>マイクロチップ番号</label><input name="microchip_no" value="{html.escape(dog.microchip_no or '')}"></div><div><label>国内発行団体</label><input name="pedigree_organization" value="{html.escape(dog.pedigree_organization or '')}"></div><div><label>国内発行国</label><input name="pedigree_country" value="{html.escape(dog.pedigree_country or '')}"></div><div><label>出生国</label><input name="origin_registration_country" value="{html.escape(dog.origin_registration_country or '')}"></div><div><label>海外発行団体</label><input name="origin_registration_organization" value="{html.escape(dog.origin_registration_organization or '')}"></div><div><label>父犬</label><select name="sire_id">{sire_options}</select></div><div><label>母犬</label><select name="dam_id">{dam_options}</select></div><div><label>引渡し日</label><input type="date" name="handover_date" value="{sale.handover_date if sale and sale.handover_date else ''}"></div></div>
     <label>タイトル（複数選択可）</label><select name="titles" multiple size="8">{title_options}</select><p><small>Macは⌘キー、WindowsはCtrlキーを押しながら選択すると複数指定できます。</small></p>
