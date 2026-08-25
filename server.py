@@ -399,6 +399,11 @@ class FamilyAnnouncement(Base):
     title: Mapped[str] = mapped_column(String(150))
     body: Mapped[str] = mapped_column(Text)
     event_date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    event_time: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    event_location: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    event_capacity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    waitlist_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
@@ -509,6 +514,46 @@ class AccountEmailChangeAudit(Base):
     new_email: Mapped[str] = mapped_column(String(255))
     linked_customers_updated: Mapped[int] = mapped_column(Integer, default=0)
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class PasswordResetRequest(Base):
+    __tablename__ = "password_reset_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyNotificationSetting(Base):
+    __tablename__ = "family_notification_settings"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True)
+    messages: Mapped[bool] = mapped_column(Boolean, default=True)
+    announcements: Mapped[bool] = mapped_column(Boolean, default=True)
+    likes: Mapped[bool] = mapped_column(Boolean, default=True)
+    anniversaries: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class FamilyAnniversaryDismissal(Base):
+    __tablename__ = "family_anniversary_dismissals"
+    __table_args__ = (UniqueConstraint("user_id", "dog_id", "event_type", "event_date"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(20))
+    event_date: Mapped[date] = mapped_column(Date)
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 def db():
@@ -628,6 +673,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/admin/users"><span>♙</span>ユーザー管理</a>
           <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a>
           <a href="/family/messages/manage"><span>✉</span>メッセージ管理</a>
+          <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           {platform_link}
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
@@ -712,6 +758,11 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS instagram_username VARCHAR(30)"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_profiles ADD COLUMN IF NOT EXISTS show_instagram BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dog_transfers ADD COLUMN IF NOT EXISTS amount INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_time VARCHAR(5)"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_location VARCHAR(300)"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_capacity INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
     with SessionLocal() as session:
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
@@ -785,7 +836,7 @@ def register(name: str = Form(...), email: str = Form(...), password: str = Form
 @app.get("/login", response_class=HTMLResponse)
 def login_page(registered: int = 0, setup: int = 0):
     notice = "<p>初期設定が完了しました。</p>" if setup else ("<p>登録が完了しました。</p>" if registered else "")
-    return layout("ログイン", f'<h1>ログイン</h1>{notice}<form method="post"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード</label><input name="password" type="password" required><button>ログイン</button></form>')
+    return layout("ログイン", f'<h1>ログイン</h1>{notice}<form method="post"><label>メールアドレス</label><input name="email" type="email" required><label>パスワード</label><input name="password" type="password" required><button>ログイン</button></form><p><a href="/forgot-password">パスワードをお忘れの方</a></p>')
 
 
 @app.post("/login")
@@ -801,6 +852,59 @@ def login(email: str = Form(...), password: str = Form(...), session: Session = 
     response = RedirectResponse("/dashboard" if has_tenant or not has_dog else "/family", status_code=303)
     response.set_cookie("dog_session", raw, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=SESSION_DAYS * 86400)
     return response
+
+
+@app.get("/forgot-password", response_class=HTMLResponse)
+def forgot_password_page():
+    return layout("パスワード再設定", '''<h1>パスワードをお忘れの方</h1><p>登録メールアドレスを入力してください。安全確認後、犬舎から再設定方法をご案内します。</p>
+    <form method="post"><label>登録メールアドレス</label><input type="email" name="email" required><button>再設定を申し込む</button></form><p><a href="/login">ログインへ戻る</a></p>''')
+
+
+@app.post("/forgot-password", response_class=HTMLResponse)
+def forgot_password_request(email: str = Form(...), session: Session = Depends(db)):
+    account = session.scalar(select(User).where(func.lower(User.email) == normalize_email(email), User.active.is_(True)))
+    if account:
+        recent = session.scalar(select(PasswordResetRequest).where(
+            PasswordResetRequest.user_id == account.id, PasswordResetRequest.resolved_at.is_(None),
+            PasswordResetRequest.requested_at >= datetime.now(timezone.utc) - timedelta(minutes=15),
+        ))
+        if not recent:
+            session.add(PasswordResetRequest(user_id=account.id))
+            session.commit()
+    return layout("受付完了", '<h1>受付しました</h1><p>登録状況にかかわらず、安全のため同じ案内を表示しています。犬舎からの連絡をお待ちください。</p><p><a href="/login">ログインへ戻る</a></p>')
+
+
+def active_password_reset(raw_token: str, session: Session) -> PasswordResetToken | None:
+    reset = session.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash(raw_token), PasswordResetToken.used_at.is_(None)))
+    if not reset:
+        return None
+    expires = reset.expires_at if reset.expires_at.tzinfo else reset.expires_at.replace(tzinfo=timezone.utc)
+    return reset if expires > datetime.now(timezone.utc) else None
+
+
+@app.get("/reset-password/{raw_token}", response_class=HTMLResponse)
+def reset_password_page(raw_token: str, session: Session = Depends(db)):
+    if not active_password_reset(raw_token, session):
+        return HTMLResponse(layout("リンクエラー", '<h1>再設定リンクを利用できません</h1><p>期限切れまたは使用済みです。犬舎へ再度お申し込みください。</p>'), status_code=400)
+    return layout("新しいパスワード", f'''<h1>新しいパスワードを設定</h1><form method="post">
+    <label>新しいパスワード（8文字以上）</label><input type="password" name="password" minlength="8" required>
+    <label>確認入力</label><input type="password" name="password_confirm" minlength="8" required><button>パスワードを変更する</button></form>''')
+
+
+@app.post("/reset-password/{raw_token}", response_class=HTMLResponse)
+def reset_password_save(raw_token: str, password: str = Form(...), password_confirm: str = Form(...), session: Session = Depends(db)):
+    reset = active_password_reset(raw_token, session)
+    if not reset or len(password) < 8 or password != password_confirm:
+        return HTMLResponse(layout("入力エラー", '<p class="error">リンク、パスワードの長さ、確認入力をご確認ください。</p>'), status_code=400)
+    account = session.get(User, reset.user_id)
+    account.password_hash = passwords.hash(password)
+    reset.used_at = datetime.now(timezone.utc)
+    requests = session.scalars(select(PasswordResetRequest).where(PasswordResetRequest.user_id == account.id, PasswordResetRequest.resolved_at.is_(None))).all()
+    for request_item in requests:
+        request_item.resolved_at = datetime.now(timezone.utc)
+    session.execute(text("DELETE FROM login_sessions WHERE user_id = :user_id"), {"user_id": account.id})
+    session.commit()
+    return layout("変更完了", '<h1>パスワードを変更しました</h1><p>新しいパスワードでログインしてください。</p><p><a class="button" href="/login">ログインする</a></p>')
 
 
 @app.post("/logout")
@@ -2754,7 +2858,8 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
 @app.get("/family/notifications", response_class=HTMLResponse)
 def family_notifications(user: User = Depends(require_user), session: Session = Depends(db)):
     items: list[tuple[datetime, str]] = []
-    for conversation, message in family_unread_message_items(user, session):
+    settings = family_notification_setting(user, session)
+    for conversation, message in (family_unread_message_items(user, session) if settings.messages else []):
         other_id = conversation.user2_id if conversation.user1_id == user.id else conversation.user1_id
         preview = message.body[:80] + ("…" if len(message.body) > 80 else "")
         card = f'''<a class="notification-item unread" href="/family/messages/{conversation.id}">
@@ -2762,27 +2867,65 @@ def family_notifications(user: User = Depends(require_user), session: Session = 
         <p><strong>{html.escape(family_message_name(other_id, session))}さんから届きました</strong></p>
         <p>{html.escape(preview)}</p><small>{message.sent_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
         items.append((message.sent_at, card))
-    for announcement, tenant in family_unread_announcements(user, session):
+    for announcement, tenant in (family_unread_announcements(user, session) if settings.announcements else []):
         event = f" ／ 開催日 {announcement.event_date.strftime('%Y年%m月%d日')}" if announcement.event_date else ""
         card = f'''<a class="notification-item unread" href="/family/announcements/view/{announcement.id}">
         <span class="notification-kind">犬舎からのお知らせ</span><span class="badge">未読</span>
         <p><strong>{html.escape(announcement.title)}</strong></p><p>{html.escape(tenant.name)}{event}</p>
         <small>{announcement.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
         items.append((announcement.created_at, card))
-    for like, item, dog in family_unread_like_items(user, session):
+    for like, item, dog in (family_unread_like_items(user, session) if settings.likes else []):
         liker_name = family_message_name(like.user_id, session)
         card = f'''<a class="notification-item unread" href="/family/timeline/{item.id}">
         <span class="notification-kind">タイムライン</span><span class="badge">未読</span>
         <p><strong>{html.escape(liker_name)}さんが{html.escape(dog.call_name)}の写真に「いいね」しました</strong></p>
         <small>{like.created_at.strftime('%Y年%m月%d日 %H:%M')}</small></a>'''
         items.append((like.created_at, card))
+    for dog, event_type, event_date, days in (family_anniversary_notification_items(user, session) if settings.anniversaries else []):
+        label = "誕生日" if event_type == "birthday" else "お迎え記念日"
+        timing = "今日です" if days == 0 else ("明日です" if days == 1 else "7日後です")
+        pseudo_time = datetime.combine(event_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
+        card = f'''<a class="notification-item unread" href="/family/anniversaries/notice/{dog.id}/{event_type}/{event_date.isoformat()}">
+        <span class="notification-kind">大切な記念日</span><span class="badge">{days}日前</span>
+        <p><strong>{html.escape(dog.call_name)}の{label}が{timing}</strong></p><small>{event_date.strftime('%Y年%m月%d日')}</small></a>'''
+        items.append((pseudo_time, card))
     cards = "".join(card for _, card in sorted(items, key=lambda item: item[0], reverse=True))
     if not cards:
         cards = '<div class="tenant"><p>新しい通知はありません。</p><p><small>新着メッセージ、犬舎からのお知らせ、写真への「いいね」をここでまとめて確認できます。</small></p></div>'
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>通知</h1>
     <p>未読のメッセージ、犬舎からのお知らせ、成長写真への「いいね」をまとめて表示しています。</p>{cards}
-    <p><a class="button secondary" href="/family/anniversaries">誕生日・お迎え記念日を確認</a></p>'''
+    <p><a class="button secondary" href="/family/anniversaries">誕生日・お迎え記念日を確認</a> <a class="button secondary" href="/family/notification-settings">通知設定</a></p>'''
     return family_layout("通知｜FAMILY", body, user, session)
+
+
+def family_notification_setting(user: User, session: Session) -> FamilyNotificationSetting:
+    setting = session.scalar(select(FamilyNotificationSetting).where(FamilyNotificationSetting.user_id == user.id))
+    if not setting:
+        setting = FamilyNotificationSetting(user_id=user.id)
+        session.add(setting)
+        session.commit()
+    return setting
+
+
+@app.get("/family/notification-settings", response_class=HTMLResponse)
+def family_notification_settings_page(user: User = Depends(require_user), session: Session = Depends(db)):
+    setting = family_notification_setting(user, session)
+    checked = lambda value: "checked" if value else ""
+    body = f'''<a class="button secondary" href="/family/notifications">通知へ戻る</a><h1>通知設定</h1><form method="post">
+    <label><input style="width:auto" type="checkbox" name="messages" value="true" {checked(setting.messages)}> 新着メッセージ</label>
+    <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
+    <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
+    <label><input style="width:auto" type="checkbox" name="anniversaries" value="true" {checked(setting.anniversaries)}> 誕生日・お迎え記念日（7日前・前日・当日）</label>
+    <button>通知設定を保存</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>'''
+    return family_layout("通知設定｜FAMILY", body, user, session)
+
+
+@app.post("/family/notification-settings")
+def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    setting = family_notification_setting(user, session)
+    setting.messages, setting.announcements, setting.likes, setting.anniversaries = messages, announcements, likes, anniversaries
+    session.commit()
+    return RedirectResponse("/family/notification-settings", status_code=303)
 
 
 def next_family_anniversary(month: int, day: int, today: date) -> date:
@@ -2850,6 +2993,24 @@ def family_anniversaries(user: User = Depends(require_user), session: Session = 
     return family_layout("誕生日・お迎え記念日｜FAMILY", body, user, session)
 
 
+@app.get("/family/anniversaries/notice/{dog_id}/{event_type}/{event_date}")
+def family_anniversary_notice_open(dog_id: int, event_type: str, event_date: str, user: User = Depends(require_user), session: Session = Depends(db)):
+    if event_type not in {"birthday", "homecoming"} or not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404)
+    try:
+        parsed = date.fromisoformat(event_date)
+    except ValueError:
+        raise HTTPException(status_code=404)
+    existing = session.scalar(select(FamilyAnniversaryDismissal).where(
+        FamilyAnniversaryDismissal.user_id == user.id, FamilyAnniversaryDismissal.dog_id == dog_id,
+        FamilyAnniversaryDismissal.event_type == event_type, FamilyAnniversaryDismissal.event_date == parsed,
+    ))
+    if not existing:
+        session.add(FamilyAnniversaryDismissal(user_id=user.id, dog_id=dog_id, event_type=event_type, event_date=parsed))
+        session.commit()
+    return RedirectResponse("/family/anniversaries", status_code=303)
+
+
 @app.get("/family/announcements", response_class=HTMLResponse)
 def family_announcements(user: User = Depends(require_user), session: Session = Depends(db)):
     tenant_ids = family_kennel_tenant_ids(user, session)
@@ -2892,13 +3053,26 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
     else:
         session.add(FamilyAnnouncementRead(announcement_id=announcement.id, user_id=user.id))
     session.commit()
-    event = f'<p><span class="badge">開催日：{announcement.event_date.strftime("%Y年%m月%d日")}</span></p>' if announcement.event_date else ""
+    event_details = []
+    if announcement.event_date:
+        event_details.append(f"開催日：{announcement.event_date.strftime('%Y年%m月%d日')}")
+    if announcement.event_time:
+        event_details.append(f"開始時刻：{announcement.event_time}")
+    if announcement.event_location:
+        event_details.append(f"開催場所：{html.escape(announcement.event_location)}")
+    if announcement.event_capacity:
+        event_details.append(f"定員：{announcement.event_capacity}名")
+    event = f'<div class="tenant"><p><strong>イベント情報</strong></p><p>{"<br>".join(event_details)}</p></div>' if event_details else ""
     response_form = ""
     if announcement.event_date:
-        deadline = datetime(
+        deadline = announcement.response_deadline or (datetime(
             announcement.event_date.year, announcement.event_date.month, announcement.event_date.day,
             9, 0, tzinfo=ZoneInfo("Asia/Tokyo"),
-        ) - timedelta(days=1)
+        ) - timedelta(days=1))
+        if not deadline.tzinfo:
+            deadline = deadline.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+        else:
+            deadline = deadline.astimezone(ZoneInfo("Asia/Tokyo"))
         response_open = datetime.now(ZoneInfo("Asia/Tokyo")) < deadline
         deadline_label = deadline.strftime("%Y年%m月%d日 午前9時")
         response = session.scalar(select(FamilyEventResponse).where(
@@ -2914,7 +3088,7 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
             f'<label style="display:inline-flex;align-items:center;gap:6px;margin-right:16px"><input type="checkbox" name="dog_ids" value="{dog.id}" style="width:auto" {'checked' if dog.call_name in selected_names else ''}>{html.escape(dog.call_name)}</label>'
             for dog in owned_dogs
         ) or '<p><small>この犬舎と連携された愛犬はありません。</small></p>'
-        current = {"attending": "参加", "maybe": "検討中", "declined": "不参加"}.get(response.status, "未回答") if response else "未回答"
+        current = {"attending": "参加", "waitlisted": "キャンセル待ち", "maybe": "検討中", "declined": "不参加"}.get(response.status, "未回答") if response else "未回答"
         form = f'''<form method="post" action="/family/announcements/view/{announcement.id}/response">
         <label>参加について</label><select name="response_status" required>
         <option value="attending" {'selected' if response and response.status == 'attending' else ''}>参加します</option>
@@ -2926,7 +3100,7 @@ def family_announcement_detail(announcement_id: int, user: User = Depends(requir
         <button>回答を保存する</button></form>''' if response_open else '''<div class="tenant"><p><strong>回答受付は終了しました。</strong></p><p>変更が必要な場合は犬舎へ直接ご連絡ください。</p></div>'''
         response_form = f'''<section class="tenant"><h2 style="margin-top:0">イベント参加回答</h2><p>現在の回答：<span class="badge">{current}</span></p>
         <p><strong>回答期限：{deadline_label}</strong></p>{form}
-        <p><small>回答は原則、開催日の1日前の午前9時まで何度でも変更できます。</small></p></section>'''
+        <p><small>回答期限までは何度でも変更できます。定員到達後は、設定されている場合にキャンセル待ちとなります。</small></p></section>'''
     body = f'''<a class="button secondary" href="/family/announcements">お知らせ一覧へ戻る</a>
     <h1>{html.escape(announcement.title)}</h1><p><strong>{html.escape(tenant.name)}</strong>　<small>{announcement.created_at.date().strftime('%Y年%m月%d日')}掲載</small></p>
     {event}<div class="tenant" style="white-space:pre-wrap">{html.escape(announcement.body)}</div>{response_form}'''
@@ -2946,10 +3120,14 @@ def family_event_response_save(
     )) if tenant_ids else None
     if not announcement:
         raise HTTPException(status_code=404, detail="回答できるイベントが見つかりません")
-    deadline = datetime(
+    deadline = announcement.response_deadline or (datetime(
         announcement.event_date.year, announcement.event_date.month, announcement.event_date.day,
         9, 0, tzinfo=ZoneInfo("Asia/Tokyo"),
-    ) - timedelta(days=1)
+    ) - timedelta(days=1))
+    if not deadline.tzinfo:
+        deadline = deadline.replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+    else:
+        deadline = deadline.astimezone(ZoneInfo("Asia/Tokyo"))
     if datetime.now(ZoneInfo("Asia/Tokyo")) >= deadline:
         raise HTTPException(status_code=403, detail="回答期限を過ぎています。変更が必要な場合は犬舎へ直接ご連絡ください")
     if response_status not in {"attending", "maybe", "declined"} or not 1 <= party_size <= 20 or len(note.strip()) > 500:
@@ -2966,11 +3144,34 @@ def family_event_response_save(
     if not response:
         response = FamilyEventResponse(announcement_id=announcement.id, user_id=user.id)
         session.add(response)
-    response.status = response_status
+    final_status = response_status
+    if response_status == "attending" and announcement.event_capacity:
+        reserved = session.scalar(select(func.coalesce(func.sum(FamilyEventResponse.party_size), 0)).where(
+            FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.status == "attending",
+            FamilyEventResponse.user_id != user.id,
+        )) or 0
+        if reserved + party_size > announcement.event_capacity:
+            if announcement.waitlist_enabled:
+                final_status = "waitlisted"
+            else:
+                raise HTTPException(status_code=400, detail="定員に達しているため参加受付できません")
+    response.status = final_status
     response.party_size = party_size
     response.dog_names = "、".join(dog.call_name for dog in dogs) or None
     response.note = note.strip() or None
     response.updated_at = datetime.now(timezone.utc)
+    session.flush()
+    if announcement.event_capacity and announcement.waitlist_enabled:
+        attending_total = session.scalar(select(func.coalesce(func.sum(FamilyEventResponse.party_size), 0)).where(
+            FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.status == "attending",
+        )) or 0
+        waiting = session.scalars(select(FamilyEventResponse).where(
+            FamilyEventResponse.announcement_id == announcement.id, FamilyEventResponse.status == "waitlisted",
+        ).order_by(FamilyEventResponse.updated_at)).all()
+        for waiting_response in waiting:
+            if attending_total + waiting_response.party_size <= announcement.event_capacity:
+                waiting_response.status = "attending"
+                attending_total += waiting_response.party_size
     session.commit()
     return RedirectResponse(f"/family/announcements/view/{announcement.id}", status_code=303)
 
@@ -2996,6 +3197,10 @@ def family_announcements_manage(access=Depends(require_tenant_admin), session: S
     <p>この犬舎から愛犬を迎えたオーナー様だけに表示されます。</p>
     <form method="post"><label>タイトル（150文字まで）</label><input name="title" maxlength="150" required placeholder="例：ESTRELLA FAMILY会開催のお知らせ">
     <label>開催日（イベントの場合）</label><input type="date" name="event_date">
+    <div class="grid"><div><label>開始時刻</label><input type="time" name="event_time"></div><div><label>定員（名）</label><input type="number" name="event_capacity" min="1" max="10000"></div></div>
+    <label>開催場所</label><input name="event_location" maxlength="300" placeholder="会場名・住所など">
+    <label>回答期限（未指定の場合は開催日前日の午前9時）</label><input type="datetime-local" name="response_deadline">
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="waitlist_enabled" value="true"> 定員到達後はキャンセル待ちで受け付ける</label>
     <label>お知らせ内容（2,000文字まで）</label><textarea name="body" maxlength="2000" required placeholder="日時、会場、持ち物、参加方法などをご案内ください。"></textarea>
     <button>お知らせを公開する</button></form><h2>掲載履歴</h2>
     <table><tr><th>タイトル</th><th>開催日</th><th>状態</th><th>掲載日</th><th>参加回答</th><th>操作</th></tr>{rows or '<tr><td colspan="6">お知らせはまだありません。</td></tr>'}</table>'''
@@ -3016,7 +3221,7 @@ def family_event_responses_manage(announcement_id: int, access=Depends(require_t
         .where(FamilyEventResponse.announcement_id == announcement.id)
         .order_by(FamilyEventResponse.status, User.name)
     ).all()
-    labels = {"attending": "参加", "maybe": "検討中", "declined": "不参加"}
+    labels = {"attending": "参加", "waitlisted": "キャンセル待ち", "maybe": "検討中", "declined": "不参加"}
     rows = ""
     attending_people = 0
     for response, owner in records:
@@ -3029,6 +3234,7 @@ def family_event_responses_manage(announcement_id: int, access=Depends(require_t
     body = f'''<a class="button secondary" href="/family/announcements/manage">お知らせ管理へ戻る</a><h1>{html.escape(announcement.title)} 参加回答</h1>
     <p>開催日：{announcement.event_date.strftime('%Y年%m月%d日')}</p><div class="grid">
     <div class="module"><h3>参加</h3><p><strong>{summary['attending']}組／{attending_people}名</strong></p></div>
+    <div class="module"><h3>キャンセル待ち</h3><p><strong>{summary['waitlisted']}組</strong></p></div>
     <div class="module"><h3>検討中</h3><p><strong>{summary['maybe']}組</strong></p></div>
     <div class="module"><h3>不参加</h3><p><strong>{summary['declined']}組</strong></p></div></div>
     <table><tr><th>オーナー</th><th>回答</th><th>人数</th><th>愛犬</th><th>連絡事項</th><th>更新日時</th></tr>
@@ -3037,16 +3243,27 @@ def family_event_responses_manage(announcement_id: int, access=Depends(require_t
 
 
 @app.post("/family/announcements/manage")
-def family_announcement_create(title: str = Form(...), body: str = Form(...), event_date: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def family_announcement_create(title: str = Form(...), body: str = Form(...), event_date: str = Form(""), event_time: str = Form(""), event_location: str = Form(""), event_capacity: str = Form(""), response_deadline: str = Form(""), waitlist_enabled: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
     title, body = title.strip(), body.strip()
     if not title or len(title) > 150 or not body or len(body) > 2000:
         raise HTTPException(status_code=400, detail="タイトルとお知らせ内容の文字数を確認してください")
     try:
         parsed_event_date = date.fromisoformat(event_date) if event_date else None
+        if event_time and not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", event_time):
+            raise ValueError
+        parsed_capacity = int(event_capacity) if event_capacity else None
+        if parsed_capacity is not None and not 1 <= parsed_capacity <= 10000:
+            raise ValueError
+        parsed_deadline = datetime.fromisoformat(response_deadline).replace(tzinfo=ZoneInfo("Asia/Tokyo")) if response_deadline else None
     except ValueError:
-        raise HTTPException(status_code=400, detail="開催日を確認してください")
-    session.add(FamilyAnnouncement(tenant_id=tenant.id, title=title, body=body, event_date=parsed_event_date, created_by_id=user.id))
+        raise HTTPException(status_code=400, detail="開催日・時刻・定員・回答期限を確認してください")
+    if not parsed_event_date and any([event_time, event_location.strip(), parsed_capacity, parsed_deadline, waitlist_enabled]):
+        raise HTTPException(status_code=400, detail="イベント情報を設定する場合は開催日が必要です")
+    session.add(FamilyAnnouncement(tenant_id=tenant.id, title=title, body=body, event_date=parsed_event_date,
+                                   event_time=event_time or None, event_location=event_location.strip()[:300] or None,
+                                   event_capacity=parsed_capacity, response_deadline=parsed_deadline,
+                                   waitlist_enabled=waitlist_enabled, created_by_id=user.id))
     session.commit()
     return RedirectResponse("/family/announcements/manage", status_code=303)
 
@@ -3100,8 +3317,14 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
             continue
         taken = item.taken_on.strftime("%Y年%m月%d日") if item.taken_on else "撮影日未設定"
         delete_button = f'<form method="post" action="/family/dogs/{dog.id}/album/{item.id}/delete"><button class="danger">削除</button></form>' if item.uploaded_by_id == user.id else ''
+        edit_form = f'''<details><summary>投稿内容を編集</summary><form method="post" action="/family/dogs/{dog.id}/album/{item.id}/edit">
+        <label>撮影日</label><input type="date" name="taken_on" value="{item.taken_on.isoformat() if item.taken_on else ''}">
+        <label>コメント</label><textarea name="caption" maxlength="300">{html.escape(item.caption or '')}</textarea>
+        <label>公開範囲</label><select name="visibility"><option value="private" {'selected' if item.visibility == 'private' else ''}>非公開（自分だけ）</option>
+        <option value="relatives" {'selected' if item.visibility == 'relatives' else ''}>親戚犬のオーナーまで</option><option value="family" {'selected' if item.visibility == 'family' else ''}>FAMILY全体</option></select>
+        <button>変更を保存</button></form></details>''' if item.uploaded_by_id == user.id else ''
         album_cards += f'''<article class="album-item"><a href="/family/dogs/{dog.id}/album/{item.id}/photo" target="_blank"><img src="/family/dogs/{dog.id}/album/{item.id}/photo" alt="{html.escape(item.caption or dog.call_name)}"></a>
-        <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span></p><p>{html.escape(item.caption or "コメントなし")}</p>{delete_button}</div></article>'''
+        <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span></p><p>{html.escape(item.caption or "コメントなし")}</p>{edit_form}{delete_button}</div></article>'''
     album_section = f'''<h2>成長アルバム</h2><p>写真を押すと大きく表示できます。</p><div class="album-grid">{album_cards or '<p>成長アルバムの写真はまだありません。</p>'}</div>
     <div class="tenant"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
     <label>写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required>
@@ -3249,6 +3472,25 @@ def family_dog_album_delete(dog_id: int, item_id: int, user: User = Depends(requ
     if not item:
         raise HTTPException(status_code=404)
     session.delete(item)
+    session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
+
+
+@app.post("/family/dogs/{dog_id}/album/{item_id}/edit")
+def family_dog_album_edit(dog_id: int, item_id: int, taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404)
+    item = session.scalar(select(FamilyDogAlbumItem).where(
+        FamilyDogAlbumItem.id == item_id, FamilyDogAlbumItem.dog_id == dog_id, FamilyDogAlbumItem.uploaded_by_id == user.id,
+    ))
+    caption = caption.strip()
+    if not item or len(caption) > 300 or visibility not in {"private", "relatives", "family"}:
+        raise HTTPException(status_code=400, detail="編集内容を確認してください")
+    try:
+        parsed_taken_on = date.fromisoformat(taken_on) if taken_on else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="撮影日を確認してください")
+    item.taken_on, item.caption, item.visibility = parsed_taken_on, caption or None, visibility
     session.commit()
     return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
 
@@ -3542,9 +3784,40 @@ def family_unread_like_items(user: User, session: Session) -> list[tuple[FamilyT
     ).all())
 
 
+def family_anniversary_notification_items(user: User, session: Session) -> list[tuple[Dog, str, date, int]]:
+    dogs = session.scalars(select(Dog).join(DogOwnership, DogOwnership.dog_id == Dog.id).where(
+        DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True)
+    )).all()
+    today = date.today()
+    items: list[tuple[Dog, str, date, int]] = []
+    for dog in dogs:
+        candidates: list[tuple[str, date]] = []
+        if dog.birth_date:
+            candidates.append(("birthday", next_family_anniversary(dog.birth_date.month, dog.birth_date.day, today)))
+        handover = session.scalar(select(PuppySale.handover_date).where(PuppySale.dog_id == dog.id, PuppySale.handover_date.is_not(None)).order_by(PuppySale.handover_date.desc()).limit(1))
+        if not handover:
+            handover = session.scalar(select(DogTransfer.transferred_on).where(DogTransfer.dog_id == dog.id).order_by(DogTransfer.transferred_on.desc()).limit(1))
+        if handover:
+            candidates.append(("homecoming", next_family_anniversary(handover.month, handover.day, today)))
+        for event_type, event_date in candidates:
+            days = (event_date - today).days
+            if days not in {0, 1, 7}:
+                continue
+            dismissed = session.scalar(select(FamilyAnniversaryDismissal.id).where(
+                FamilyAnniversaryDismissal.user_id == user.id, FamilyAnniversaryDismissal.dog_id == dog.id,
+                FamilyAnniversaryDismissal.event_type == event_type, FamilyAnniversaryDismissal.event_date == event_date,
+            ))
+            if not dismissed:
+                items.append((dog, event_type, event_date, days))
+    return items
+
+
 def family_notification_count(user: User, session: Session) -> int:
-    return (len(family_unread_message_items(user, session)) + len(family_unread_announcements(user, session))
-            + len(family_unread_like_items(user, session)))
+    setting = family_notification_setting(user, session)
+    return ((len(family_unread_message_items(user, session)) if setting.messages else 0)
+            + (len(family_unread_announcements(user, session)) if setting.announcements else 0)
+            + (len(family_unread_like_items(user, session)) if setting.likes else 0)
+            + (len(family_anniversary_notification_items(user, session)) if setting.anniversaries else 0))
 
 
 def family_message_name(user_id: int, session: Session) -> str:
@@ -4382,6 +4655,50 @@ def user_list(request: Request, access=Depends(require_tenant_admin), session: S
         rows += f"<tr><td>{html.escape(account.name)}</td><td>{html.escape(account.email)}</td><td>{member.role.value}</td></tr>"
     body = f'<h1>{html.escape(tenant.name)}のユーザー</h1><a class="button" href="/family/owners">オーナーと犬を連携</a><form method="post"><label>登録済みユーザーのメールアドレス</label><input name="email" type="email" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>所属を追加</button></form><table><tr><th>名前</th><th>メール</th><th>権限</th></tr>{rows}</table>'
     return layout("ユーザー管理", body, user)
+
+
+@app.get("/admin/password-resets", response_class=HTMLResponse)
+def password_reset_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    related_ids = set(session.scalars(select(DogOwnership.user_id).where(DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
+    related_ids.update(session.scalars(select(Membership.user_id).where(Membership.tenant_id == tenant.id)).all())
+    records = session.execute(
+        select(PasswordResetRequest, User).join(User, User.id == PasswordResetRequest.user_id)
+        .where(PasswordResetRequest.user_id.in_(related_ids), PasswordResetRequest.resolved_at.is_(None))
+        .order_by(PasswordResetRequest.requested_at.desc()).limit(100)
+    ).all() if related_ids else []
+    rows = ""
+    for request_item, account in records:
+        try:
+            email_change_target(account.id, actor, tenant, session)
+            action = f'<form method="post" action="/admin/password-resets/{request_item.id}/issue"><label>管理者パスワード</label><input type="password" name="admin_password" required><button>再設定リンクを発行</button></form>'
+        except HTTPException:
+            action = '<span class="badge">運営管理者のみ対応可</span>'
+        rows += f'''<tr><td>{html.escape(account.name)}</td><td>{html.escape(account.email)}</td><td>{request_item.requested_at.strftime('%Y-%m-%d %H:%M')}</td><td>{action}</td></tr>'''
+    body = f'''<h1>パスワード再設定申込み</h1><p>本人確認後に一度だけ使える再設定リンクを発行し、オーナー様へ安全な方法でお伝えください。有効期限は30分です。</p>
+    <table><tr><th>お名前</th><th>登録メール</th><th>申込日時</th><th>対応</th></tr>{rows or '<tr><td colspan="4">未対応の申込みはありません。</td></tr>'}</table>'''
+    return layout("パスワード再設定管理", body, actor)
+
+
+@app.post("/admin/password-resets/{request_id}/issue", response_class=HTMLResponse)
+def password_reset_issue(request_id: int, admin_password: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    request_item = session.get(PasswordResetRequest, request_id)
+    if not request_item or request_item.resolved_at:
+        raise HTTPException(status_code=404)
+    account, _ = email_change_target(request_item.user_id, actor, tenant, session)
+    if not passwords.verify(admin_password, actor.password_hash):
+        raise HTTPException(status_code=403, detail="管理者パスワードが違います")
+    raw_token = secrets.token_urlsafe(32)
+    session.add(PasswordResetToken(user_id=account.id, token_hash=token_hash(raw_token), expires_at=datetime.now(timezone.utc) + timedelta(minutes=30), created_by_id=actor.id))
+    request_item.resolved_at = datetime.now(timezone.utc)
+    session.commit()
+    base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+    link = f"{base_url}/reset-password/{raw_token}"
+    body = f'''<a class="button secondary" href="/admin/password-resets">一覧へ戻る</a><h1>再設定リンクを発行しました</h1>
+    <div class="tenant"><p>この画面を閉じると再表示できません。本人確認済みのオーナー様へお伝えください。</p>
+    <label>有効期限30分のリンク</label><textarea readonly style="min-height:120px">{html.escape(link)}</textarea></div>'''
+    return layout("再設定リンク発行", body, actor)
 
 
 @app.post("/admin/users")
