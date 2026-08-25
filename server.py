@@ -3353,7 +3353,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/notifications">通知</a> <a class="button" href="/family/messages">メッセージ</a> <a class="button" href="/family/announcements">犬舎からのお知らせ</a> <a class="button" href="/family/timeline">FAMILYタイムライン</a> <a class="button" href="/family/anniversaries">誕生日・お迎え記念日</a> <a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
+    <h2>うちの子</h2>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 

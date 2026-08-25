@@ -38,6 +38,11 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ('manifest["checksums"]', "hashlib.sha256", "zipfile.BadZipFile", "100 * 1024 * 1024"):
             self.assertIn(marker, backup)
 
+    def test_family_home_does_not_duplicate_global_navigation(self):
+        home = SOURCE[SOURCE.index("def family_home"):SOURCE.index("def family_notifications")]
+        for path in ("/family/notifications", "/family/messages", "/family/announcements", "/family/timeline"):
+            self.assertNotIn(f'href="{path}"', home)
+
 
 if __name__ == "__main__":
     unittest.main()
