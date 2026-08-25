@@ -429,6 +429,46 @@ class FamilyModerationAudit(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
+class FamilyWithdrawalRequest(Base):
+    __tablename__ = "family_withdrawal_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    data_policy: Mapped[str] = mapped_column(String(30), default="retain")
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="requested", index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    handled_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FamilyTermsVersion(Base):
+    __tablename__ = "family_terms_versions"
+    __table_args__ = (UniqueConstraint("tenant_id", "document_type", "version"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    document_type: Mapped[str] = mapped_column(String(30), index=True)
+    version: Mapped[str] = mapped_column(String(30))
+    title: Mapped[str] = mapped_column(String(150))
+    body: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FamilyConsent(Base):
+    __tablename__ = "family_consents"
+    __table_args__ = (UniqueConstraint("terms_version_id", "user_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    terms_version_id: Mapped[int] = mapped_column(ForeignKey("family_terms_versions.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=True)
+    agreed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    ip_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class OwnerInvitation(Base):
     __tablename__ = "owner_invitations"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -814,7 +854,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     if user and owner_mode:
         notification_badge = f'<span class="nav-count">{notification_count}</span>' if notification_count else ""
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/notifications">通知{notification_badge}</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/notifications">通知{notification_badge}</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a><a href="/family/consents">規約・同意</a><a href="/family/account">退会・引継ぎ</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -849,6 +889,9 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a>
           <a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a>
           <a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a>
+          <a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a>
+          <a href="/family/withdrawals/manage"><span>↪</span>退会申請</a>
+          <a href="/family/terms/manage"><span>✓</span>規約・同意管理</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
@@ -4999,6 +5042,205 @@ def family_restriction_save(owner_id: int, posting_disabled: bool = Form(False),
     session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=user.id, target_type="user", target_id=owner_id,
         action="restriction_update", details=f"posting={posting_disabled}, likes={likes_disabled}, messages={messages_disabled}"))
     session.commit(); return RedirectResponse("/family/restrictions/manage", status_code=303)
+
+
+@app.get("/family/account", response_class=HTMLResponse)
+def family_account_page(user: User = Depends(require_user), session: Session = Depends(db)):
+    records = session.execute(
+        select(DogOwnership, Dog, Tenant).join(Dog, Dog.id == DogOwnership.dog_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).order_by(Tenant.name, Dog.call_name)
+    ).all()
+    transfer_cards = ""
+    for ownership, dog, tenant in records:
+        if ownership.relationship != "primary":
+            continue
+        successors = session.execute(
+            select(DogOwnership, User).join(User, User.id == DogOwnership.user_id)
+            .where(DogOwnership.dog_id == dog.id, DogOwnership.tenant_id == tenant.id,
+                   DogOwnership.active.is_(True), DogOwnership.relationship == "family", DogOwnership.user_id != user.id)
+            .order_by(User.name)
+        ).all()
+        options = "".join(f'<option value="{item.id}">{html.escape(member.name)}（{html.escape(member.email)}）</option>' for item, member in successors)
+        action = f'''<form method="post" action="/family/account/transfer"><input type="hidden" name="ownership_id" value="{ownership.id}">
+        <label>新しい主オーナー</label><select name="successor_ownership_id" required>{options}</select>
+        <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 主オーナーを変更することを確認しました</label><button>主オーナーを引き継ぐ</button></form>''' if options else '<p><small>先に犬舎からご家族をこの愛犬へ連携してもらうと、主オーナーを引き継げます。</small></p>'
+        transfer_cards += f'<article class="tenant"><h3>{html.escape(dog.call_name)}｜{html.escape(tenant.name)}</h3>{action}</article>'
+    tenant_ids = sorted({ownership.tenant_id for ownership, _, _ in records})
+    tenant_options = "".join(f'<option value="{tenant.id}">{html.escape(tenant.name)}</option>' for tenant in session.scalars(select(Tenant).where(Tenant.id.in_(tenant_ids)).order_by(Tenant.name)).all()) if tenant_ids else ""
+    requests = session.execute(select(FamilyWithdrawalRequest, Tenant).join(Tenant, Tenant.id == FamilyWithdrawalRequest.tenant_id)
+        .where(FamilyWithdrawalRequest.user_id == user.id).order_by(FamilyWithdrawalRequest.requested_at.desc())).all()
+    request_rows = "".join(f'<tr><td>{html.escape(tenant.name)}</td><td>{request.requested_at.strftime("%Y-%m-%d")}</td><td>{html.escape(request.status)}</td><td>{"保存" if request.data_policy == "retain" else "削除希望"}</td></tr>' for request, tenant in requests)
+    withdrawal = f'''<form method="post" action="/family/account/withdraw"><label>退会する犬舎</label><select name="tenant_id" required>{tenant_options}</select>
+    <label>投稿・プロフィールデータ</label><select name="data_policy"><option value="retain">思い出として保存する</option><option value="remove_personal">プロフィールと自分の投稿の削除を希望する</option></select>
+    <label>退会理由（任意）</label><textarea name="reason" maxlength="500"></textarea>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 犬舎が内容を確認後、FAMILY連携が解除されることを理解しました</label><button class="danger">退会を申請する</button></form>''' if tenant_options else '<p>退会対象の犬舎連携はありません。</p>'
+    body = f'''<h1>退会・主オーナー引継ぎ</h1><div class="tenant"><p>主オーナーを変更する場合は、退会申請より先に引継ぎを行ってください。</p></div>
+    <h2>主オーナーを家族へ引き継ぐ</h2>{transfer_cards or '<p>引継ぎ可能な愛犬はありません。</p>'}<h2>FAMILY退会申請</h2>{withdrawal}
+    <h2>申請履歴</h2><table><tr><th>犬舎</th><th>申請日</th><th>状態</th><th>データ</th></tr>{request_rows or '<tr><td colspan="4">申請はありません。</td></tr>'}</table>'''
+    return family_layout("退会・引継ぎ｜FAMILY", body, user, session)
+
+
+@app.post("/family/account/transfer")
+def family_account_transfer(ownership_id: int = Form(...), successor_ownership_id: int = Form(...), confirmed: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    current = session.scalar(select(DogOwnership).where(DogOwnership.id == ownership_id, DogOwnership.user_id == user.id,
+        DogOwnership.relationship == "primary", DogOwnership.active.is_(True)))
+    successor = session.scalar(select(DogOwnership).where(DogOwnership.id == successor_ownership_id,
+        DogOwnership.relationship == "family", DogOwnership.active.is_(True)))
+    if not confirmed or not current or not successor or (current.tenant_id, current.dog_id) != (successor.tenant_id, successor.dog_id):
+        raise HTTPException(status_code=400, detail="引継ぎ内容を確認できません")
+    current.relationship, successor.relationship = "family", "primary"
+    session.add(FamilyModerationAudit(tenant_id=current.tenant_id, admin_user_id=user.id, target_type="ownership",
+        target_id=current.dog_id, action="primary_owner_transfer", details=f"from={user.id},to={successor.user_id}"))
+    session.commit()
+    return RedirectResponse("/family/account", status_code=303)
+
+
+@app.post("/family/account/withdraw")
+def family_account_withdraw(tenant_id: int = Form(...), data_policy: str = Form("retain"), reason: str = Form(""), confirmed: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    linked = session.scalar(select(DogOwnership.id).where(DogOwnership.tenant_id == tenant_id,
+        DogOwnership.user_id == user.id, DogOwnership.active.is_(True)))
+    if not confirmed or not linked or data_policy not in {"retain", "remove_personal"} or tenant_id not in family_kennel_tenant_ids(user, session):
+        raise HTTPException(status_code=400, detail="退会申請の内容を確認してください")
+    pending = session.scalar(select(FamilyWithdrawalRequest.id).where(FamilyWithdrawalRequest.tenant_id == tenant_id,
+        FamilyWithdrawalRequest.user_id == user.id, FamilyWithdrawalRequest.status == "requested"))
+    if not pending:
+        session.add(FamilyWithdrawalRequest(tenant_id=tenant_id, user_id=user.id, data_policy=data_policy, reason=reason.strip()[:500] or None))
+        session.commit()
+    return RedirectResponse("/family/account", status_code=303)
+
+
+@app.get("/family/withdrawals/manage", response_class=HTMLResponse)
+def family_withdrawals_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    records = session.execute(select(FamilyWithdrawalRequest, User).join(User, User.id == FamilyWithdrawalRequest.user_id)
+        .where(FamilyWithdrawalRequest.tenant_id == tenant.id).order_by(FamilyWithdrawalRequest.status, FamilyWithdrawalRequest.requested_at.desc())).all()
+    cards = ""
+    for request, owner in records:
+        policy = "データ保存" if request.data_policy == "retain" else "プロフィール・本人投稿の削除希望"
+        form = f'''<form method="post" action="/family/withdrawals/manage/{request.id}"><select name="action"><option value="approve">承認して連携解除</option><option value="reject">申請を差し戻す</option></select><label>管理メモ</label><textarea name="admin_note" maxlength="500"></textarea><button>処理する</button></form>''' if request.status == "requested" else ""
+        cards += f'<article class="tenant"><h3>{html.escape(owner.name)}｜{html.escape(owner.email)}</h3><p><span class="badge">{html.escape(request.status)}</span> {policy}</p><p>{html.escape(request.reason or "理由なし")}</p>{form}</article>'
+    return layout("FAMILY退会申請", f'<h1>FAMILY退会申請</h1>{cards or "<p>申請はありません。</p>"}', user)
+
+
+@app.post("/family/withdrawals/manage/{request_id}")
+def family_withdrawal_handle(request_id: int, action: str = Form(...), admin_note: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    admin, tenant = access
+    item = session.scalar(select(FamilyWithdrawalRequest).where(FamilyWithdrawalRequest.id == request_id,
+        FamilyWithdrawalRequest.tenant_id == tenant.id, FamilyWithdrawalRequest.status == "requested"))
+    if not item or action not in {"approve", "reject"}:
+        raise HTTPException(status_code=404)
+    if action == "approve":
+        primary_count = session.scalar(select(func.count(DogOwnership.id)).where(DogOwnership.tenant_id == tenant.id,
+            DogOwnership.user_id == item.user_id, DogOwnership.active.is_(True), DogOwnership.relationship == "primary")) or 0
+        if primary_count:
+            raise HTTPException(status_code=400, detail="主オーナーの愛犬があります。先に家族への引継ぎを行ってください")
+        session.execute(text("UPDATE dog_ownerships SET active = FALSE WHERE tenant_id = :tenant_id AND user_id = :user_id"), {"tenant_id": tenant.id, "user_id": item.user_id})
+        if item.data_policy == "remove_personal":
+            dog_ids = select(Dog.id).where(Dog.tenant_id == tenant.id)
+            for post in session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.uploaded_by_id == item.user_id, FamilyDogAlbumItem.dog_id.in_(dog_ids))).all():
+                session.delete(post)
+            other_links = session.scalar(select(func.count(DogOwnership.id)).where(DogOwnership.user_id == item.user_id,
+                DogOwnership.tenant_id != tenant.id, DogOwnership.active.is_(True))) or 0
+            if not other_links:
+                profile = session.scalar(select(OwnerProfile).where(OwnerProfile.user_id == item.user_id))
+                if profile:
+                    profile.profile_public = False; profile.photo_data = None; profile.bio = None; profile.nickname = None
+        item.status = "approved"
+    else:
+        item.status = "rejected"
+    item.handled_by_id, item.handled_at, item.admin_note = admin.id, datetime.now(timezone.utc), admin_note.strip()[:500] or None
+    session.add(FamilyModerationAudit(tenant_id=tenant.id, admin_user_id=admin.id, target_type="withdrawal", target_id=item.id,
+        action=f"withdrawal_{action}", details=item.admin_note))
+    session.commit()
+    return RedirectResponse("/family/withdrawals/manage", status_code=303)
+
+
+@app.get("/family/dashboard/manage", response_class=HTMLResponse)
+def family_dashboard_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    owner_ids = select(DogOwnership.user_id).where(DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True)).distinct()
+    owners = session.scalar(select(func.count()).select_from(owner_ids.subquery())) or 0
+    dog_ids = select(Dog.id).where(Dog.tenant_id == tenant.id)
+    posts = session.scalar(select(func.count(FamilyDogAlbumItem.id)).where(FamilyDogAlbumItem.dog_id.in_(dog_ids))) or 0
+    open_reports = session.scalar(select(func.count(FamilyTimelineReport.id)).where(FamilyTimelineReport.tenant_id == tenant.id, FamilyTimelineReport.status.in_(["open", "reviewing"]))) or 0
+    announcements = session.scalars(select(FamilyAnnouncement).where(FamilyAnnouncement.tenant_id == tenant.id, FamilyAnnouncement.active.is_(True))).all()
+    unread = 0
+    for announcement in announcements:
+        read_count = session.scalar(select(func.count(FamilyAnnouncementRead.id)).where(FamilyAnnouncementRead.announcement_id == announcement.id,
+            FamilyAnnouncementRead.user_id.in_(owner_ids))) or 0
+        unread += max(owners - read_count, 0)
+    event_ids = [item.id for item in announcements if item.event_date]
+    attending = session.scalar(select(func.count(func.distinct(FamilyEventResponse.user_id))).where(FamilyEventResponse.announcement_id.in_(event_ids), FamilyEventResponse.status == "attending")) if event_ids else 0
+    participation = round((attending or 0) * 100 / max(owners * len(event_ids), 1), 1) if event_ids else 0
+    cards = f'''<div class="grid"><article class="tenant"><h2>{owners}</h2><p>登録オーナー</p></article><article class="tenant"><h2>{posts}</h2><p>アルバム投稿</p></article>
+    <article class="tenant"><h2>{unread}</h2><p>お知らせ未読（延べ）</p></article><article class="tenant"><h2>{open_reports}</h2><p>未対応・確認中の通報</p></article><article class="tenant"><h2>{participation}%</h2><p>イベント参加率</p></article></div>'''
+    recent = session.execute(select(FamilyModerationAudit, User).join(User, User.id == FamilyModerationAudit.admin_user_id)
+        .where(FamilyModerationAudit.tenant_id == tenant.id).order_by(FamilyModerationAudit.created_at.desc()).limit(20)).all()
+    rows = "".join(f'<tr><td>{audit.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(admin.name)}</td><td>{html.escape(audit.action)}</td><td>{html.escape(audit.details or "－")}</td></tr>' for audit, admin in recent)
+    return layout("FAMILY管理ダッシュボード", f'<h1>FAMILY管理ダッシュボード</h1>{cards}<h2>最近の管理操作</h2><table><tr><th>日時</th><th>担当者</th><th>操作</th><th>内容</th></tr>{rows or "<tr><td colspan=\"4\">履歴はありません。</td></tr>"}</table>', user)
+
+
+FAMILY_DOCUMENT_TYPES = {"terms": "FAMILY利用規約", "message_monitoring": "メッセージ閲覧方針", "photo_privacy": "写真公開・個人情報方針"}
+
+
+@app.get("/family/terms/manage", response_class=HTMLResponse)
+def family_terms_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    versions = session.scalars(select(FamilyTermsVersion).where(FamilyTermsVersion.tenant_id == tenant.id).order_by(FamilyTermsVersion.published_at.desc())).all()
+    rows = "".join(f'<tr><td>{html.escape(FAMILY_DOCUMENT_TYPES.get(item.document_type, item.document_type))}</td><td>{html.escape(item.version)}</td><td>{"公開中" if item.active else "旧版"}</td><td>{item.published_at.strftime("%Y-%m-%d")}</td></tr>' for item in versions)
+    options = "".join(f'<option value="{key}">{value}</option>' for key, value in FAMILY_DOCUMENT_TYPES.items())
+    consent_records = session.execute(select(FamilyConsent, FamilyTermsVersion, User)
+        .join(FamilyTermsVersion, FamilyTermsVersion.id == FamilyConsent.terms_version_id)
+        .join(User, User.id == FamilyConsent.user_id)
+        .where(FamilyConsent.tenant_id == tenant.id).order_by(FamilyConsent.agreed_at.desc()).limit(100)).all()
+    consent_rows = "".join(f'<tr><td>{consent.agreed_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(owner.name)}</td><td>{html.escape(terms.title)}</td><td>{html.escape(terms.version)}</td></tr>' for consent, terms, owner in consent_records)
+    body = f'''<h1>利用規約・同意管理</h1><div class="tenant"><p>新しい版を公開すると、同じ種類の旧版は自動的に終了し、オーナーへ再同意が表示されます。</p></div>
+    <form method="post"><label>文書の種類</label><select name="document_type">{options}</select><label>版番号</label><input name="version" maxlength="30" placeholder="例：2026-09" required>
+    <label>表示タイトル</label><input name="title" maxlength="150" required><label>本文</label><textarea name="body" rows="14" required></textarea><button>新しい版を公開する</button></form>
+    <h2>公開履歴</h2><table><tr><th>種類</th><th>版</th><th>状態</th><th>公開日</th></tr>{rows or '<tr><td colspan="4">規約は未登録です。</td></tr>'}</table>
+    <h2>同意履歴（最新100件）</h2><table><tr><th>同意日時</th><th>オーナー</th><th>文書</th><th>版</th></tr>{consent_rows or '<tr><td colspan="4">同意履歴はありません。</td></tr>'}</table>'''
+    return layout("利用規約・同意管理", body, user)
+
+
+@app.post("/family/terms/manage")
+def family_terms_publish(document_type: str = Form(...), version: str = Form(...), title: str = Form(...), body: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    version, title, body = version.strip(), title.strip(), body.strip()
+    if document_type not in FAMILY_DOCUMENT_TYPES or not version or not title or not body:
+        raise HTTPException(status_code=400, detail="規約の内容を確認してください")
+    if session.scalar(select(FamilyTermsVersion.id).where(FamilyTermsVersion.tenant_id == tenant.id, FamilyTermsVersion.document_type == document_type, FamilyTermsVersion.version == version)):
+        raise HTTPException(status_code=400, detail="同じ版番号がすでに登録されています")
+    for old in session.scalars(select(FamilyTermsVersion).where(FamilyTermsVersion.tenant_id == tenant.id, FamilyTermsVersion.document_type == document_type, FamilyTermsVersion.active.is_(True))).all():
+        old.active = False
+    session.add(FamilyTermsVersion(tenant_id=tenant.id, document_type=document_type, version=version, title=title, body=body, created_by_id=user.id))
+    session.commit()
+    return RedirectResponse("/family/terms/manage", status_code=303)
+
+
+@app.get("/family/consents", response_class=HTMLResponse)
+def family_consents_page(user: User = Depends(require_user), session: Session = Depends(db)):
+    tenant_ids = family_kennel_tenant_ids(user, session)
+    versions = session.execute(select(FamilyTermsVersion, Tenant).join(Tenant, Tenant.id == FamilyTermsVersion.tenant_id)
+        .where(FamilyTermsVersion.tenant_id.in_(tenant_ids), FamilyTermsVersion.active.is_(True)).order_by(Tenant.name, FamilyTermsVersion.document_type)).all() if tenant_ids else []
+    cards = ""
+    for item, tenant in versions:
+        consent = session.scalar(select(FamilyConsent).where(FamilyConsent.terms_version_id == item.id, FamilyConsent.user_id == user.id))
+        state = f'<span class="badge">同意済み {consent.agreed_at.strftime("%Y-%m-%d")}</span>' if consent else f'''<form method="post"><input type="hidden" name="terms_version_id" value="{item.id}"><label style="font-weight:400"><input style="width:auto" type="checkbox" name="accepted" value="true" required> 内容を確認し、同意します</label><button>同意を記録する</button></form>'''
+        cards += f'<article class="tenant"><p><small>{html.escape(tenant.name)}｜第{html.escape(item.version)}版</small></p><h2>{html.escape(item.title)}</h2><div style="white-space:pre-wrap">{html.escape(item.body)}</div>{state}</article>'
+    return family_layout("規約・同意｜FAMILY", f'<h1>規約・同意</h1>{cards or "<p>現在、確認が必要な規約はありません。</p>"}', user, session)
+
+
+@app.post("/family/consents")
+def family_consent_accept(request: Request, terms_version_id: int = Form(...), accepted: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    item = session.scalar(select(FamilyTermsVersion).where(FamilyTermsVersion.id == terms_version_id, FamilyTermsVersion.active.is_(True)))
+    if not accepted or not item or item.tenant_id not in family_kennel_tenant_ids(user, session):
+        raise HTTPException(status_code=400, detail="同意対象を確認できません")
+    if not session.scalar(select(FamilyConsent.id).where(FamilyConsent.terms_version_id == item.id, FamilyConsent.user_id == user.id)):
+        remote = request.client.host if request.client else "unknown"
+        session.add(FamilyConsent(tenant_id=item.tenant_id, terms_version_id=item.id, user_id=user.id,
+            ip_hash=hashlib.sha256(remote.encode()).hexdigest()))
+        session.commit()
+    return RedirectResponse("/family/consents", status_code=303)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
