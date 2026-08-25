@@ -879,10 +879,19 @@ def ocr_spatial_lines(image: Image.Image, box: tuple[float, float, float, float]
 
 
 def normalize_jkc_number(value: str) -> str:
-    value = value.upper().replace("—", "-").replace("–", "-")
+    value = value.upper().replace("—", "-").replace("–", "-").replace("−", "-").replace("－", "-").replace("／", "/")
     value = re.sub(r"\b(?:IKC|JKO)\b", "JKC", value)
-    match = re.search(r"(?:JKC|KC)\s*[- ]?\s*MS\s*[- ]?\s*(\d{5})\s*/\s*(\d{2})", value)
-    return f"JKC-MS-{match.group(1)}/{match.group(2)}" if match else ""
+    # JKC-MS -05878/21 のような原本上の空白や、全角記号を許容して
+    # 保存時だけ JKC-MS-05878/21 の統一形式にする。
+    match = re.search(
+        r"(?:JKC|KC)\s*[- ]?\s*([A-Z]{1,4})\s*[- ]?\s*(\d{5})\s*/\s*(\d{2})(?:\s*[- ]?\s*([I1]))?",
+        value,
+    )
+    if not match:
+        return ""
+    suffix = match.group(4)
+    suffix = "I" if suffix == "1" else suffix
+    return f"JKC-{match.group(1)}-{match.group(2)}/{match.group(3)}" + (f"-{suffix}" if suffix else "")
 
 
 def jkc_root_registration_number(image: Image.Image) -> str:
@@ -1663,8 +1672,15 @@ def pedigree_import(
     missing_reviews = sorted(required_reviews - verified)
     if missing_reviews:
         raise HTTPException(status_code=400, detail="原本との照合が完了していない項目があります")
-    if pedigree_no.strip() and not re.fullmatch(r"JKC-[A-Z]{1,4}-\d{5}/\d{2}(?:-I)?", pedigree_no.strip().upper()):
+    submitted_pedigree_no = pedigree_no.strip()
+    normalized_pedigree_no = normalize_jkc_number(submitted_pedigree_no) if submitted_pedigree_no else ""
+    if submitted_pedigree_no and not normalized_pedigree_no:
         raise HTTPException(status_code=400, detail="国内メイン番号を確認してください（例：JKC-MS-05878/21）")
+    pedigree_no = normalized_pedigree_no
+    # 書類番号もJKC番号なら同じ表記へ統一する。海外番号は入力値を保持する。
+    normalized_document_no = normalize_jkc_number(document_registration_no)
+    if normalized_document_no:
+        document_registration_no = normalized_document_no
     if birth_date:
         try:
             parsed_birth_date = date.fromisoformat(birth_date)
