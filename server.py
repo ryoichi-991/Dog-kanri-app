@@ -2638,10 +2638,14 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
     checked = lambda value: "checked" if value else ""
     photo = f'<img src="/family/profile/photo" alt="プロフィール写真" style="width:150px;height:150px;object-fit:cover;border-radius:50%;border:4px solid #ead0d5">' if profile.photo_data else '<p>プロフィール写真は未登録です。</p>'
     public_url = f'/family/members/{profile.public_id}'
-    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>公開プロフィール設定</h1>
+    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>プロフィール設定</h1>
+    <h2>アカウント設定</h2>
+    <p>ログアウトボタンの横など、ご本人の画面に表示される名前です。公開プロフィールのニックネームとは別に管理されます。</p>
+    <form method="post" enctype="multipart/form-data">
+    <label>アカウント名（100文字まで）</label><input name="account_name" value="{html.escape(user.name)}" maxlength="100" required placeholder="例：内山 良一">
+    <h2>公開プロフィール設定</h2>
     <p>プロフィール全体と、各項目の公開範囲をご自身で設定できます。非公開項目は他のメンバーに表示されません。</p>
     <div class="tenant">{photo}<p><a href="{public_url}">公開状態を確認する</a></p></div>
-    <form method="post" enctype="multipart/form-data">
     <label>ニックネーム</label><input name="nickname" value="{html.escape(profile.nickname or '')}" maxlength="60" placeholder="例：りょう">
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="show_nickname" value="true" {checked(profile.show_nickname)}> ニックネームを公開する</label>
     <label>都道府県</label><select name="prefecture">{prefecture_options}</select>
@@ -2664,12 +2668,15 @@ def family_profile_edit(user: User = Depends(require_user), session: Session = D
 
 @app.post("/family/profile")
 async def family_profile_save(
-    nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
+    account_name: str = Form(""), nickname: str = Form(""), prefecture: str = Form(""), bio: str = Form(""), photo: UploadFile | None = File(None),
     profile_public: bool = Form(False), show_nickname: bool = Form(False), show_prefecture: bool = Form(False),
     show_bio: bool = Form(False), show_photo: bool = Form(False), show_dogs: bool = Form(False), show_parents: bool = Form(False),
     show_relatives: bool = Form(False),
     user: User = Depends(require_user), session: Session = Depends(db),
 ):
+    normalized_account_name = " ".join(account_name.split())
+    if not normalized_account_name or len(normalized_account_name) > 100:
+        return HTMLResponse(family_layout("名前の入力エラー", '<p class="error">アカウント名は1文字以上100文字以内で入力してください。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=400)
     if prefecture and prefecture not in PREFECTURES:
         raise HTTPException(status_code=400, detail="都道府県を確認してください")
     if len(nickname.strip()) > 60 or len(bio.strip()) > 500:
@@ -2701,6 +2708,7 @@ async def family_profile_save(
         or session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True)).limit(1)) is not None
     if profile_public and not eligible:
         return HTMLResponse(family_layout("公開設定エラー", '<p class="error">プロフィールを公開できるのは、犬舎に所属している方または犬と連携済みのオーナー様です。</p><a class="button secondary" href="/family/profile">戻る</a>', user, session), status_code=403)
+    user.name = normalized_account_name
     profile.nickname = nickname.strip() or None
     profile.prefecture = prefecture or None
     profile.bio = bio.strip() or None
