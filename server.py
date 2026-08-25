@@ -10,6 +10,7 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -298,6 +299,21 @@ class DogOwnership(Base):
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id", ondelete="SET NULL"), nullable=True)
     relationship: Mapped[str] = mapped_column(String(30), default="primary")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class OwnerInvitation(Base):
+    __tablename__ = "owner_invitations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    relationship: Mapped[str] = mapped_column(String(30), default="primary")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -2553,6 +2569,161 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
     return layout(f"{dog.call_name}｜FAMILY", body, user)
 
 
+def active_owner_invitation(raw_token: str, session: Session) -> OwnerInvitation | None:
+    invitation = session.scalar(select(OwnerInvitation).where(OwnerInvitation.token_hash == token_hash(raw_token)))
+    if not invitation or invitation.accepted_at or invitation.revoked_at:
+        return None
+    expires = invitation.expires_at if invitation.expires_at.tzinfo else invitation.expires_at.replace(tzinfo=timezone.utc)
+    return invitation if expires > datetime.now(timezone.utc) else None
+
+
+def owner_invitation_admin_body(user: User, tenant: Tenant, session: Session, invite_url: str = "", invite_email: str = "") -> str:
+    dogs = session.scalars(
+        select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category != "external").order_by(Dog.call_name)
+    ).all()
+    dog_options = "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}（{html.escape(dog.registered_name or "血統書名未登録")}）</option>' for dog in dogs)
+    generated = ""
+    if invite_url:
+        subject = quote(f"【{tenant.name}】オーナー登録のご案内")
+        message = quote(f"{tenant.name}からオーナー登録のご案内です。\n\n以下の専用URLを開き、登録を完了してください。\n{invite_url}\n\nこのURLは7日間・1回のみ利用できます。")
+        mailto = f"mailto:{quote(invite_email)}?subject={subject}&body={message}"
+        generated = f'''<div class="tenant"><h2>招待URLを発行しました</h2><p>このURLは7日間・1回のみ利用できます。</p>
+        <input id="invite-url" readonly value="{html.escape(invite_url)}"><button type="button" onclick="navigator.clipboard.writeText(document.getElementById('invite-url').value);this.textContent='コピーしました'">URLをコピー</button>
+        <a class="button success" href="{html.escape(mailto)}">メールアプリで登録案内を送る</a><p><small>メールアプリが開いたら、内容を確認して送信してください。</small></p></div>'''
+    records = session.execute(
+        select(OwnerInvitation, Dog).join(Dog, Dog.id == OwnerInvitation.dog_id)
+        .where(OwnerInvitation.tenant_id == tenant.id).order_by(OwnerInvitation.created_at.desc()).limit(100)
+    ).all()
+    rows = ""
+    now = datetime.now(timezone.utc)
+    for invitation, dog in records:
+        expires = invitation.expires_at if invitation.expires_at.tzinfo else invitation.expires_at.replace(tzinfo=timezone.utc)
+        if invitation.accepted_at:
+            state = "登録完了"
+        elif invitation.revoked_at:
+            state = "取消済み"
+        elif expires <= now:
+            state = "期限切れ"
+        else:
+            state = "招待中"
+        relation = "主オーナー" if invitation.relationship == "primary" else "ご家族"
+        action = f'<form class="inline" method="post" action="/family/invitations/{invitation.id}/revoke"><button class="secondary">取り消す</button></form>' if state == "招待中" else "－"
+        rows += f'<tr><td>{html.escape(dog.call_name)}</td><td>{html.escape(invitation.email)}</td><td>{relation}</td><td>{state}</td><td>{expires.date()}</td><td>{action}</td></tr>'
+    return f'''<a class="button secondary" href="/family/owners">オーナー連携へ戻る</a><h1>{html.escape(tenant.name)} オーナー招待</h1>
+    <p>犬とオーナー様を選び、専用の登録案内を発行します。</p>{generated}
+    <form method="post"><label>犬</label><select name="dog_id" required>{dog_options}</select>
+    <label>招待するメールアドレス</label><input name="email" type="email" required>
+    <label>関係</label><select name="relationship"><option value="primary">主オーナー</option><option value="family">ご家族</option></select>
+    <button>期限付き招待URLを発行</button></form><h2>招待履歴</h2>
+    <table><tr><th>犬</th><th>メール</th><th>関係</th><th>状態</th><th>期限</th><th>操作</th></tr>{rows or '<tr><td colspan="6">招待履歴はありません。</td></tr>'}</table>'''
+
+
+@app.get("/family/invitations", response_class=HTMLResponse)
+def family_invitations(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    return layout("オーナー招待", owner_invitation_admin_body(user, tenant, session), user)
+
+
+@app.post("/family/invitations", response_class=HTMLResponse)
+def family_invitation_create(request: Request, dog_id: int = Form(...), email: str = Form(...), relationship: str = Form("primary"), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if relationship not in {"primary", "family"}:
+        raise HTTPException(status_code=400, detail="関係の指定が正しくありません")
+    dog = tenant_dog(session, tenant.id, dog_id)
+    if not dog.active or dog.category == "external":
+        raise HTTPException(status_code=400, detail="この犬は招待に使用できません")
+    normalized = normalize_email(email)
+    previous = session.scalars(select(OwnerInvitation).where(
+        OwnerInvitation.tenant_id == tenant.id, OwnerInvitation.dog_id == dog.id,
+        OwnerInvitation.email == normalized, OwnerInvitation.accepted_at.is_(None), OwnerInvitation.revoked_at.is_(None),
+    )).all()
+    now = datetime.now(timezone.utc)
+    for invitation in previous:
+        invitation.revoked_at = now
+    raw_token = secrets.token_urlsafe(32)
+    session.add(OwnerInvitation(tenant_id=tenant.id, dog_id=dog.id, email=normalized, relationship=relationship,
+                                token_hash=token_hash(raw_token), expires_at=now + timedelta(days=7), created_by_id=user.id))
+    session.commit()
+    public_base_url = os.environ.get("PUBLIC_BASE_URL", str(request.base_url)).rstrip("/")
+    if public_base_url.startswith("http://") and request.headers.get("x-forwarded-proto") == "https":
+        public_base_url = "https://" + public_base_url.removeprefix("http://")
+    invite_url = public_base_url + f"/family/invite/{raw_token}"
+    return layout("招待URL発行完了", owner_invitation_admin_body(user, tenant, session, invite_url, normalized), user)
+
+
+@app.post("/family/invitations/{invitation_id}/revoke")
+def family_invitation_revoke(invitation_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    invitation = session.scalar(select(OwnerInvitation).where(OwnerInvitation.id == invitation_id, OwnerInvitation.tenant_id == tenant.id))
+    if not invitation:
+        raise HTTPException(status_code=404, detail="招待が見つかりません")
+    if not invitation.accepted_at:
+        invitation.revoked_at = datetime.now(timezone.utc)
+        session.commit()
+    return RedirectResponse("/family/invitations", status_code=303)
+
+
+@app.get("/family/invite/{raw_token}", response_class=HTMLResponse)
+def family_invite_page(raw_token: str, viewer: User | None = Depends(current_user), session: Session = Depends(db)):
+    invitation = active_owner_invitation(raw_token, session)
+    if not invitation:
+        return layout("招待URLエラー", '<h1>この招待URLは利用できません</h1><p class="error">期限切れ、使用済み、または取り消された招待です。犬舎へ再発行をご依頼ください。</p>')
+    dog, tenant = session.get(Dog, invitation.dog_id), session.get(Tenant, invitation.tenant_id)
+    if not dog or not tenant:
+        raise HTTPException(status_code=404)
+    account = session.scalar(select(User).where(User.email == invitation.email))
+    if viewer and viewer.email != invitation.email:
+        form = '<p class="error">現在ログイン中のアカウントは、招待先のメールアドレスと異なります。一度ログアウトしてから招待URLを開いてください。</p>'
+    elif viewer:
+        form = '<p>ログイン中のアカウントで連携できます。</p><button>招待を受け取る</button>'
+    elif account:
+        form = f'<p>{html.escape(invitation.email)} の登録済みアカウントへ連携します。</p><label>パスワード</label><input name="password" type="password" required><button>ログインして招待を受け取る</button>'
+    else:
+        form = f'<p>{html.escape(invitation.email)} でオーナーアカウントを作成します。</p><label>お名前</label><input name="name" required maxlength="100"><label>パスワード（8文字以上）</label><input name="password" type="password" minlength="8" required><button>登録して招待を受け取る</button>'
+    body = f'''<h1>{html.escape(tenant.name)}からのご招待</h1><div class="tenant"><h2>{html.escape(dog.call_name)}</h2><p>{html.escape(dog.registered_name or "血統書名未登録")}</p></div>
+    <form method="post" action="/family/invite/{html.escape(raw_token)}/accept">{form}</form>'''
+    return layout("オーナー登録のご案内", body, viewer)
+
+
+@app.post("/family/invite/{raw_token}/accept")
+def family_invite_accept(raw_token: str, request: Request, name: str = Form(""), password: str = Form(""), viewer: User | None = Depends(current_user), session: Session = Depends(db)):
+    invitation = active_owner_invitation(raw_token, session)
+    if not invitation:
+        return HTMLResponse(layout("招待URLエラー", '<p class="error">この招待URLは期限切れ、使用済み、または取り消されています。</p>'), status_code=400)
+    owner = viewer
+    if owner and owner.email != invitation.email:
+        return HTMLResponse(layout("アカウントエラー", '<p class="error">招待先とは異なるアカウントでログインしています。</p>', owner), status_code=403)
+    if not owner:
+        owner = session.scalar(select(User).where(User.email == invitation.email))
+        if owner:
+            if not owner.active or not password or not passwords.verify(password, owner.password_hash):
+                return HTMLResponse(layout("ログインエラー", f'<p class="error">パスワードが違います。</p><a class="button secondary" href="/family/invite/{html.escape(raw_token)}">戻る</a>'), status_code=400)
+        else:
+            if len(password) < 8 or not name.strip():
+                return HTMLResponse(layout("登録エラー", f'<p class="error">お名前と8文字以上のパスワードを入力してください。</p><a class="button secondary" href="/family/invite/{html.escape(raw_token)}">戻る</a>'), status_code=400)
+            owner = User(name=name.strip(), email=invitation.email, password_hash=passwords.hash(password), role=Role.customer)
+            session.add(owner)
+            session.flush()
+    customer = session.scalar(select(Customer).where(Customer.tenant_id == invitation.tenant_id, func.lower(Customer.email) == invitation.email).limit(1))
+    ownership = session.scalar(select(DogOwnership).where(DogOwnership.tenant_id == invitation.tenant_id, DogOwnership.dog_id == invitation.dog_id, DogOwnership.user_id == owner.id))
+    if ownership:
+        ownership.relationship, ownership.active = invitation.relationship, True
+        ownership.customer_id = customer.id if customer else ownership.customer_id
+    else:
+        session.add(DogOwnership(tenant_id=invitation.tenant_id, dog_id=invitation.dog_id, user_id=owner.id,
+                                 customer_id=customer.id if customer else None, relationship=invitation.relationship))
+    invitation.accepted_at = datetime.now(timezone.utc)
+    raw_session = None
+    if not viewer:
+        raw_session = secrets.token_urlsafe(32)
+        session.add(LoginSession(token_hash=token_hash(raw_session), user_id=owner.id, expires_at=datetime.now(timezone.utc) + timedelta(days=SESSION_DAYS)))
+    session.commit()
+    response = RedirectResponse("/family", status_code=303)
+    if raw_session:
+        response.set_cookie("dog_session", raw_session, httponly=True, secure=COOKIE_SECURE, samesite="lax", max_age=SESSION_DAYS * 86400)
+    return response
+
+
 @app.get("/family/owners", response_class=HTMLResponse)
 def family_owner_links(access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -2572,7 +2743,7 @@ def family_owner_links(access=Depends(require_tenant_admin), session: Session = 
         relation = "主オーナー" if ownership.relationship == "primary" else "ご家族"
         rows += f'''<tr><td>{html.escape(dog.call_name)}</td><td>{html.escape(owner.name)}</td><td>{html.escape(owner.email)}</td><td>{relation}</td>
         <td><form class="inline" method="post" action="/family/owners/{ownership.id}/remove"><button class="secondary">連携解除</button></form></td></tr>'''
-    body = f'''<a class="button secondary" href="/admin/users">ユーザー管理へ戻る</a>
+    body = f'''<a class="button secondary" href="/admin/users">ユーザー管理へ戻る</a> <a class="button success" href="/family/invitations">オーナー様を招待</a>
     <h1>{html.escape(tenant.name)} オーナー連携</h1>
     <p>オーナーが登録したメールアドレスと犬を結び付けます。1人に複数頭、ご家族に同じ犬を連携できます。</p>
     <form method="post"><label>犬</label><select name="dog_id" required>{dog_options}</select>
