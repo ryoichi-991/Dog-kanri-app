@@ -11,6 +11,7 @@ import smtplib
 import ssl
 import subprocess
 import tempfile
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -18,8 +19,8 @@ from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from mcp.server.fastmcp import FastMCP
 from passlib.context import CryptContext
 from sqlalchemy import Boolean, Date, DateTime, Enum as SQLEnum, Float, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, and_, create_engine, func, select, text
@@ -679,6 +680,51 @@ class FamilyNotificationSetting(Base):
     likes: Mapped[bool] = mapped_column(Boolean, default=True)
     anniversaries: Mapped[bool] = mapped_column(Boolean, default=True)
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    push_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class FamilyPushSubscription(Base):
+    __tablename__ = "family_push_subscriptions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text)
+    auth: Mapped[str] = mapped_column(Text)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FamilyPushReceipt(Base):
+    __tablename__ = "family_push_receipts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class FamilyBackupAudit(Base):
+    __tablename__ = "family_backup_audits"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    format: Mapped[str] = mapped_column(String(20), default="zip")
+    record_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class MobileApiToken(Base):
+    __tablename__ = "mobile_api_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(100), default="スマートフォン")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EmailDelivery(Base):
@@ -781,6 +827,41 @@ def email_notification_allowed(user: User, category: str, session: Session) -> b
     return bool(setting.email_enabled and getattr(setting, category, False))
 
 
+def push_ready() -> bool:
+    return bool(os.environ.get("VAPID_PUBLIC_KEY") and os.environ.get("VAPID_PRIVATE_KEY") and os.environ.get("VAPID_SUBJECT"))
+
+
+def send_web_push(user_id: int, category: str, title: str, body: str, url: str, dedupe_key: str, session: Session) -> int:
+    setting = session.scalar(select(FamilyNotificationSetting).where(FamilyNotificationSetting.user_id == user_id))
+    if not setting or not setting.push_enabled or not getattr(setting, category, False) or not push_ready():
+        return 0
+    if session.scalar(select(FamilyPushReceipt.id).where(FamilyPushReceipt.dedupe_key == dedupe_key)):
+        return 0
+    receipt = FamilyPushReceipt(user_id=user_id, dedupe_key=dedupe_key)
+    session.add(receipt); session.flush()
+    try:
+        from pywebpush import webpush
+    except ImportError:
+        receipt.status = "unavailable"
+        return 0
+    sent = 0
+    payload = json.dumps({"title": title[:120], "body": body[:300], "url": url}, ensure_ascii=False)
+    subscriptions = session.scalars(select(FamilyPushSubscription).where(
+        FamilyPushSubscription.user_id == user_id, FamilyPushSubscription.active.is_(True))).all()
+    for subscription in subscriptions:
+        try:
+            webpush(subscription_info={"endpoint": subscription.endpoint, "keys": {"p256dh": subscription.p256dh, "auth": subscription.auth}},
+                    data=payload, vapid_private_key=os.environ["VAPID_PRIVATE_KEY"],
+                    vapid_claims={"sub": os.environ["VAPID_SUBJECT"]}, ttl=86400)
+            subscription.last_success_at = datetime.now(timezone.utc); sent += 1
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            if response is not None and getattr(response, "status_code", 0) in {404, 410}:
+                subscription.active = False
+    receipt.status = "sent" if sent else "failed"
+    return sent
+
+
 def platform_admin_exists(session: Session) -> bool:
     return session.scalar(select(User.id).where(User.platform_admin.is_(True)).limit(1)) is not None
 
@@ -854,7 +935,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     if user and owner_mode:
         notification_badge = f'<span class="nav-count">{notification_count}</span>' if notification_count else ""
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/notifications">通知{notification_badge}</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a><a href="/family/consents">規約・同意</a><a href="/family/account">退会・引継ぎ</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/notifications">通知{notification_badge}</a><a href="/family/messages">メッセージ</a><a href="/family/announcements">お知らせ</a><a href="/family/timeline">タイムライン</a><a href="/family/anniversaries">記念日</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a><a href="/family/consents">規約・同意</a><a href="/family/devices">アプリ・端末</a><a href="/family/account">退会・引継ぎ</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -892,6 +973,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a>
           <a href="/family/withdrawals/manage"><span>↪</span>退会申請</a>
           <a href="/family/terms/manage"><span>✓</span>規約・同意管理</a>
+          <a href="/family/backups/manage"><span>⇩</span>データ出力</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           {platform_link}
@@ -984,6 +1066,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS push_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
@@ -1006,17 +1089,17 @@ def startup():
 
 
 def dispatch_scheduled_emails():
-    if not smtp_ready():
-        return
     with SessionLocal() as session:
-        pending = session.scalars(select(EmailDelivery).where(
-            EmailDelivery.status.in_(["pending", "failed"]), EmailDelivery.purpose != "password_reset", EmailDelivery.attempts < 5,
-        ).order_by(EmailDelivery.created_at).limit(100)).all()
-        for delivery in pending:
-            deliver_email(delivery, session)
+        if smtp_ready():
+            pending = session.scalars(select(EmailDelivery).where(
+                EmailDelivery.status.in_(["pending", "failed"]), EmailDelivery.purpose != "password_reset", EmailDelivery.attempts < 5,
+            ).order_by(EmailDelivery.created_at).limit(100)).all()
+            for delivery in pending:
+                deliver_email(delivery, session)
         session.commit()
         settings = session.scalars(select(FamilyNotificationSetting).where(
-            FamilyNotificationSetting.email_enabled.is_(True), FamilyNotificationSetting.anniversaries.is_(True)
+            (FamilyNotificationSetting.email_enabled.is_(True) | FamilyNotificationSetting.push_enabled.is_(True)),
+            FamilyNotificationSetting.anniversaries.is_(True)
         )).all()
         base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
         for setting in settings:
@@ -1026,9 +1109,12 @@ def dispatch_scheduled_emails():
             for dog, event_type, event_date, days in family_anniversary_notification_items(owner, session):
                 label = "誕生日" if event_type == "birthday" else "お迎え記念日"
                 timing = "本日" if days == 0 else ("明日" if days == 1 else "7日後")
-                queue_email(session, owner.email, "anniversary", f"【ESTRELLA FAMILY】{dog.call_name}の{label}が{timing}です",
-                            f"{owner.name} 様\n\n{dog.call_name}の{label}は{event_date.strftime('%Y年%m月%d日')}です。大切な記念日をご確認ください。\n{base_url}/family/anniversaries",
-                            dog.tenant_id, owner.id, f"anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}")
+                if setting.email_enabled:
+                    queue_email(session, owner.email, "anniversary", f"【ESTRELLA FAMILY】{dog.call_name}の{label}が{timing}です",
+                                f"{owner.name} 様\n\n{dog.call_name}の{label}は{event_date.strftime('%Y年%m月%d日')}です。大切な記念日をご確認ください。\n{base_url}/family/anniversaries",
+                                dog.tenant_id, owner.id, f"anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}")
+                send_web_push(owner.id, "anniversaries", f"{dog.call_name}の{label}が{timing}です", event_date.strftime("%Y年%m月%d日"),
+                              "/family/anniversaries", f"push:anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}", session)
         session.commit()
 
 
@@ -3203,21 +3289,50 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
     body = f'''<a class="button secondary" href="/family/notifications">通知へ戻る</a><h1>通知設定</h1><form method="post">
     <div class="tenant"><label><input style="width:auto" type="checkbox" name="email_enabled" value="true" {checked(setting.email_enabled)}> 登録メールアドレスでも通知を受け取る</label>
     <p><small>メール配信サービスの設定後に送信されます。画面内通知はこの設定にかかわらず利用できます。</small></p></div>
+    <div class="tenant"><label><input style="width:auto" type="checkbox" name="push_enabled" value="true" {checked(setting.push_enabled)}> この端末へプッシュ通知を送る</label>
+    <p><button type="button" id="push-register" class="secondary">ブラウザ通知を許可する</button> <span id="push-state"></span></p><p><small>iPhoneではホーム画面へ追加したFAMILYから設定してください。</small></p></div>
     <label><input style="width:auto" type="checkbox" name="messages" value="true" {checked(setting.messages)}> 新着メッセージ</label>
     <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
     <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
     <label><input style="width:auto" type="checkbox" name="anniversaries" value="true" {checked(setting.anniversaries)}> 誕生日・お迎え記念日（7日前・前日・当日）</label>
-    <button>通知設定を保存</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>'''
+    <button>通知設定を保存</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>
+    <script>const vapid={json.dumps(os.environ.get("VAPID_PUBLIC_KEY", ""))};function b64(s){{const p='='.repeat((4-s.length%4)%4),v=(s+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(v);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))}}
+    document.getElementById('push-register').onclick=async()=>{{const state=document.getElementById('push-state');try{{if(!vapid)throw new Error('通知サーバーの設定準備中です');const reg=await navigator.serviceWorker.register('/family-push-worker.js');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('ブラウザで通知が許可されませんでした');const sub=await reg.pushManager.subscribe({{userVisibleOnly:true,applicationServerKey:b64(vapid)}});const res=await fetch('/family/push-subscriptions',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(sub)}});if(!res.ok)throw new Error('端末登録に失敗しました');state.textContent='通知端末を登録しました';}}catch(e){{state.textContent=e.message}}}};</script>'''
     return family_layout("通知設定｜FAMILY", body, user, session)
 
 
 @app.post("/family/notification-settings")
-def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), email_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), email_enabled: bool = Form(False), push_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
     setting = family_notification_setting(user, session)
     setting.messages, setting.announcements, setting.likes, setting.anniversaries = messages, announcements, likes, anniversaries
     setting.email_enabled = email_enabled
+    setting.push_enabled = push_enabled
     session.commit()
     return RedirectResponse("/family/notification-settings", status_code=303)
+
+
+@app.get("/family-push-worker.js")
+def family_push_worker():
+    script = '''self.addEventListener("push",event=>{let data={title:"ESTRELLA FAMILY",body:"新しいお知らせがあります",url:"/family/notifications"};try{data={...data,...event.data.json()}}catch(e){}event.waitUntil(self.registration.showNotification(data.title,{body:data.body,icon:"/favicon.ico",data:{url:data.url}}))});self.addEventListener("notificationclick",event=>{event.notification.close();event.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(items=>{for(const item of items){if("focus" in item){item.navigate(event.notification.data.url);return item.focus()}}return clients.openWindow(event.notification.data.url)}))});'''
+    return Response(content=script, media_type="application/javascript", headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+
+@app.post("/family/push-subscriptions")
+async def family_push_subscription_create(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
+    payload = await request.json()
+    endpoint, keys = str(payload.get("endpoint", "")), payload.get("keys") or {}
+    p256dh, auth = str(keys.get("p256dh", "")), str(keys.get("auth", ""))
+    if not endpoint.startswith("https://") or not p256dh or not auth:
+        raise HTTPException(status_code=400, detail="通知端末情報を確認できません")
+    subscription = session.scalar(select(FamilyPushSubscription).where(FamilyPushSubscription.endpoint == endpoint))
+    if subscription:
+        subscription.user_id, subscription.p256dh, subscription.auth, subscription.active = user.id, p256dh, auth, True
+    else:
+        session.add(FamilyPushSubscription(user_id=user.id, endpoint=endpoint, p256dh=p256dh, auth=auth,
+            user_agent=(request.headers.get("user-agent") or "")[:300] or None))
+    setting = family_notification_setting(user, session); setting.push_enabled = True
+    session.commit()
+    return JSONResponse({"ok": True})
 
 
 def next_family_anniversary(month: int, day: int, today: date) -> date:
@@ -3696,10 +3811,13 @@ def family_announcement_create(title: str = Form(...), body: str = Form(...), ev
     base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
     for owner_id in owner_ids:
         owner = session.get(User, owner_id)
-        if owner and owner.active and email_notification_allowed(owner, "announcements", session):
-            queue_email(session, owner.email, "announcement", f"【{tenant.name}】{title}",
-                        f"{owner.name} 様\n\n{body[:1000]}\n\n詳しく見る：{base_url}/family/announcements/view/{announcement.id}",
-                        tenant.id, owner.id, f"announcement:{announcement.id}:user:{owner.id}")
+        if owner and owner.active:
+            if email_notification_allowed(owner, "announcements", session):
+                queue_email(session, owner.email, "announcement", f"【{tenant.name}】{title}",
+                            f"{owner.name} 様\n\n{body[:1000]}\n\n詳しく見る：{base_url}/family/announcements/view/{announcement.id}",
+                            tenant.id, owner.id, f"announcement:{announcement.id}:user:{owner.id}")
+            send_web_push(owner.id, "announcements", f"{tenant.name}からのお知らせ", title,
+                          f"/family/announcements/view/{announcement.id}", f"push:announcement:{announcement.id}:user:{owner.id}", session)
     session.commit()
     return RedirectResponse("/family/announcements/manage", status_code=303)
 
@@ -4489,6 +4607,9 @@ def family_message_send(conversation_id: int, body: str = Form(...), user: User 
         queue_email(session, recipient.email, "new_message", "【ESTRELLA FAMILY】新しいメッセージが届きました",
                     f"{recipient.name} 様\n\n{family_message_name(user.id, session)}さんからメッセージが届きました。\n\n{preview}\n\n確認する：{base_url}/family/messages/{conversation.id}",
                     conversation.tenant_id, recipient.id, f"message:{message.id}")
+    if recipient and recipient.active:
+        send_web_push(recipient.id, "messages", "新しいメッセージが届きました", preview if send_email else message_body[:120],
+                      f"/family/messages/{conversation.id}", f"push:message:{message.id}", session)
     session.commit()
     return RedirectResponse(f"/family/messages/{conversation.id}", status_code=303)
 
@@ -4819,6 +4940,9 @@ def family_timeline_like_toggle(item_id: int, return_to: str = "", user: User = 
             queue_email(session, owner.email, "timeline_like", f"【ESTRELLA FAMILY】{dog.call_name}の写真にいいねが届きました",
                         f"{owner.name} 様\n\n{family_message_name(user.id, session)}さんが{dog.call_name}の写真にいいねしました。\n{base_url}/family/timeline/{item.id}",
                         tenant.id, owner.id, f"like:{like.id}")
+        if owner and owner.id != user.id:
+            send_web_push(owner.id, "likes", f"{dog.call_name}の写真にいいね", f"{family_message_name(user.id, session)}さんから届きました",
+                          f"/family/timeline/{item.id}", f"push:like:{like.id}", session)
     session.commit()
     destination = f"/family/timeline/{item_id}" if return_to == "detail" else "/family/timeline"
     return RedirectResponse(destination, status_code=303)
@@ -4856,6 +4980,9 @@ def family_timeline_comment_create(item_id: int, body: str = Form(...), user: Us
         queue_email(session, owner.email, "timeline_comment", f"【ESTRELLA FAMILY】{dog.call_name}の写真にコメントが届きました",
                     f"{owner.name} 様\n\n{family_message_name(user.id, session)}さんが{dog.call_name}の写真にコメントしました。\n\n{text}\n\n{base_url}/family/timeline/{item.id}",
                     tenant.id, owner.id, f"comment:{comment.id}")
+    if owner and owner.id != user.id:
+        send_web_push(owner.id, "likes", f"{dog.call_name}の写真にコメント", text[:120],
+                      f"/family/timeline/{item.id}", f"push:comment:{comment.id}", session)
     session.commit()
     return RedirectResponse(f"/family/timeline/{item_id}", status_code=303)
 
@@ -5241,6 +5368,176 @@ def family_consent_accept(request: Request, terms_version_id: int = Form(...), a
             ip_hash=hashlib.sha256(remote.encode()).hexdigest()))
         session.commit()
     return RedirectResponse("/family/consents", status_code=303)
+
+
+def backup_json_value(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def backup_model(item, exclude: set[str] | None = None) -> dict:
+    excluded = exclude or set()
+    return {column.name: backup_json_value(getattr(item, column.name)) for column in item.__table__.columns
+            if column.name not in excluded and not column.name.endswith("_data")}
+
+
+@app.get("/family/backups/manage", response_class=HTMLResponse)
+def family_backups_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    records = session.execute(select(FamilyBackupAudit, User).join(User, User.id == FamilyBackupAudit.created_by_id)
+        .where(FamilyBackupAudit.tenant_id == tenant.id).order_by(FamilyBackupAudit.created_at.desc()).limit(50)).all()
+    rows = "".join(f'<tr><td>{audit.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(actor.name)}</td><td>{audit.record_count}</td><td>{html.escape(audit.format.upper())}</td></tr>' for audit, actor in records)
+    body = f'''<h1>FAMILYデータ出力・バックアップ</h1><div class="tenant"><p>選択中の犬舎に属するオーナー連携、愛犬、投稿、同意、監査履歴をZIPにまとめます。パスワードやログイントークンは含みません。</p></div>
+    <p><a class="button success" href="/family/backups/download">ZIPバックアップを作成・ダウンロード</a></p>
+    <h2>出力履歴</h2><table><tr><th>日時</th><th>実行者</th><th>レコード数</th><th>形式</th></tr>{rows or '<tr><td colspan="4">出力履歴はありません。</td></tr>'}</table>'''
+    return layout("FAMILYデータ出力", body, user)
+
+
+@app.get("/family/backups/download")
+def family_backup_download(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    ownerships = session.scalars(select(DogOwnership).where(DogOwnership.tenant_id == tenant.id)).all()
+    owner_ids = sorted({item.user_id for item in ownerships})
+    owners = session.scalars(select(User).where(User.id.in_(owner_ids)).order_by(User.id)).all() if owner_ids else []
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.id)).all()
+    dog_ids = [dog.id for dog in dogs]
+    posts = session.scalars(select(FamilyDogAlbumItem).where(FamilyDogAlbumItem.dog_id.in_(dog_ids)).order_by(FamilyDogAlbumItem.id)).all() if dog_ids else []
+    audits = session.scalars(select(FamilyModerationAudit).where(FamilyModerationAudit.tenant_id == tenant.id).order_by(FamilyModerationAudit.id)).all()
+    consents = session.scalars(select(FamilyConsent).where(FamilyConsent.tenant_id == tenant.id).order_by(FamilyConsent.id)).all()
+    terms = session.scalars(select(FamilyTermsVersion).where(FamilyTermsVersion.tenant_id == tenant.id).order_by(FamilyTermsVersion.id)).all()
+    manifest = {"schema_version": 1, "tenant": backup_model(tenant), "exported_at": datetime.now(timezone.utc).isoformat(),
+        "counts": {"owners": len(owners), "dogs": len(dogs), "ownerships": len(ownerships), "posts": len(posts), "audits": len(audits), "consents": len(consents)}}
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        datasets = {"owners.json": [backup_model(item, {"password_hash"}) for item in owners], "dogs.json": [backup_model(item) for item in dogs],
+            "ownerships.json": [backup_model(item) for item in ownerships], "posts.json": [backup_model(item) for item in posts],
+            "moderation_audits.json": [backup_model(item) for item in audits], "terms.json": [backup_model(item) for item in terms],
+            "consents.json": [backup_model(item, {"ip_hash"}) for item in consents]}
+        for filename, records in datasets.items():
+            archive.writestr(filename, json.dumps(records, ensure_ascii=False, indent=2))
+        owner_csv = io.StringIO(newline=""); writer = csv.writer(owner_csv); writer.writerow(["user_id", "name", "email", "active"])
+        for owner in owners: writer.writerow([owner.id, owner.name, owner.email, owner.active])
+        archive.writestr("owners.csv", "\ufeff" + owner_csv.getvalue())
+        for post in posts:
+            extension = "png" if post.photo_content_type == "image/png" else ("webp" if post.photo_content_type == "image/webp" else "jpg")
+            archive.writestr(f"photos/post-{post.id}.{extension}", post.photo_data)
+    count = sum(manifest["counts"].values())
+    session.add(FamilyBackupAudit(tenant_id=tenant.id, created_by_id=user.id, record_count=count)); session.commit()
+    filename = f"family-backup-{tenant.id}-{date.today().isoformat()}.zip"
+    return Response(content=output.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"})
+
+
+def require_mobile_user(authorization: str | None = Header(None), session: Session = Depends(db)) -> User:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="認証が必要です")
+    raw = authorization.removeprefix("Bearer ").strip()
+    token = session.scalar(select(MobileApiToken).where(MobileApiToken.token_hash == token_hash(raw), MobileApiToken.revoked_at.is_(None)))
+    if not token:
+        raise HTTPException(status_code=401, detail="認証トークンが無効です")
+    expires = token.expires_at if token.expires_at.tzinfo else token.expires_at.replace(tzinfo=timezone.utc)
+    if expires <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="認証トークンの期限が切れています")
+    user = session.get(User, token.user_id)
+    if not user or not user.active:
+        raise HTTPException(status_code=401, detail="アカウントを利用できません")
+    token.last_used_at = datetime.now(timezone.utc); session.commit()
+    return user
+
+
+@app.post("/api/v1/auth/token")
+async def mobile_auth_token(request: Request, session: Session = Depends(db)):
+    payload = await request.json()
+    email, password = normalize_email(str(payload.get("email", ""))), str(payload.get("password", ""))
+    user = session.scalar(select(User).where(User.email == email, User.active.is_(True)))
+    if not user or not password or not passwords.verify(password, user.password_hash):
+        raise HTTPException(status_code=401, detail="メールアドレスまたはパスワードが違います")
+    raw = secrets.token_urlsafe(48)
+    token = MobileApiToken(user_id=user.id, token_hash=token_hash(raw), device_name=str(payload.get("device_name", "スマートフォン"))[:100] or "スマートフォン",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=90))
+    session.add(token); session.commit()
+    return {"access_token": raw, "token_type": "bearer", "expires_in": 90 * 86400, "api_version": "v1"}
+
+
+@app.post("/api/v1/auth/revoke")
+def mobile_auth_revoke(authorization: str | None = Header(None), user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    raw = (authorization or "").removeprefix("Bearer ").strip()
+    token = session.scalar(select(MobileApiToken).where(MobileApiToken.token_hash == token_hash(raw), MobileApiToken.user_id == user.id))
+    if token: token.revoked_at = datetime.now(timezone.utc); session.commit()
+    return {"ok": True}
+
+
+@app.get("/api/v1/me")
+def mobile_me(user: User = Depends(require_mobile_user)):
+    return {"id": user.id, "name": user.name, "email": user.email}
+
+
+@app.get("/api/v1/dogs")
+def mobile_dogs(user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    records = session.execute(select(DogOwnership, Dog, Tenant).join(Dog, Dog.id == DogOwnership.dog_id).join(Tenant, Tenant.id == DogOwnership.tenant_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Tenant.active.is_(True), Tenant.deleted.is_(False)).order_by(Dog.call_name)).all()
+    return {"dogs": [{"id": dog.id, "call_name": dog.call_name, "registered_name": dog.registered_name, "breed": dog.breed, "sex": dog.sex,
+        "birth_date": dog.birth_date.isoformat() if dog.birth_date else None, "color": dog.color, "relationship": ownership.relationship,
+        "tenant": {"id": tenant.id, "name": tenant.name}, "photo_url": f"/api/v1/dogs/{dog.id}/photo"} for ownership, dog, tenant in records]}
+
+
+@app.get("/api/v1/dogs/{dog_id}/photo")
+def mobile_dog_photo(dog_id: int, user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    if not session.scalar(select(DogOwnership.id).where(DogOwnership.dog_id == dog_id, DogOwnership.user_id == user.id, DogOwnership.active.is_(True))):
+        raise HTTPException(status_code=404)
+    profile = session.scalar(select(FamilyDogProfile).where(FamilyDogProfile.dog_id == dog_id))
+    if not profile or not profile.photo_data: raise HTTPException(status_code=404)
+    return Response(content=profile.photo_data, media_type=profile.photo_content_type or "image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/api/v1/notifications")
+def mobile_notifications(user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    items = []
+    for conversation, message in family_unread_message_items(user, session):
+        items.append({"type": "message", "id": message.id, "title": "新着メッセージ", "body": message.body[:120], "created_at": message.sent_at.isoformat(), "url": f"/family/messages/{conversation.id}"})
+    for announcement, tenant in family_unread_announcements(user, session):
+        items.append({"type": "announcement", "id": announcement.id, "title": announcement.title, "body": tenant.name, "created_at": announcement.created_at.isoformat(), "url": f"/family/announcements/view/{announcement.id}"})
+    items.sort(key=lambda item: item["created_at"], reverse=True)
+    return {"notifications": items[:100]}
+
+
+@app.get("/api/v1/timeline")
+def mobile_timeline(limit: int = 30, offset: int = 0, user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    limit, offset = min(max(limit, 1), 100), max(offset, 0)
+    records = sorted(family_timeline_items(user, session).values(), key=lambda value: value[0].created_at, reverse=True)
+    page = records[offset:offset + limit]
+    return {"items": [{"id": item.id, "dog": {"id": dog.id, "call_name": dog.call_name}, "tenant": {"id": tenant.id, "name": tenant.name},
+        "caption": item.caption, "taken_on": item.taken_on.isoformat() if item.taken_on else None, "visibility": item.visibility,
+        "created_at": item.created_at.isoformat(), "photo_url": f"/api/v1/timeline/{item.id}/photo"} for item, dog, tenant, _ in page],
+        "limit": limit, "offset": offset, "has_more": offset + limit < len(records)}
+
+
+@app.get("/api/v1/timeline/{item_id}/photo")
+def mobile_timeline_photo(item_id: int, user: User = Depends(require_mobile_user), session: Session = Depends(db)):
+    record = family_timeline_items(user, session).get(item_id)
+    if not record: raise HTTPException(status_code=404)
+    item = record[0]
+    return Response(content=item.photo_data, media_type=item.photo_content_type, headers={"Cache-Control": "private, max-age=300"})
+
+
+@app.get("/family/devices", response_class=HTMLResponse)
+def family_devices(user: User = Depends(require_user), session: Session = Depends(db)):
+    tokens = session.scalars(select(MobileApiToken).where(MobileApiToken.user_id == user.id).order_by(MobileApiToken.created_at.desc())).all()
+    rows = "".join(f'<tr><td>{html.escape(token.device_name)}</td><td>{token.created_at.strftime("%Y-%m-%d")}</td><td>{token.last_used_at.strftime("%Y-%m-%d %H:%M") if token.last_used_at else "未使用"}</td><td>{"解除済み" if token.revoked_at else "連携中"}</td><td>{f"<form method=\"post\" action=\"/family/devices/{token.id}/revoke\"><button class=\"secondary\">解除</button></form>" if not token.revoked_at else "－"}</td></tr>' for token in tokens)
+    body = f'''<h1>アプリ・通知端末</h1><div class="tenant"><p>将来のiOS／Androidアプリは、FAMILYと同じメールアドレス・パスワードで連携します。端末ごとに90日間有効な専用トークンを発行し、パスワード自体は端末へ保存しません。</p></div>
+    <p><a class="button secondary" href="/family/notification-settings">ブラウザ通知を設定</a></p><h2>スマートフォンアプリ連携</h2><table><tr><th>端末</th><th>連携日</th><th>最終利用</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="5">アプリ連携端末はありません。</td></tr>'}</table>'''
+    return family_layout("アプリ・端末｜FAMILY", body, user, session)
+
+
+@app.post("/family/devices/{token_id}/revoke")
+def family_device_revoke(token_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    token = session.scalar(select(MobileApiToken).where(MobileApiToken.id == token_id, MobileApiToken.user_id == user.id))
+    if not token: raise HTTPException(status_code=404)
+    token.revoked_at = datetime.now(timezone.utc); session.commit()
+    return RedirectResponse("/family/devices", status_code=303)
 
 
 @app.get("/family/relatives", response_class=HTMLResponse)
