@@ -476,7 +476,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
     body_class = "owner-view" if user and owner_mode else ("authenticated" if user else "guest")
     if user and owner_mode:
         nav = f'''<header class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA FAMILY</strong></a>
-        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a><a href="/family/members">FAMILYメンバー</a></nav>
+        <nav><a href="/family">うちの子</a><a href="/family/relatives">兄弟・親戚犬</a><a href="/family/kennel">犬舎FAMILY会</a><a href="/family/profile">プロフィール設定</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></header>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -2617,7 +2617,7 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
         cards = '<div class="tenant"><p>まだ犬が連携されていません。</p><p>犬舎へ、登録したメールアドレスをお知らせください。</p></div>'
     body = f'''<h1>FAMILY ホーム</h1>
     <p>犬舎からあなたに連携された「うちの子」だけを表示しています。</p>
-    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a> <a class="button secondary" href="/family/members">FAMILYメンバーを見る</a></p>
+    <p><a class="button" href="/family/relatives">兄弟・親戚犬を見る</a> <a class="button" href="/family/kennel">同じ犬舎のFAMILY会</a> <a class="button secondary" href="/family/profile">公開プロフィール設定</a></p>
     <div class="grid">{cards}</div>'''
     return family_layout("FAMILY", body, user, session)
 
@@ -2929,16 +2929,7 @@ def family_profile_photo_delete(user: User = Depends(require_user), session: Ses
 
 @app.get("/family/members", response_class=HTMLResponse)
 def family_member_list(user: User = Depends(require_user), session: Session = Depends(db)):
-    profiles = session.scalars(select(OwnerProfile).where(OwnerProfile.profile_public.is_(True)).order_by(OwnerProfile.updated_at.desc())).all()
-    cards = ""
-    for profile in profiles:
-        title = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
-        location = profile.prefecture if profile.show_prefecture and profile.prefecture else "地域非公開"
-        photo = f'<img src="/family/members/{profile.public_id}/photo" alt="" style="width:84px;height:84px;object-fit:cover;border-radius:50%;margin-bottom:10px">' if profile.show_photo and profile.photo_data else '<div class="avatar" style="width:84px;height:84px;border-radius:50%;display:grid;place-items:center;background:#ead0d5;font-size:30px;margin-bottom:10px">♡</div>'
-        cards += f'<a class="module" href="/family/members/{profile.public_id}">{photo}<h3>{html.escape(title)}</h3><p>{html.escape(location)}</p></a>'
-    body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYメンバー</h1>
-    <p>プロフィール公開に同意したメンバーだけを表示しています。</p><div class="grid">{cards or '<p>公開プロフィールはまだありません。</p>'}</div>'''
-    return family_layout("FAMILYメンバー", body, user, session)
+    return RedirectResponse("/family/kennel", status_code=303)
 
 
 def family_ancestor_depths(session: Session, dog: Dog, max_depth: int = 3) -> dict[int, int]:
@@ -3129,7 +3120,7 @@ def family_relative_album_photo(item_id: int, user: User = Depends(require_user)
 def family_member_detail(public_id: str, user: User = Depends(require_user), session: Session = Depends(db)):
     profile = session.scalar(select(OwnerProfile).where(OwnerProfile.public_id == public_id, OwnerProfile.profile_public.is_(True)))
     if not profile:
-        return HTMLResponse(family_layout("非公開プロフィール", '<h1>プロフィールは非公開です</h1><p>現在、このプロフィールは公開されていません。</p><a class="button secondary" href="/family/members">戻る</a>', user, session), status_code=404)
+        return HTMLResponse(family_layout("非公開プロフィール", '<h1>プロフィールは非公開です</h1><p>現在、このプロフィールは公開されていません。</p><a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a>', user, session), status_code=404)
     title = profile.nickname if profile.show_nickname and profile.nickname else "FAMILYメンバー"
     photo = f'<img src="/family/members/{profile.public_id}/photo" alt="プロフィール写真" style="width:180px;height:180px;object-fit:cover;border-radius:50%;border:5px solid #ead0d5">' if profile.show_photo and profile.photo_data else ""
     prefecture = f'<p><span class="badge">{html.escape(profile.prefecture)}</span></p>' if profile.show_prefecture and profile.prefecture else ""
@@ -3201,7 +3192,7 @@ def family_member_detail(public_id: str, user: User = Depends(require_user), ses
             {f'<h3>親戚犬</h3><div class="grid">{relative_cards}</div>' if relative_cards else ''}'''
         else:
             relatives_section = '<h2>同腹兄弟・親戚犬</h2><p>現在、公開中のFAMILYメンバーには該当する犬がいません。</p>'
-    body = f'''<a class="button secondary" href="/family/members">メンバー一覧へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}{relatives_section}
+    body = f'''<a class="button secondary" href="/family/kennel">犬舎FAMILY会へ戻る</a><h1>{html.escape(title)}</h1>{photo}{prefecture}{bio}{dogs_section}{relatives_section}
     <p><small>このページには、ご本人が公開を許可した項目だけを表示しています。</small></p>'''
     return family_layout(f"{title}｜FAMILY", body, user, session)
 
