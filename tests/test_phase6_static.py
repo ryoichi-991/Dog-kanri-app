@@ -55,6 +55,14 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertNotIn("プロフィール写真・紹介文", dedicated)
         self.assertIn('destination = "/family/timeline"', SOURCE)
 
+    def test_family_pc_navigation_is_sidebar(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn('<aside class="owner-header">', layout_source)
+        for label in ("ホーム", "交流", "設定"):
+            self.assertIn(f'class="owner-nav-label">{label}', layout_source)
+        self.assertIn("position:fixed;inset:0 auto 0 0", layout_source)
+        self.assertIn(".owner-view main{{margin:0 0 0 260px", layout_source)
+
 
 if __name__ == "__main__":
     unittest.main()
