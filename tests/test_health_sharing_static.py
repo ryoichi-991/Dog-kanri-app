@@ -58,6 +58,23 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("兄弟 {len(siblings)}頭", segment)
         self.assertIn("weight-siblings", segment)
 
+    def test_health_forms_have_searchable_dog_pickers(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        segment = ast.get_source_segment(TEXT, function)
+        for key in ("health", "vaccine", "medication", "disease"):
+            self.assertIn(f'dog_picker("{key}")', segment)
+        self.assertIn("呼び名・血統書名・犬種・区分で検索", segment)
+        self.assertIn("d.call_name, d.registered_name, d.breed", segment)
+        self.assertIn("document.querySelectorAll('.dog-search')", segment)
+
+    def test_health_dog_picker_defaults_to_resident_dogs(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        segment = ast.get_source_segment(TEXT, function)
+        self.assertIn('d.status in {"delivered", "transferred"}', segment)
+        self.assertIn("販売済み・譲渡済みの犬も検索する", segment)
+        self.assertIn("includeAll.checked || option.dataset.nonresident!=='true'", segment)
+        self.assertIn("filterDogs();", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
