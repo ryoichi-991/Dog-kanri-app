@@ -4033,7 +4033,7 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
         album_cards += f'''<article class="album-item"><a href="/family/dogs/{dog.id}/album/{item.id}/photo" target="_blank"><img src="/family/dogs/{dog.id}/album/{item.id}/photo" alt="{html.escape(item.caption or dog.call_name)}"></a>
         <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span> {'<span class="badge">写真 ' + str(group_count) + '枚</span>' if group_count > 1 else ''}</p><p>{html.escape(item.caption or "コメントなし")}</p>{edit_form}{delete_button}</div></article>'''
     album_section = f'''<h2>成長アルバム</h2><p>写真を押すと大きく表示できます。</p><div class="album-grid">{album_cards or '<p>成長アルバムの写真はまだありません。</p>'}</div>
-    <div class="tenant"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
+    <div class="tenant" id="growth-add"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
     <label>写真（1投稿につき最大10枚／各8MBまで）</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
     <label>撮影日</label><input type="date" name="taken_on">
     <label>コメント（300文字まで）</label><textarea name="caption" maxlength="300" placeholder="初めてのお散歩、1歳のお誕生日など"></textarea>
@@ -4063,6 +4063,25 @@ def family_owned_dog(dog_id: int, user: User, session: Session):
         select(DogOwnership, Dog).join(Dog, Dog.id == DogOwnership.dog_id)
         .where(DogOwnership.user_id == user.id, DogOwnership.dog_id == dog_id, DogOwnership.active.is_(True))
     ).first()
+
+
+@app.get("/family/growth/add", response_class=HTMLResponse)
+def family_growth_add_select(user: User = Depends(require_user), session: Session = Depends(db)):
+    records = session.execute(
+        select(DogOwnership, Dog).join(Dog, Dog.id == DogOwnership.dog_id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Dog.active.is_(True))
+        .order_by(Dog.call_name)
+    ).all()
+    if len(records) == 1:
+        return RedirectResponse(f"/family/dogs/{records[0][1].id}#growth-add", status_code=303)
+    if not records:
+        body = '<h1>成長記録を追加</h1><div class="tenant"><p>投稿できる愛犬がまだ連携されていません。</p><p>犬舎へ登録メールアドレスをお知らせください。</p></div><a class="button secondary" href="/family/timeline">タイムラインへ戻る</a>'
+        return family_layout("成長記録を追加｜FAMILY", body, user, session)
+    cards = "".join(f'''<a class="module" href="/family/dogs/{dog.id}#growth-add"><h3>{html.escape(dog.call_name)}</h3>
+        <p>{html.escape(dog.registered_name or "血統書名未登録")}</p><p>この愛犬の成長記録を追加 →</p></a>''' for _, dog in records)
+    body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><h1>成長記録を追加</h1>
+    <p>投稿する愛犬を選んでください。</p><div class="grid">{cards}</div>'''
+    return family_layout("成長記録を追加｜FAMILY", body, user, session)
 
 
 @app.get("/family/dogs/{dog_id}/photo")
@@ -4921,6 +4940,7 @@ def family_timeline(kennel_id: int = 0, dog_id: int = 0, scope: str = "", page: 
     pager = f'<div style="display:flex;justify-content:center;align-items:center;gap:12px;margin:22px 0">{prev_link}<span>{page} / {total_pages}ページ</span>{next_link}</div>' if total else ""
     body = f'''<a class="button secondary" href="/family">FAMILYホームへ戻る</a><h1>FAMILYタイムライン</h1>
     <p>同じ犬舎のFAMILYや兄弟・親戚犬が公開した成長写真を、新しい順に表示しています。</p>
+    <p><a class="button success" href="/family/growth/add">＋ 成長記録を追加</a></p>
     <form method="get" action="/family/timeline" class="tenant"><div class="grid"><div><label>犬舎</label><select name="kennel_id">{kennel_options}</select></div><div><label>愛犬</label><select name="dog_id">{dog_options}</select></div><div><label>公開区分</label><select name="scope">{scope_options}</select></div></div><button>この条件で表示</button> <a class="button secondary" href="/family/timeline">条件を解除</a></form>
     <p><strong>{total}件</strong>の写真が見つかりました。</p><div class="timeline-grid">{posts}</div>{pager}
     <p><small>「自分だけ」に設定した写真はタイムラインには表示されません。</small></p>'''

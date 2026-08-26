@@ -14,6 +14,7 @@ class Phase6StaticTests(unittest.TestCase):
             ("get", "/admin/operations"),
             ("post", "/admin/operations/diagnose"),
             ("post", "/family/backups/verify"),
+            ("get", "/family/growth/add"),
         }
         routes = set()
         for node in ast.walk(TREE):
@@ -45,6 +46,10 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn('class="family-home-card"', home)
         self.assertIn('class="family-home-photo"', home)
         self.assertIn('class="family-home-info"', home)
+
+    def test_growth_post_has_short_timeline_path(self):
+        self.assertIn('href="/family/growth/add">＋ 成長記録を追加', SOURCE)
+        self.assertIn('id="growth-add"', SOURCE)
 
 
 if __name__ == "__main__":
