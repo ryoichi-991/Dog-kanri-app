@@ -75,6 +75,12 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("includeAll.checked || option.dataset.nonresident!=='true'", segment)
         self.assertIn("filterDogs();", segment)
 
+    def test_health_dog_picker_does_not_overlap_adjacent_fields(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        segment = ast.get_source_segment(TEXT, function)
+        self.assertIn(".dog-picker{grid-column:span 2;min-width:0}", segment)
+        self.assertIn("@media(max-width:700px){.dog-picker{grid-column:1/-1}}", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
