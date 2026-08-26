@@ -216,6 +216,16 @@ class Vaccination(Base):
     administered_on: Mapped[date] = mapped_column(Date)
     next_due_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     certificate_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    vaccine_type: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    dose_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    clinic: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    manufacturer: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    lot_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reaction: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    certificate_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    certificate_content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    certificate_data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
 
 
 class GeneticTest(Base):
@@ -1222,6 +1232,16 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS food_name VARCHAR(150)"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS stool_condition VARCHAR(30)"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS health_condition VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS vaccine_type VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS dose_number INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS clinic VARCHAR(150)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(150)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS lot_no VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS reaction VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS notes TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS certificate_filename VARCHAR(255)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS certificate_content_type VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS certificate_data BYTEA"))
     with SessionLocal() as session:
         ensure_vapid_keys(session)
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -2375,20 +2395,21 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
     disease_rows = "".join(f"<tr><td>{d.diagnosed_on or '-'}</td><td>{html.escape(session.get(Dog,d.dog_id).call_name)}</td><td>{html.escape(d.disease_name)}</td><td>{html.escape(d.details or '-')}</td></tr>" for d in diseases)
     food_rows = "".join(f"<tr><td>{html.escape(f.name)}</td><td>{f.started_on}</td><td>{f.ended_on or '-'}</td></tr>" for f in foods)
     current_year = date.today().year
-    parent_ids = [dog.id for dog in dogs if dog.category == "parent"]
-    vaccinated_ids = set(session.scalars(select(Vaccination.dog_id).where(Vaccination.tenant_id == tenant.id,
-        Vaccination.administered_on >= date(current_year, 1, 1))).all())
+    parent_ids = [dog.id for dog in dogs if dog.category == "parent" and dog.status not in {"delivered", "transferred"}]
+    rabies_vaccinated_ids = set(session.scalars(select(Vaccination.dog_id).where(Vaccination.tenant_id == tenant.id,
+        Vaccination.vaccine_type == "rabies", Vaccination.administered_on >= date(current_year, 1, 1))).all())
+    mixed_vaccinated_ids = set(session.scalars(select(Vaccination.dog_id).where(Vaccination.tenant_id == tenant.id,
+        Vaccination.vaccine_type == "mixed", Vaccination.administered_on >= date(current_year, 1, 1))).all())
     checked_ids = set(session.scalars(select(HealthRecord.dog_id).where(HealthRecord.tenant_id == tenant.id,
         HealthRecord.category == "checkup", HealthRecord.record_date >= date(current_year, 1, 1))).all())
     body = f'''<h1>健康管理</h1><p>犬ごとの健康状態と、未接種・未受診をまとめて確認できます。</p>
     <div class="grid"><a class="module" href="/modules/health/weights"><h3>体重管理</h3><p>子犬・親犬の体重推移を記録</p></a>
-    <a class="module" href="#vaccines"><h3>ワクチン管理</h3><p>今年度未接種 {len(set(parent_ids) - vaccinated_ids)}頭</p></a>
+    <a class="module" href="/modules/health/vaccinations"><h3>ワクチン管理</h3><p>狂犬病 未接種 {len(set(parent_ids) - rabies_vaccinated_ids)}頭 ／ 混合 未接種 {len(set(parent_ids) - mixed_vaccinated_ids)}頭</p></a>
     <a class="module" href="#checks"><h3>健診管理</h3><p>今年度未受診 {len(set(parent_ids) - checked_ids)}頭</p></a>
     <a class="module" href="#medications"><h3>投薬管理</h3><p>投薬記録 {len(medications)}件</p></a>
     <a class="module" href="#diseases"><h3>病歴管理</h3><p>病歴記録 {len(diseases)}件</p></a>
     <a class="module" href="#foods"><h3>フード管理</h3><p>利用履歴 {len(foods)}件</p></a></div>
     <h2 id="checks">体重・健康診断</h2><form method="post" action="/modules/health/record"><div class="grid">{dog_picker("health")}<div><label>記録日</label><input type="date" name="record_date" required></div><div><label>種類</label><select name="category"><option value="weight">体重</option><option value="checkup">健康診断</option><option value="treatment">診療</option></select></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0" name="weight_kg"></div><div><label>動物病院</label><input name="clinic"></div></div><label>結果・メモ</label><textarea name="notes"></textarea><button>記録する</button></form><table><tr><th>日付</th><th>犬</th><th>種類</th><th>体重kg</th><th>メモ</th></tr>{health_rows}</table>
-    <h2 id="vaccines">ワクチン</h2><form method="post" action="/modules/health/vaccine"><div class="grid">{dog_picker("vaccine")}<div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>接種日</label><input type="date" name="administered_on" required></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>証明書番号</label><input name="certificate_no"></div></div><button>接種を記録</button></form><table><tr><th>接種日</th><th>犬</th><th>ワクチン</th><th>次回予定</th></tr>{vaccine_rows}</table>
     <h2 id="medications">投薬</h2><form method="post" action="/modules/health/medication"><div class="grid">{dog_picker("medication")}<div><label>薬剤名</label><input name="medicine_name" required></div><div><label>投薬日</label><input type="date" name="administered_on" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>投薬を記録</button></form><table><tr><th>日付</th><th>犬</th><th>薬剤</th><th>メモ</th></tr>{medication_rows}</table>
     <h2 id="diseases">病歴</h2><form method="post" action="/modules/health/disease"><div class="grid">{dog_picker("disease")}<div><label>疾患名</label><input name="disease_name" required></div><div><label>診断日</label><input type="date" name="diagnosed_on"></div><div><label>治療開始日</label><input type="date" name="treatment_started_on"></div><div><label>治療終了日</label><input type="date" name="treatment_ended_on"></div></div><label>診断・治療内容</label><textarea name="details"></textarea><button>病歴を登録</button></form><table><tr><th>診断日</th><th>犬</th><th>疾患</th><th>内容</th></tr>{disease_rows}</table>
     <h2 id="foods">フード履歴</h2><form method="post" action="/modules/health/food"><div class="grid"><div><label>フード名</label><input name="name" required></div><div><label>利用開始日</label><input type="date" name="started_on" required></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div><button>フードを登録</button></form><table><tr><th>フード</th><th>開始</th><th>終了</th></tr>{food_rows}</table>{dog_search_script}'''
@@ -2526,19 +2547,103 @@ def health_share_update(record_type: str, record_id: int, owner_visible: bool = 
     share.updated_by_id = user.id
     share.updated_at = datetime.now(timezone.utc)
     session.commit()
-    return RedirectResponse("/modules/health/weights" if record_type == "health" else "/modules/health", status_code=303)
+    destination = "/modules/health/weights" if record_type == "health" else ("/modules/health/vaccinations" if record_type == "vaccination" else "/modules/health")
+    return RedirectResponse(destination, status_code=303)
+
+
+@app.get("/modules/health/vaccinations", response_class=HTMLResponse)
+def health_vaccinations_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    records = session.scalars(select(Vaccination).where(Vaccination.tenant_id == tenant.id).order_by(Vaccination.administered_on.desc(), Vaccination.id.desc())).all()
+    category_labels = {"puppy": "子犬", "parent": "親犬", "external": "外部犬"}
+    status_labels = {"resident": "在籍中", "reserved": "予約済み（在籍中）", "retired": "引退（在籍中）", "delivered": "販売済み", "transferred": "譲渡済み"}
+    options = "".join(
+        f'<option value="{dog.id}" data-nonresident="{str(dog.status in {"delivered", "transferred"}).lower()}" data-search="{html.escape(" ".join(filter(None, [dog.call_name, dog.registered_name, dog.breed, category_labels.get(dog.category), status_labels.get(dog.status)])))}">'
+        f'{html.escape(dog.call_name)}｜{category_labels.get(dog.category, dog.category)}｜{status_labels.get(dog.status, dog.status)}'
+        f'{"｜" + html.escape(dog.registered_name) if dog.registered_name else ""}</option>' for dog in dogs
+    )
+    resident_parents = [dog for dog in dogs if dog.category == "parent" and dog.status not in {"delivered", "transferred"}]
+    year_start = date(date.today().year, 1, 1)
+    rabies_ids = {item.dog_id for item in records if item.administered_on >= year_start and item.vaccine_type == "rabies"}
+    mixed_ids = {item.dog_id for item in records if item.administered_on >= year_start and item.vaccine_type == "mixed"}
+    missing_rabies = [dog for dog in resident_parents if dog.id not in rabies_ids]
+    missing_mixed = [dog for dog in resident_parents if dog.id not in mixed_ids]
+    upcoming = [item for item in records if item.next_due_on and date.today() <= item.next_due_on <= date.today() + timedelta(days=30)]
+    overdue = [item for item in records if item.next_due_on and item.next_due_on < date.today()]
+    type_labels = {"rabies": "狂犬病", "mixed": "混合ワクチン", "other": "その他"}
+
+    def dog_names(items: list[Dog]) -> str:
+        return "、".join(html.escape(dog.call_name) for dog in items) or "該当なし"
+
+    rows = ""
+    for item in records:
+        dog = session.get(Dog, item.dog_id)
+        if not dog:
+            continue
+        share = health_share_for(session, "vaccination", item.id)
+        shared = bool(share and share.owner_visible)
+        certificate = f'<a href="/modules/health/vaccinations/{item.id}/certificate" target="_blank">証明書を見る</a>' if item.certificate_data else "-"
+        rows += f'''<tr><td>{item.administered_on}</td><td>{html.escape(dog.call_name)}</td><td>{type_labels.get(item.vaccine_type or "other", "その他")}</td><td>{html.escape(item.vaccine_name)}</td><td>{item.dose_number or "-"}</td><td>{item.next_due_on or "-"}</td><td>{certificate}</td><td>
+        <form method="post" action="/modules/health/shares/vaccination/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if shared else 'オーナーへ共有'}</button></form></td></tr>'''
+
+    body = f'''<a class="button secondary" href="/modules/health">健康管理へ戻る</a><h1>ワクチン管理</h1>
+    <p>狂犬病と混合ワクチンを別々に判定し、子犬の接種回数と次回予定も管理します。</p>
+    <div class="grid"><section class="tenant"><h3>狂犬病・今年度未接種</h3><strong>{len(missing_rabies)}頭</strong><p>{dog_names(missing_rabies)}</p></section>
+    <section class="tenant"><h3>混合・今年度未接種</h3><strong>{len(missing_mixed)}頭</strong><p>{dog_names(missing_mixed)}</p></section>
+    <section class="tenant"><h3>30日以内の予定</h3><strong>{len(upcoming)}件</strong></section><section class="tenant"><h3>期限超過</h3><strong>{len(overdue)}件</strong></section></div>
+    <h2>接種記録を追加</h2><form method="post" action="/modules/health/vaccine" enctype="multipart/form-data"><div class="grid">
+    <div class="dog-picker"><label>対象犬を検索</label><input class="dog-search" type="search" data-dog-select="vaccination-dog" placeholder="呼び名・血統書名・犬種・区分で検索"><label class="dog-search-all"><input type="checkbox"> 販売済み・譲渡済みの犬も検索する</label><small class="dog-search-count"></small><label>対象犬</label><select id="vaccination-dog" name="dog_id" required>{options}</select></div>
+    <div><label>ワクチン区分</label><select name="vaccine_type" required><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div>
+    <div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>接種回数</label><input type="number" name="dose_number" min="1" max="20"></div>
+    <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on"></div>
+    <div><label>動物病院</label><input name="clinic"></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>製造番号・ロット番号</label><input name="lot_no"></div><div><label>証明書番号</label><input name="certificate_no"></div>
+    <div><label>副反応</label><select name="reaction"><option value="none">なし</option><option value="mild">軽い症状あり</option><option value="severe">強い症状あり</option><option value="unknown">不明</option></select></div><div><label>証明書（画像・PDF、8MBまで）</label><input type="file" name="certificate_file" accept="image/jpeg,image/png,image/webp,application/pdf"></div></div>
+    <label>メモ</label><textarea name="notes"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="owner_visible" value="true"> オーナーページにも共有する</label><input type="hidden" name="return_to" value="vaccinations"><button>接種を記録</button></form>
+    <h2>接種履歴</h2><div style="overflow-x:auto"><table><tr><th>接種日</th><th>犬</th><th>区分</th><th>ワクチン</th><th>回数</th><th>次回予定</th><th>証明書</th><th>共有</th></tr>{rows or '<tr><td colspan="8">接種記録はまだありません。</td></tr>'}</table></div>
+    <style>.dog-picker{{grid-column:span 2;min-width:0}}.dog-search-all{{display:flex;gap:7px;align-items:center;margin:8px 0;font-weight:500}}.dog-search-all input{{width:auto;margin:0}}.dog-search-count{{display:block;color:#806b72}}@media(max-width:700px){{.dog-picker{{grid-column:1/-1}}}}</style>
+    <script>document.querySelectorAll('.dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),all=input.parentElement.querySelector('.dog-search-all input'),count=input.parentElement.querySelector('.dog-search-count'),original=Array.from(select.options).map(function(o){{return o.cloneNode(true)}});function filterDogs(){{var q=input.value.trim().toLowerCase(),current=select.value,matches=original.filter(function(o){{return (all.checked||o.dataset.nonresident!=='true')&&(!q||(o.dataset.search||o.textContent).toLowerCase().includes(q))}});select.replaceChildren.apply(select,matches.map(function(o){{return o.cloneNode(true)}}));if(matches.some(function(o){{return o.value===current}}))select.value=current;count.textContent=(all.checked?'在籍犬以外を含む ':'在籍犬 ')+matches.length+'頭から選択'}}input.addEventListener('input',filterDogs);all.addEventListener('change',filterDogs);filterDogs()}});</script>'''
+    return layout("ワクチン管理", body, user)
+
+
+@app.get("/modules/health/vaccinations/{vaccination_id}/certificate")
+def vaccination_certificate(vaccination_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    item = session.scalar(select(Vaccination).where(Vaccination.id == vaccination_id, Vaccination.tenant_id == tenant.id))
+    if not item or not item.certificate_data:
+        raise HTTPException(status_code=404, detail="証明書が見つかりません")
+    return Response(content=item.certificate_data, media_type=item.certificate_content_type or "application/octet-stream", headers={"Cache-Control": "private, no-store"})
 
 
 @app.post("/modules/health/vaccine")
-def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...), administered_on: str = Form(...), next_due_on: str = Form(""), certificate_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...), administered_on: str = Form(...), next_due_on: str = Form(""), certificate_no: str = Form(""), vaccine_type: str = Form("other"), dose_number: str = Form(""), clinic: str = Form(""), manufacturer: str = Form(""), lot_no: str = Form(""), reaction: str = Form("unknown"), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), certificate_file: UploadFile | None = File(None), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
+    if vaccine_type not in {"rabies", "mixed", "other"} or reaction not in {"none", "mild", "severe", "unknown"}:
+        raise HTTPException(status_code=400, detail="ワクチン情報を確認してください")
     next_due = date.fromisoformat(next_due_on) if next_due_on else None
-    session.add(Vaccination(tenant_id=tenant.id, dog_id=dog.id, vaccine_name=vaccine_name.strip(), administered_on=date.fromisoformat(administered_on), next_due_on=next_due, certificate_no=certificate_no.strip() or None))
+    file_data = None
+    if certificate_file and certificate_file.filename:
+        allowed = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+        if certificate_file.content_type not in allowed:
+            raise HTTPException(status_code=400, detail="証明書はJPEG・PNG・WebP・PDFに対応しています")
+        file_data = await certificate_file.read(8 * 1024 * 1024 + 1)
+        if len(file_data) > 8 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="証明書は8MB以下にしてください")
+    item = Vaccination(tenant_id=tenant.id, dog_id=dog.id, vaccine_name=vaccine_name.strip(), vaccine_type=vaccine_type,
+        dose_number=int(dose_number) if dose_number else None, administered_on=date.fromisoformat(administered_on), next_due_on=next_due,
+        certificate_no=certificate_no.strip() or None, clinic=clinic.strip() or None, manufacturer=manufacturer.strip() or None,
+        lot_no=lot_no.strip() or None, reaction=reaction, notes=notes.strip() or None,
+        certificate_filename=((certificate_file.filename or "")[:255] or None) if certificate_file and file_data else None,
+        certificate_content_type=certificate_file.content_type if certificate_file and file_data else None, certificate_data=file_data)
+    session.add(item)
+    session.flush()
+    if owner_visible:
+        session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="vaccination", record_id=item.id, owner_visible=True, updated_by_id=user.id))
     if next_due:
         session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} {vaccine_name.strip()}接種予定", category="health", due_date=next_due))
     session.commit()
-    return RedirectResponse("/modules/health", status_code=303)
+    return RedirectResponse("/modules/health/vaccinations" if return_to == "vaccinations" else "/modules/health", status_code=303)
 
 
 @app.post("/modules/health/medication")
@@ -4269,11 +4374,16 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
                 detail_parts.append(f"健康：{item.health_condition}")
             detail = " ／ ".join(detail_parts) or (item.notes or "記録あり")
             entries.append((item.record_date, label, detail, item.notes or ""))
+    shared_certificates = ""
     if shared_ids.get("vaccination"):
         for item in session.scalars(select(Vaccination).where(
             Vaccination.id.in_(shared_ids["vaccination"]), Vaccination.dog_id == dog.id
         )).all():
-            entries.append((item.administered_on, "ワクチン", item.vaccine_name, f"次回予定：{item.next_due_on}" if item.next_due_on else ""))
+            detail = item.vaccine_name + (f"（{item.dose_number}回目）" if item.dose_number else "")
+            note_parts = [f"次回予定：{item.next_due_on}" if item.next_due_on else "", f"動物病院：{item.clinic}" if item.clinic else "", item.notes or ""]
+            entries.append((item.administered_on, "ワクチン", detail, " ／ ".join(part for part in note_parts if part)))
+            if item.certificate_data:
+                shared_certificates += f'<a class="button secondary" href="/family/dogs/{dog.id}/vaccinations/{item.id}/certificate" target="_blank">{item.administered_on} {html.escape(item.vaccine_name)}の証明書</a> '
     if shared_ids.get("medication"):
         for item in session.scalars(select(Medication).where(
             Medication.id.in_(shared_ids["medication"]), Medication.dog_id == dog.id
@@ -4290,8 +4400,20 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
     <h1>{html.escape(dog.call_name)}の健康記録</h1><div class="tenant"><p>犬舎がオーナー共有に設定した記録を表示しています。</p>
     <p>この記録は愛犬に紐づくため、販売・譲渡後もオーナー連携が有効な間は引き継がれます。</p></div>
     <table><tr><th>日付</th><th>種類</th><th>内容</th><th>メモ</th></tr>{rows or '<tr><td colspan="4">共有されている健康記録はまだありません。</td></tr>'}</table>
+    {f'<h2>共有された証明書</h2><p>{shared_certificates}</p>' if shared_certificates else ''}
     <p><small>緊急時や治療判断にはこの画面だけを使わず、犬舎または動物病院へご確認ください。</small></p>'''
     return family_layout(f"{dog.call_name}の健康記録｜FAMILY", body, user, session)
+
+
+@app.get("/family/dogs/{dog_id}/vaccinations/{vaccination_id}/certificate")
+def family_vaccination_certificate(dog_id: int, vaccination_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    item = session.scalar(select(Vaccination).where(Vaccination.id == vaccination_id, Vaccination.dog_id == dog_id))
+    share = health_share_for(session, "vaccination", vaccination_id)
+    if not item or not item.certificate_data or not share or not share.owner_visible or share.dog_id != dog_id:
+        raise HTTPException(status_code=404, detail="共有された証明書が見つかりません")
+    return Response(content=item.certificate_data, media_type=item.certificate_content_type or "application/octet-stream", headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/family/growth/add", response_class=HTMLResponse)

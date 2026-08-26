@@ -61,8 +61,9 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_health_forms_have_searchable_dog_pickers(self):
         function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
         segment = ast.get_source_segment(TEXT, function)
-        for key in ("health", "vaccine", "medication", "disease"):
+        for key in ("health", "medication", "disease"):
             self.assertIn(f'dog_picker("{key}")', segment)
+        self.assertNotIn('dog_picker("vaccine")', segment)
         self.assertIn("呼び名・血統書名・犬種・区分で検索", segment)
         self.assertIn("d.call_name, d.registered_name, d.breed", segment)
         self.assertIn("document.querySelectorAll('.dog-search')", segment)
@@ -80,6 +81,38 @@ class HealthSharingStaticTests(unittest.TestCase):
         segment = ast.get_source_segment(TEXT, function)
         self.assertIn(".dog-picker{grid-column:span 2;min-width:0}", segment)
         self.assertIn("@media(max-width:700px){.dog-picker{grid-column:1/-1}}", segment)
+
+    def test_vaccination_management_is_a_dedicated_page(self):
+        self.assertIn('@app.get("/modules/health/vaccinations"', TEXT)
+        health_page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        segment = ast.get_source_segment(TEXT, health_page)
+        self.assertIn('href="/modules/health/vaccinations"', segment)
+        self.assertNotIn('<h2 id="vaccines">', segment)
+
+    def test_vaccination_types_are_counted_separately(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
+        segment = ast.get_source_segment(TEXT, function)
+        self.assertIn('item.vaccine_type == "rabies"', segment)
+        self.assertIn('item.vaccine_type == "mixed"', segment)
+        self.assertIn("missing_rabies", segment)
+        self.assertIn("missing_mixed", segment)
+
+    def test_vaccination_certificate_is_private_and_size_limited(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("8 * 1024 * 1024 + 1", segment)
+        self.assertIn('"application/pdf"', segment)
+        family = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_vaccination_certificate")
+        family_segment = ast.get_source_segment(TEXT, family)
+        self.assertIn("family_owned_dog", family_segment)
+        self.assertIn("share.owner_visible", family_segment)
+
+    def test_vaccination_can_be_shared_and_schedules_todo(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("owner_visible: bool = Form(False)", segment)
+        self.assertIn('record_type="vaccination"', segment)
+        self.assertIn("TaskEvent(", segment)
 
 
 if __name__ == "__main__":
