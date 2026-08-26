@@ -4033,12 +4033,7 @@ def family_dog_detail(dog_id: int, user: User = Depends(require_user), session: 
         album_cards += f'''<article class="album-item"><a href="/family/dogs/{dog.id}/album/{item.id}/photo" target="_blank"><img src="/family/dogs/{dog.id}/album/{item.id}/photo" alt="{html.escape(item.caption or dog.call_name)}"></a>
         <div class="album-meta"><p><strong>{taken}</strong> <span class="badge">{visibility_labels.get(item.visibility, "非公開")}</span> {'<span class="badge">写真 ' + str(group_count) + '枚</span>' if group_count > 1 else ''}</p><p>{html.escape(item.caption or "コメントなし")}</p>{edit_form}{delete_button}</div></article>'''
     album_section = f'''<h2>成長アルバム</h2><p>写真を押すと大きく表示できます。</p><div class="album-grid">{album_cards or '<p>成長アルバムの写真はまだありません。</p>'}</div>
-    <div class="tenant" id="growth-add"><h3>成長記録を追加</h3><form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
-    <label>写真（1投稿につき最大10枚／各8MBまで）</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
-    <label>撮影日</label><input type="date" name="taken_on">
-    <label>コメント（300文字まで）</label><textarea name="caption" maxlength="300" placeholder="初めてのお散歩、1歳のお誕生日など"></textarea>
-    <label>公開範囲</label><select name="visibility"><option value="private">非公開（自分だけ）</option><option value="relatives">親戚犬のオーナーまで</option><option value="family">FAMILY全体</option></select>
-    <button>アルバムへ追加</button></form></div>'''
+    <p><a class="button success" href="/family/growth/add/{dog.id}">＋ {html.escape(dog.call_name)}の成長記録を追加</a></p>'''
     edit_form = f'''<h2>愛犬プロフィール写真・紹介文</h2><form method="post" action="/family/dogs/{dog.id}/profile" enctype="multipart/form-data">
     <label>メイン写真（JPG・PNG・WebP／8MBまで）</label><input type="file" name="photo" accept="image/jpeg,image/png,image/webp">
     <label>愛犬の紹介（300文字まで）</label><textarea name="introduction" maxlength="300" placeholder="性格や好きなことなどをご紹介ください。">{html.escape(profile.introduction if profile and profile.introduction else '')}</textarea>
@@ -4073,15 +4068,34 @@ def family_growth_add_select(user: User = Depends(require_user), session: Sessio
         .order_by(Dog.call_name)
     ).all()
     if len(records) == 1:
-        return RedirectResponse(f"/family/dogs/{records[0][1].id}#growth-add", status_code=303)
+        return RedirectResponse(f"/family/growth/add/{records[0][1].id}", status_code=303)
     if not records:
         body = '<h1>成長記録を追加</h1><div class="tenant"><p>投稿できる愛犬がまだ連携されていません。</p><p>犬舎へ登録メールアドレスをお知らせください。</p></div><a class="button secondary" href="/family/timeline">タイムラインへ戻る</a>'
         return family_layout("成長記録を追加｜FAMILY", body, user, session)
-    cards = "".join(f'''<a class="module" href="/family/dogs/{dog.id}#growth-add"><h3>{html.escape(dog.call_name)}</h3>
+    cards = "".join(f'''<a class="module" href="/family/growth/add/{dog.id}"><h3>{html.escape(dog.call_name)}</h3>
         <p>{html.escape(dog.registered_name or "血統書名未登録")}</p><p>この愛犬の成長記録を追加 →</p></a>''' for _, dog in records)
     body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><h1>成長記録を追加</h1>
     <p>投稿する愛犬を選んでください。</p><div class="grid">{cards}</div>'''
     return family_layout("成長記録を追加｜FAMILY", body, user, session)
+
+
+@app.get("/family/growth/add/{dog_id}", response_class=HTMLResponse)
+def family_growth_add_page(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    record = family_owned_dog(dog_id, user, session)
+    if not record:
+        raise HTTPException(status_code=404, detail="投稿できる愛犬が見つかりません")
+    dog = record[1]
+    body = f'''<a class="button secondary" href="/family/timeline">タイムラインへ戻る</a><h1>成長記録を追加</h1>
+    <div class="tenant"><p><strong>{html.escape(dog.call_name)}</strong>の成長記録を投稿します。</p></div>
+    <form method="post" action="/family/dogs/{dog.id}/album" enctype="multipart/form-data">
+    <input type="hidden" name="return_to" value="timeline">
+    <label>写真（1投稿につき最大10枚／各8MBまで）</label><input type="file" name="photos" accept="image/jpeg,image/png,image/webp" multiple required>
+    <label>撮影日</label><input type="date" name="taken_on">
+    <label>コメント（300文字まで）</label><textarea name="caption" maxlength="300" placeholder="初めてのお散歩、1歳のお誕生日など"></textarea>
+    <label>公開範囲</label><select name="visibility"><option value="private">非公開（自分だけ）</option><option value="relatives">親戚犬のオーナーまで</option><option value="family">FAMILY全体</option></select>
+    <button class="success">成長記録を投稿</button></form>
+    <p><small>このページではプロフィール写真や紹介文は変更されません。</small></p>'''
+    return family_layout(f"{dog.call_name}の成長記録を追加｜FAMILY", body, user, session)
 
 
 @app.get("/family/dogs/{dog_id}/photo")
@@ -4146,7 +4160,7 @@ def family_dog_photo_delete(dog_id: int, user: User = Depends(require_user), ses
 
 
 @app.post("/family/dogs/{dog_id}/album")
-async def family_dog_album_add(dog_id: int, photos: list[UploadFile] = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), user: User = Depends(require_user), session: Session = Depends(db)):
+async def family_dog_album_add(dog_id: int, photos: list[UploadFile] = File(...), taken_on: str = Form(""), caption: str = Form(""), visibility: str = Form("private"), return_to: str = Form(""), user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
     if not owned:
         raise HTTPException(status_code=403, detail="この犬のアルバムへ追加できません")
@@ -4181,7 +4195,8 @@ async def family_dog_album_add(dog_id: int, photos: list[UploadFile] = File(...)
             raise HTTPException(status_code=400, detail="JPG・PNG・WebP形式の写真を選択してください")
         session.add(FamilyDogAlbumItem(dog_id=dog_id, uploaded_by_id=user.id, photo_data=output.getvalue(), photo_content_type="image/jpeg", taken_on=taken_date, caption=caption or None, visibility=visibility, post_group=group, photo_order=position))
     session.commit()
-    return RedirectResponse(f"/family/dogs/{dog_id}", status_code=303)
+    destination = "/family/timeline" if return_to == "timeline" else f"/family/dogs/{dog_id}"
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.get("/family/dogs/{dog_id}/album/{item_id}/photo")

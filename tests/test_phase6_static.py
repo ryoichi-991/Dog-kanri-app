@@ -15,6 +15,7 @@ class Phase6StaticTests(unittest.TestCase):
             ("post", "/admin/operations/diagnose"),
             ("post", "/family/backups/verify"),
             ("get", "/family/growth/add"),
+            ("get", "/family/growth/add/{dog_id}"),
         }
         routes = set()
         for node in ast.walk(TREE):
@@ -49,7 +50,10 @@ class Phase6StaticTests(unittest.TestCase):
 
     def test_growth_post_has_short_timeline_path(self):
         self.assertIn('href="/family/growth/add">＋ 成長記録を追加', SOURCE)
-        self.assertIn('id="growth-add"', SOURCE)
+        dedicated = SOURCE[SOURCE.index("def family_growth_add_page"):SOURCE.index('@app.get("/family/dogs/{dog_id}/photo")')]
+        self.assertIn('name="return_to" value="timeline"', dedicated)
+        self.assertNotIn("プロフィール写真・紹介文", dedicated)
+        self.assertIn('destination = "/family/timeline"', SOURCE)
 
 
 if __name__ == "__main__":
