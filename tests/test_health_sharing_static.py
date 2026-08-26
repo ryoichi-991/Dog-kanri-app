@@ -114,6 +114,16 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('record_type="vaccination"', segment)
         self.assertIn("TaskEvent(", segment)
 
+    def test_vaccination_dose_means_puppy_series_not_annual_count(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("子犬期の接種順（任意）", segment)
+        self.assertIn("成犬の定期接種では入力不要です。", segment)
+        for label in ("1回目", "2回目", "3回目", "追加接種"):
+            self.assertIn(label, segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        self.assertIn('dose_number not in {"", "1", "2", "3", "4"}', ast.get_source_segment(TEXT, create))
+
 
 if __name__ == "__main__":
     unittest.main()

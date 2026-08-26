@@ -2573,6 +2573,9 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
     overdue = [item for item in records if item.next_due_on and item.next_due_on < date.today()]
     type_labels = {"rabies": "狂犬病", "mixed": "混合ワクチン", "other": "その他"}
 
+    def dose_label(value: int | None) -> str:
+        return "追加接種" if value and value >= 4 else (f"{value}回目" if value else "-")
+
     def dog_names(items: list[Dog]) -> str:
         return "、".join(html.escape(dog.call_name) for dog in items) or "該当なし"
 
@@ -2584,18 +2587,18 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
         share = health_share_for(session, "vaccination", item.id)
         shared = bool(share and share.owner_visible)
         certificate = f'<a href="/modules/health/vaccinations/{item.id}/certificate" target="_blank">証明書を見る</a>' if item.certificate_data else "-"
-        rows += f'''<tr><td>{item.administered_on}</td><td>{html.escape(dog.call_name)}</td><td>{type_labels.get(item.vaccine_type or "other", "その他")}</td><td>{html.escape(item.vaccine_name)}</td><td>{item.dose_number or "-"}</td><td>{item.next_due_on or "-"}</td><td>{certificate}</td><td>
+        rows += f'''<tr><td>{item.administered_on}</td><td>{html.escape(dog.call_name)}</td><td>{type_labels.get(item.vaccine_type or "other", "その他")}</td><td>{html.escape(item.vaccine_name)}</td><td>{dose_label(item.dose_number)}</td><td>{item.next_due_on or "-"}</td><td>{certificate}</td><td>
         <form method="post" action="/modules/health/shares/vaccination/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if shared else 'オーナーへ共有'}</button></form></td></tr>'''
 
     body = f'''<a class="button secondary" href="/modules/health">健康管理へ戻る</a><h1>ワクチン管理</h1>
-    <p>狂犬病と混合ワクチンを別々に判定し、子犬の接種回数と次回予定も管理します。</p>
+    <p>狂犬病と混合ワクチンを別々に判定し、子犬期の接種順と次回予定も管理します。</p>
     <div class="grid"><section class="tenant"><h3>狂犬病・今年度未接種</h3><strong>{len(missing_rabies)}頭</strong><p>{dog_names(missing_rabies)}</p></section>
     <section class="tenant"><h3>混合・今年度未接種</h3><strong>{len(missing_mixed)}頭</strong><p>{dog_names(missing_mixed)}</p></section>
     <section class="tenant"><h3>30日以内の予定</h3><strong>{len(upcoming)}件</strong></section><section class="tenant"><h3>期限超過</h3><strong>{len(overdue)}件</strong></section></div>
     <h2>接種記録を追加</h2><form method="post" action="/modules/health/vaccine" enctype="multipart/form-data"><div class="grid">
     <div class="dog-picker"><label>対象犬を検索</label><input class="dog-search" type="search" data-dog-select="vaccination-dog" placeholder="呼び名・血統書名・犬種・区分で検索"><label class="dog-search-all"><input type="checkbox"> 販売済み・譲渡済みの犬も検索する</label><small class="dog-search-count"></small><label>対象犬</label><select id="vaccination-dog" name="dog_id" required>{options}</select></div>
     <div><label>ワクチン区分</label><select name="vaccine_type" required><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div>
-    <div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>接種回数</label><input type="number" name="dose_number" min="1" max="20"></div>
+    <div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>子犬期の接種順（任意）</label><select name="dose_number"><option value="">入力なし</option><option value="1">1回目</option><option value="2">2回目</option><option value="3">3回目</option><option value="4">追加接種</option></select><small>成犬の定期接種では入力不要です。</small></div>
     <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on"></div>
     <div><label>動物病院</label><input name="clinic"></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>製造番号・ロット番号</label><input name="lot_no"></div><div><label>証明書番号</label><input name="certificate_no"></div>
     <div><label>副反応</label><select name="reaction"><option value="none">なし</option><option value="mild">軽い症状あり</option><option value="severe">強い症状あり</option><option value="unknown">不明</option></select></div><div><label>証明書（画像・PDF、8MBまで）</label><input type="file" name="certificate_file" accept="image/jpeg,image/png,image/webp,application/pdf"></div></div>
@@ -2621,6 +2624,8 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...),
     dog = tenant_dog(session, tenant.id, dog_id)
     if vaccine_type not in {"rabies", "mixed", "other"} or reaction not in {"none", "mild", "severe", "unknown"}:
         raise HTTPException(status_code=400, detail="ワクチン情報を確認してください")
+    if dose_number not in {"", "1", "2", "3", "4"}:
+        raise HTTPException(status_code=400, detail="子犬期の接種順を確認してください")
     next_due = date.fromisoformat(next_due_on) if next_due_on else None
     file_data = None
     if certificate_file and certificate_file.filename:
@@ -4379,7 +4384,8 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
         for item in session.scalars(select(Vaccination).where(
             Vaccination.id.in_(shared_ids["vaccination"]), Vaccination.dog_id == dog.id
         )).all():
-            detail = item.vaccine_name + (f"（{item.dose_number}回目）" if item.dose_number else "")
+            dose_text = "追加接種" if item.dose_number and item.dose_number >= 4 else (f"{item.dose_number}回目" if item.dose_number else "")
+            detail = item.vaccine_name + (f"（{dose_text}）" if dose_text else "")
             note_parts = [f"次回予定：{item.next_due_on}" if item.next_due_on else "", f"動物病院：{item.clinic}" if item.clinic else "", item.notes or ""]
             entries.append((item.administered_on, "ワクチン", detail, " ／ ".join(part for part in note_parts if part)))
             if item.certificate_data:
