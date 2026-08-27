@@ -693,6 +693,37 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("session.delete(completion)", segment)
         self.assertIn("status_code=303", segment)
 
+    def test_notification_settings_support_health_categories(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FamilyNotificationSetting")
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notification_settings_page")
+        save = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notification_settings_save")
+        for field in ("health_vaccinations", "health_checkups", "health_medications", "health_followups"):
+            self.assertIn(field, ast.get_source_segment(TEXT, model))
+            self.assertIn(f'name="{field}"', ast.get_source_segment(TEXT, page))
+            self.assertIn(field, ast.get_source_segment(TEXT, save))
+        self.assertIn("7日前・前日・当日", ast.get_source_segment(TEXT, page))
+        self.assertIn("期限超過", ast.get_source_segment(TEXT, page))
+
+    def test_health_notification_timing_keeps_key_days_and_overdue(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_notification_timing")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn("item[3] < 0", segment)
+        self.assertIn("{0, 1, 7}", segment)
+
+    def test_health_notification_preferences_control_cards_and_count(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
+        count = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notification_count")
+        for segment in (ast.get_source_segment(TEXT, page), ast.get_source_segment(TEXT, count)):
+            for field in ("health_vaccinations", "health_checkups", "health_medications", "health_followups"):
+                self.assertIn(field, segment)
+            self.assertIn("family_health_notification_timing", segment)
+
+    def test_startup_adds_health_notification_columns_safely(self):
+        startup = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "startup")
+        segment = ast.get_source_segment(TEXT, startup)
+        for field in ("health_vaccinations", "health_checkups", "health_medications", "health_followups"):
+            self.assertIn(f"ADD COLUMN IF NOT EXISTS {field}", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

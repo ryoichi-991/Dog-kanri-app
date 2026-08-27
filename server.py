@@ -776,6 +776,10 @@ class FamilyNotificationSetting(Base):
     announcements: Mapped[bool] = mapped_column(Boolean, default=True)
     likes: Mapped[bool] = mapped_column(Boolean, default=True)
     anniversaries: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_vaccinations: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_checkups: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_medications: Mapped[bool] = mapped_column(Boolean, default=True)
+    health_followups: Mapped[bool] = mapped_column(Boolean, default=True)
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     push_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -1292,6 +1296,10 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS push_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_vaccinations BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_checkups BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_medications BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_followups BOOLEAN NOT NULL DEFAULT TRUE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
@@ -4010,6 +4018,11 @@ def family_home(user: User = Depends(require_user), session: Session = Depends(d
     return family_layout("FAMILY", body, user, session)
 
 
+def family_health_notification_timing(items: list[tuple[Dog, str, date, int]]) -> list[tuple[Dog, str, date, int]]:
+    """予定日は7日前・前日・当日、未完了の期限超過は継続表示する。"""
+    return [item for item in items if item[3] < 0 or item[3] in {0, 1, 7}]
+
+
 @app.get("/family/notifications", response_class=HTMLResponse)
 def family_notifications(user: User = Depends(require_user), session: Session = Depends(db)):
     items: list[tuple[datetime, str]] = []
@@ -4052,22 +4065,22 @@ def family_notifications(user: User = Depends(require_user), session: Session = 
         <span class="notification-kind">大切な記念日</span><span class="badge">{days}日前</span>
         <p><strong>{html.escape(dog.call_name)}の{label}が{timing}</strong></p><small>{event_date.strftime('%Y年%m月%d日')}</small></a>'''
         items.append((pseudo_time, card))
-    for dog, title, due_on, days in family_vaccine_due_items(user, session):
+    for dog, title, due_on, days in (family_health_notification_timing(family_vaccine_due_items(user, session)) if settings.health_vaccinations else []):
         timing = f"あと{days}日" if days >= 0 else f"{abs(days)}日超過"
         pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
         card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/vaccination"><span class="notification-kind">ワクチン予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}予定を確認してください</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
         items.append((pseudo_time, card))
-    for dog, title, due_on, days in family_checkup_due_items(user, session):
+    for dog, title, due_on, days in (family_health_notification_timing(family_checkup_due_items(user, session)) if settings.health_checkups else []):
         timing = f"あと{days}日" if days >= 0 else f"{abs(days)}日超過"
         pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
         card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/checkup"><span class="notification-kind">健診予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}予定を確認してください</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
         items.append((pseudo_time, card))
-    for dog, title, due_on, days in family_medication_due_items(user, session):
+    for dog, title, due_on, days in (family_health_notification_timing(family_medication_due_items(user, session)) if settings.health_medications else []):
         timing = f"あと{days}日" if days >= 0 else f"{abs(days)}日超過"
         pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
         card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/medication"><span class="notification-kind">投薬予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}投薬予定を確認してください</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
         items.append((pseudo_time, card))
-    for dog, title, due_on, days in family_disease_due_items(user, session):
+    for dog, title, due_on, days in (family_health_notification_timing(family_disease_due_items(user, session)) if settings.health_followups else []):
         timing = f"あと{days}日" if days >= 0 else f"{abs(days)}日超過"
         pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
         card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/disease"><span class="notification-kind">再診予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}再診・確認予定です</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
@@ -4103,6 +4116,11 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
     <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
     <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
     <label><input style="width:auto" type="checkbox" name="anniversaries" value="true" {checked(setting.anniversaries)}> 誕生日・お迎え記念日（7日前・前日・当日）</label>
+    <h2>健康予定の通知</h2><p>各予定の7日前・前日・当日と、実施済みにしていない期限超過を通知します。</p>
+    <label><input style="width:auto" type="checkbox" name="health_vaccinations" value="true" {checked(setting.health_vaccinations)}> ワクチン予定</label>
+    <label><input style="width:auto" type="checkbox" name="health_checkups" value="true" {checked(setting.health_checkups)}> 健診予定</label>
+    <label><input style="width:auto" type="checkbox" name="health_medications" value="true" {checked(setting.health_medications)}> 投薬予定</label>
+    <label><input style="width:auto" type="checkbox" name="health_followups" value="true" {checked(setting.health_followups)}> 再診・経過確認予定</label>
     <button>通知設定を保存</button></form><form method="post" action="/family/push-test"><button class="secondary">この端末へテスト通知を送る</button></form><p><small>オフにしてもデータは削除されず、各画面から確認できます。</small></p>
     <script>const vapid={json.dumps(VAPID_PUBLIC_KEY)};function b64(s){{const p='='.repeat((4-s.length%4)%4),v=(s+p).replace(/-/g,'+').replace(/_/g,'/'),r=atob(v);return Uint8Array.from([...r].map(c=>c.charCodeAt(0)))}}
     document.getElementById('push-register').onclick=async()=>{{const state=document.getElementById('push-state');try{{if(!vapid)throw new Error('通知サーバーの設定準備中です');const reg=await navigator.serviceWorker.register('/family-push-worker.js');const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('ブラウザで通知が許可されませんでした');const sub=await reg.pushManager.subscribe({{userVisibleOnly:true,applicationServerKey:b64(vapid)}});const res=await fetch('/family/push-subscriptions',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(sub)}});if(!res.ok)throw new Error('端末登録に失敗しました');state.textContent='通知端末を登録しました';}}catch(e){{state.textContent=e.message}}}};</script>'''
@@ -4110,9 +4128,11 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
 
 
 @app.post("/family/notification-settings")
-def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), email_enabled: bool = Form(False), push_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), health_vaccinations: bool = Form(False), health_checkups: bool = Form(False), health_medications: bool = Form(False), health_followups: bool = Form(False), email_enabled: bool = Form(False), push_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
     setting = family_notification_setting(user, session)
     setting.messages, setting.announcements, setting.likes, setting.anniversaries = messages, announcements, likes, anniversaries
+    setting.health_vaccinations, setting.health_checkups = health_vaccinations, health_checkups
+    setting.health_medications, setting.health_followups = health_medications, health_followups
     setting.email_enabled = email_enabled
     setting.push_enabled = push_enabled
     session.commit()
@@ -6034,10 +6054,10 @@ def family_notification_count(user: User, session: Session) -> int:
             + (len(family_unread_announcements(user, session)) if setting.announcements else 0)
             + ((len(family_unread_like_items(user, session)) + len(family_unread_comment_items(user, session))) if setting.likes else 0)
             + (len(family_anniversary_notification_items(user, session)) if setting.anniversaries else 0)
-            + len(family_vaccine_due_items(user, session))
-            + len(family_checkup_due_items(user, session))
-            + len(family_medication_due_items(user, session))
-            + len(family_disease_due_items(user, session)))
+            + (len(family_health_notification_timing(family_vaccine_due_items(user, session))) if setting.health_vaccinations else 0)
+            + (len(family_health_notification_timing(family_checkup_due_items(user, session))) if setting.health_checkups else 0)
+            + (len(family_health_notification_timing(family_medication_due_items(user, session))) if setting.health_medications else 0)
+            + (len(family_health_notification_timing(family_disease_due_items(user, session))) if setting.health_followups else 0))
 
 
 def family_message_name(user_id: int, session: Session) -> str:
