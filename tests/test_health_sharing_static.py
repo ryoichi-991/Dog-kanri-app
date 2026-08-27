@@ -313,7 +313,7 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("共有先：", segment)
 
     def test_owner_category_create_validates_ownership_and_category_values(self):
-        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_create")
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "family_owner_health_category_create")
         segment = ast.get_source_segment(TEXT, create)
         self.assertIn("family_owned_dog(dog_id, user, session)", segment)
         self.assertIn("健診項目を1つ以上選択してください", segment)
@@ -341,6 +341,34 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('aria-label="体重の時系列推移"', segment)
         self.assertIn("owner-weight-chart", segment)
         self.assertIn("<polyline", segment)
+
+    def test_owner_vaccination_has_status_summary_and_types(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("狂犬病", "混合ワクチン", "最終接種日", "次回予定", "30日以内", "期限超過", "期限間近"):
+            self.assertIn(label, segment)
+        self.assertIn('name="vaccine_type"', segment)
+
+    def test_owner_vaccine_certificate_is_size_limited_and_private(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "family_owner_health_category_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("8 * 1024 * 1024 + 1", segment)
+        self.assertIn('"application/pdf", "image/jpeg", "image/png"', segment)
+        owner = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_attachment")
+        self.assertIn("family_owned_dog", ast.get_source_segment(TEXT, owner))
+        breeder = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_owner_record_attachment")
+        breeder_segment = ast.get_source_segment(TEXT, breeder)
+        self.assertIn("OwnerHealthRecord.share_to_breeder.is_(True)", breeder_segment)
+        self.assertIn('"Cache-Control": "private, no-store"', breeder_segment)
+
+    def test_owner_vaccine_due_items_appear_in_notifications(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_vaccine_due_items")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn('OwnerHealthRecord.category == "vaccination"', segment)
+        self.assertIn('HealthRecordShare.record_type == "vaccination"', segment)
+        self.assertIn("-90 <= days <= 30", segment)
+        notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
+        self.assertIn("family_vaccine_due_items", ast.get_source_segment(TEXT, notifications))
 
 
 if __name__ == "__main__":
