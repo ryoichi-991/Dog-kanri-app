@@ -4814,10 +4814,39 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
             action = '<span class="badge">変更不可</span>'
         owner_edit_rows += f'''<tr><td>{item.recorded_on}</td><td>{owner_category_labels.get(item.category, "その他")}</td><td>{html.escape(item.title)}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}</td><td>{'共有中' if item.share_to_breeder else '非共有'}</td><td>{action}</td></tr>'''
     category_cards = "".join(f'''<a class="module" href="/family/dogs/{dog.id}/health/{key}"><h3>{label}管理</h3><p>記録 {category_counts.get(key, 0)}件</p></a>''' for key, label in owner_category_labels.items() if key != "other")
+    weight_values: list[tuple[date, float]] = []
+    if shared_ids.get("health"):
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(shared_ids["health"]), HealthRecord.dog_id == dog.id, HealthRecord.category == "weight", HealthRecord.weight_kg.is_not(None))).all():
+            weight_values.append((item.record_date, item.weight_kg))
+    for item in owner_records:
+        if item.category == "weight":
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", item.value or "")
+            if match: weight_values.append((item.recorded_on, float(match.group(1))))
+    latest_weight = max(weight_values, key=lambda row: row[0]) if weight_values else None
+    active_medications = 0
+    if shared_ids.get("medication"):
+        active_medications += session.scalar(select(func.count(Medication.id)).where(Medication.id.in_(shared_ids["medication"]), Medication.dog_id == dog.id, Medication.status == "ongoing")) or 0
+    active_medications += sum(1 for item in owner_records if item.category == "medication" and item.value == "継続中")
+    active_diseases = 0
+    if shared_ids.get("disease"):
+        active_diseases += session.scalar(select(func.count(DiseaseHistory.id)).where(DiseaseHistory.id.in_(shared_ids["disease"]), DiseaseHistory.dog_id == dog.id, DiseaseHistory.status.in_(["treatment", "followup", "chronic"]))) or 0
+    active_diseases += sum(1 for item in owner_records if item.category == "disease" and item.value in {"治療中", "経過観察", "慢性"})
+    active_food_names: list[str] = []
+    if shared_ids.get("food"):
+        active_food_names.extend(item.name for item in session.scalars(select(FoodHistory).where(FoodHistory.id.in_(shared_ids["food"]), FoodHistory.dog_id == dog.id, FoodHistory.status == "ongoing", FoodHistory.ended_on.is_(None))).all())
+    active_food_names.extend(item.title for item in owner_records if item.category == "food" and item.value == "利用中")
+    due_items = [("ワクチン", title, due, days, "vaccination") for due_dog, title, due, days in family_vaccine_due_items(user, session) if due_dog.id == dog.id]
+    due_items += [("健診", title, due, days, "checkup") for due_dog, title, due, days in family_checkup_due_items(user, session) if due_dog.id == dog.id]
+    due_items += [("投薬", title, due, days, "medication") for due_dog, title, due, days in family_medication_due_items(user, session) if due_dog.id == dog.id]
+    due_items += [("再診", title, due, days, "disease") for due_dog, title, due, days in family_disease_due_items(user, session) if due_dog.id == dog.id]
+    due_items.sort(key=lambda row: row[2])
+    overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
+    due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
+    dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
     body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
-    <div class="grid">{category_cards}</div>
+    {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>
     <h2>最近の健康記録</h2>
     <table><tr><th>日付</th><th>種類</th><th>内容</th><th>メモ</th></tr>{rows or '<tr><td colspan="4">共有されている健康記録はまだありません。</td></tr>'}</table>
     <h2>オーナーが入力した記録の管理</h2><div style="overflow-x:auto"><table><tr><th>記録日</th><th>カテゴリー</th><th>内容</th><th>入力者</th><th>ブリーダー共有</th><th>操作</th></tr>{owner_edit_rows or '<tr><td colspan="6">オーナーが入力した記録はまだありません。</td></tr>'}</table></div>

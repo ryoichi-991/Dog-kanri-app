@@ -468,6 +468,24 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("フード利用日を確認してください", segment)
         self.assertIn("終了済みの場合は利用終了日を入力してください", segment)
 
+    def test_owner_health_dashboard_summarizes_six_categories(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("健康サマリー", "最新体重", "継続中の投薬", "治療・観察・慢性", "現在のフード", "30日以内の予定", "期限超過", "これからの健康予定", "カテゴリー別管理"):
+            self.assertIn(label, segment)
+        for helper in ("family_vaccine_due_items", "family_checkup_due_items", "family_medication_due_items", "family_disease_due_items"):
+            self.assertIn(helper, segment)
+
+    def test_owner_health_dashboard_combines_breeder_and_owner_records(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("weight_values", segment)
+        self.assertIn("active_medications", segment)
+        self.assertIn("active_diseases", segment)
+        self.assertIn("active_food_names", segment)
+        self.assertIn("shared_ids", segment)
+        self.assertIn("owner_records", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
