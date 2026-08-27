@@ -531,7 +531,7 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_owner_health_dashboard_links_to_pdf_report(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
         segment = ast.get_source_segment(TEXT, page)
-        self.assertIn("動物病院共有用PDF", segment)
+        self.assertIn("表示条件でPDF出力", segment)
         self.assertIn("/health/report.pdf", segment)
 
     def test_owner_health_history_supports_combined_filters(self):
@@ -561,6 +561,26 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertNotIn("filtered_entries", dashboard_segment)
         self.assertIn("upcoming_count", dashboard_segment)
         self.assertIn("due_rows", dashboard_segment)
+
+    def test_owner_health_pdf_preserves_search_conditions(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("report_query = urlencode", segment)
+        for field in ("health_category", "date_from", "date_to", "keyword"):
+            self.assertIn(f'"{field}"', segment)
+        self.assertIn("report_url", segment)
+
+    def test_owner_health_pdf_applies_category_period_and_keyword_filters(self):
+        report = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_report_pdf")
+        segment = ast.get_source_segment(TEXT, report)
+        for field in ("health_category", "date_from", "date_to", "keyword"):
+            self.assertIn(field, segment)
+        self.assertIn("allowed_filters", segment)
+        self.assertIn("report_labels", segment)
+        self.assertIn("normalized_keyword", segment)
+        self.assertIn("report_condition", segment)
+        self.assertIn("検索期間を確認してください", segment)
+        self.assertIn("終了日は開始日以降にしてください", segment)
 
 
 if __name__ == "__main__":

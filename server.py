@@ -4823,6 +4823,8 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     rows = "".join(f"<tr><td>{item_date if item_date != date.min else '-'}</td><td>{html.escape(kind)}</td><td>{html.escape(detail)}</td><td>{html.escape(note)}</td></tr>" for item_date, kind, detail, note in filtered_entries)
     filter_options = '<option value="">すべて</option>' + "".join(f'<option value="{key}" {"selected" if health_category == key else ""}>{label}</option>' for key, label in [("weight", "体重"), ("vaccination", "ワクチン"), ("checkup", "健診"), ("medication", "投薬"), ("disease", "病歴"), ("food", "フード")])
     search_form = f'''<form method="get" action="/family/dogs/{dog.id}/health"><div class="grid"><div><label>カテゴリー</label><select name="health_category">{filter_options}</select></div><div><label>開始日</label><input type="date" name="date_from" value="{html.escape(date_from)}"></div><div><label>終了日</label><input type="date" name="date_to" value="{html.escape(date_to)}"></div><div><label>キーワード</label><input type="search" name="keyword" value="{html.escape(keyword[:100])}" maxlength="100" placeholder="薬剤名・病名・フード名など"></div></div><button>記録を検索</button> <a class="button secondary" href="/family/dogs/{dog.id}/health">条件をクリア</a></form><p><strong>{len(filtered_entries)}件</strong>／全{len(entries)}件を表示</p>'''
+    report_query = urlencode({key: value for key, value in {"health_category": health_category, "date_from": date_from, "date_to": date_to, "keyword": keyword[:100]}.items() if value})
+    report_url = f"/family/dogs/{dog.id}/health/report.pdf" + (f"?{report_query}" if report_query else "")
     owner_edit_rows = ""
     for item in owner_records:
         owner = session.get(User, item.owner_id)
@@ -4861,7 +4863,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
     due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
     dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/report.pdf">動物病院共有用PDF</a>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="{report_url}">表示条件でPDF出力</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>
@@ -4875,7 +4877,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
 
 
 @app.get("/family/dogs/{dog_id}/health/report.pdf")
-def family_dog_health_report_pdf(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+def family_dog_health_report_pdf(dog_id: int, health_category: str = "", date_from: str = "", date_to: str = "", keyword: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
     if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
     ownership, dog = owned; tenant = session.get(Tenant, ownership.tenant_id)
@@ -4901,17 +4903,30 @@ def family_dog_health_report_pdf(dog_id: int, user: User = Depends(require_user)
     labels = {"weight": "体重", "vaccination": "ワクチン", "checkup": "健康診断", "medication": "投薬", "disease": "病歴", "food": "フード", "other": "その他"}
     for item in owner_records: rows.append((item.recorded_on, labels.get(item.category, "その他"), f"{item.title}／{item.value or ''}／{item.details or ''}"))
     rows.sort(key=lambda row: row[0], reverse=True)
+    allowed_filters = {"", "weight", "vaccination", "checkup", "medication", "disease", "food"}
+    if health_category not in allowed_filters: raise HTTPException(status_code=400, detail="カテゴリーを確認してください")
+    try:
+        start_filter = date.fromisoformat(date_from) if date_from else None; end_filter = date.fromisoformat(date_to) if date_to else None
+    except ValueError: raise HTTPException(status_code=400, detail="検索期間を確認してください")
+    if start_filter and end_filter and end_filter < start_filter: raise HTTPException(status_code=400, detail="終了日は開始日以降にしてください")
+    report_labels = {"weight": ("体重",), "vaccination": ("ワクチン",), "checkup": ("健康診断", "健診"), "medication": ("投薬",), "disease": ("病歴",), "food": ("フード",)}
+    normalized_keyword = keyword.strip().lower()[:100]
+    rows = [row for row in rows if (not health_category or row[1] in report_labels[health_category]) and (not start_filter or row[0] != date.min and row[0] >= start_filter) and (not end_filter or row[0] != date.min and row[0] <= end_filter) and (not normalized_keyword or normalized_keyword in f"{row[1]} {row[2]}".lower())]
+    condition_parts = [f"カテゴリー：{ {'weight':'体重','vaccination':'ワクチン','checkup':'健診','medication':'投薬','disease':'病歴','food':'フード'}.get(health_category, 'すべて')} ", f"期間：{date_from or '指定なし'}〜{date_to or '指定なし'}"]
+    if normalized_keyword: condition_parts.append(f"検索語：{keyword.strip()[:100]}")
+    report_condition = "　".join(condition_parts)
     output = io.BytesIO(); pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5")); pdf = canvas.Canvas(output, pagesize=A4); width, height = A4
     def header():
         pdf.setFont("HeiseiKakuGo-W5", 16); pdf.drawString(36, height - 38, f"{dog.call_name} 健康記録レポート")
         pdf.setFont("HeiseiKakuGo-W5", 9); pdf.drawString(36, height - 56, f"犬種：{dog.breed or '未登録'}　生年月日：{dog.birth_date or '未登録'}　共有元：{tenant.name if tenant else 'ブリーダー'}")
-        pdf.drawString(36, height - 71, f"作成日：{date.today()}　※診断書ではありません。診療時の参考資料としてご利用ください。")
-        pdf.line(36, height - 79, width - 36, height - 79)
-    header(); y = height - 98; pdf.setFont("HeiseiKakuGo-W5", 9)
+        pdf.drawString(36, height - 71, report_condition[:85])
+        pdf.drawString(36, height - 86, f"作成日：{date.today()}　※診断書ではありません。診療時の参考資料としてご利用ください。")
+        pdf.line(36, height - 94, width - 36, height - 94)
+    header(); y = height - 113; pdf.setFont("HeiseiKakuGo-W5", 9)
     for day, label, detail in rows:
         clean = re.sub(r"\s+", " ", detail).strip(); lines = [clean[index:index + 52] for index in range(0, len(clean), 52)] or ["－"]
         needed = 16 * max(len(lines), 1) + 8
-        if y - needed < 36: pdf.showPage(); header(); y = height - 98; pdf.setFont("HeiseiKakuGo-W5", 9)
+        if y - needed < 36: pdf.showPage(); header(); y = height - 113; pdf.setFont("HeiseiKakuGo-W5", 9)
         pdf.drawString(36, y, str(day) if day != date.min else "－"); pdf.drawString(105, y, label)
         for index, line in enumerate(lines): pdf.drawString(165, y - index * 14, line)
         y -= needed
