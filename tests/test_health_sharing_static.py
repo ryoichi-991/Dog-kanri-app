@@ -215,6 +215,40 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("TaskEvent(", segment)
         self.assertIn('disease_status not in {"treatment", "followup", "recovered", "chronic"}', segment)
 
+    def test_food_management_is_a_dedicated_page(self):
+        self.assertIn('@app.get("/modules/health/foods"', TEXT)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_foods_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("対象犬", "年齢", "誕生日", "利用開始日", "利用終了日", "1日量", "給与回数"):
+            self.assertIn(label, segment)
+        health = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        self.assertIn('href="/modules/health/foods"', ast.get_source_segment(TEXT, health))
+        self.assertNotIn('<h2 id="foods">', ast.get_source_segment(TEXT, health))
+
+    def test_food_records_are_linked_to_dogs_and_search_residents(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_foods_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("counts[item.dog_id]", segment)
+        self.assertIn("販売済み・譲渡済みの犬も検索する", segment)
+        self.assertIn("dog.status not in", segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "food_create")
+        self.assertIn("dog = tenant_dog", ast.get_source_segment(TEXT, create))
+
+    def test_food_owner_share_omits_internal_notes(self):
+        family = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, family)
+        food_segment = segment[segment.index('shared_ids.get("food")'):segment.index("entries.sort")]
+        self.assertIn("item.owner_notes", food_segment)
+        self.assertNotIn("item.notes", food_segment)
+
+    def test_food_share_is_explicit_and_values_are_validated(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "food_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("owner_visible: bool = Form(False)", segment)
+        self.assertIn('record_type="food"', segment)
+        self.assertIn('food_status not in {"ongoing", "completed"}', segment)
+        self.assertIn("not 1 <= times <= 10", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -305,9 +305,17 @@ class FoodHistory(Base):
     __tablename__ = "food_histories"
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(150))
+    manufacturer: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    food_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    amount_g: Mapped[float | None] = mapped_column(Float, nullable=True)
+    times_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_on: Mapped[date] = mapped_column(Date)
     ended_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    change_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    owner_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -1296,6 +1304,14 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS disease_histories ADD COLUMN IF NOT EXISTS veterinarian VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS disease_histories ADD COLUMN IF NOT EXISTS next_followup_on DATE"))
         conn.execute(text("ALTER TABLE IF EXISTS disease_histories ADD COLUMN IF NOT EXISTS owner_notes TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS dog_id INTEGER REFERENCES dogs(id) ON DELETE CASCADE"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS manufacturer VARCHAR(150)"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS food_type VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS amount_g DOUBLE PRECISION"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS times_per_day INTEGER"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS status VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS change_reason VARCHAR(300)"))
+        conn.execute(text("ALTER TABLE IF EXISTS food_histories ADD COLUMN IF NOT EXISTS owner_notes TEXT"))
     with SessionLocal() as session:
         ensure_vapid_keys(session)
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -2462,9 +2478,9 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
     <a class="module" href="/modules/health/checkups"><h3>健診管理</h3><p>今年度未受診 {len(set(parent_ids) - checked_ids)}頭</p></a>
     <a class="module" href="/modules/health/medications"><h3>投薬管理</h3><p>投薬記録 {len(medications)}件</p></a>
     <a class="module" href="/modules/health/diseases"><h3>病歴管理</h3><p>病歴記録 {len(diseases)}件</p></a>
-    <a class="module" href="#foods"><h3>フード管理</h3><p>利用履歴 {len(foods)}件</p></a></div>
+    <a class="module" href="/modules/health/foods"><h3>フード管理</h3><p>利用履歴 {len(foods)}件</p></a></div>
     <h2 id="checks">簡易健康記録</h2><form method="post" action="/modules/health/record"><div class="grid">{dog_picker("health")}<div><label>記録日</label><input type="date" name="record_date" required></div><div><label>種類</label><select name="category"><option value="weight">体重</option><option value="treatment">診療</option></select></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0" name="weight_kg"></div><div><label>動物病院</label><input name="clinic"></div></div><label>結果・メモ</label><textarea name="notes"></textarea><button>記録する</button></form><table><tr><th>日付</th><th>犬</th><th>種類</th><th>体重kg</th><th>メモ</th></tr>{health_rows}</table>
-    <h2 id="foods">フード履歴</h2><form method="post" action="/modules/health/food"><div class="grid"><div><label>フード名</label><input name="name" required></div><div><label>利用開始日</label><input type="date" name="started_on" required></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div><button>フードを登録</button></form><table><tr><th>フード</th><th>開始</th><th>終了</th></tr>{food_rows}</table>{dog_search_script}'''
+    {dog_search_script}'''
     return layout("健康管理", body, user)
 
 
@@ -2659,7 +2675,7 @@ def health_create(dog_id: int = Form(...), record_date: str = Form(""), recorded
 @app.post("/modules/health/shares/{record_type}/{record_id}")
 def health_share_update(record_type: str, record_id: int, owner_visible: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
-    model = {"health": HealthRecord, "vaccination": Vaccination, "medication": Medication, "disease": DiseaseHistory}.get(record_type)
+    model = {"health": HealthRecord, "vaccination": Vaccination, "medication": Medication, "disease": DiseaseHistory, "food": FoodHistory}.get(record_type)
     if not model:
         raise HTTPException(status_code=400, detail="共有対象を確認してください")
     item = session.scalar(select(model).where(model.id == record_id, model.tenant_id == tenant.id))
@@ -2673,7 +2689,7 @@ def health_share_update(record_type: str, record_id: int, owner_visible: bool = 
     share.updated_by_id = user.id
     share.updated_at = datetime.now(timezone.utc)
     session.commit()
-    destination = ("/modules/health/checkups" if record_type == "health" and getattr(item, "category", "") == "checkup" else "/modules/health/weights") if record_type == "health" else ("/modules/health/vaccinations" if record_type == "vaccination" else ("/modules/health/medications" if record_type == "medication" else ("/modules/health/diseases" if record_type == "disease" else "/modules/health")))
+    destination = ("/modules/health/checkups" if record_type == "health" and getattr(item, "category", "") == "checkup" else "/modules/health/weights") if record_type == "health" else ("/modules/health/vaccinations" if record_type == "vaccination" else ("/modules/health/medications" if record_type == "medication" else ("/modules/health/diseases" if record_type == "disease" else ("/modules/health/foods" if record_type == "food" else "/modules/health"))))
     return RedirectResponse(destination, status_code=303)
 
 
@@ -2887,16 +2903,70 @@ def disease_create(dog_id: int = Form(...), disease_name: str = Form(...), diagn
     return RedirectResponse("/modules/health/diseases" if return_to == "diseases" else "/modules/health", status_code=303)
 
 
-@app.post("/modules/health/food")
-def food_create(name: str = Form(...), started_on: str = Form(...), ended_on: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+@app.get("/modules/health/foods", response_class=HTMLResponse)
+def health_foods_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
+    records = session.scalars(select(FoodHistory).where(FoodHistory.tenant_id == tenant.id).order_by(FoodHistory.started_on.desc(), FoodHistory.id.desc())).all()
+    category_labels = {"puppy": "子犬", "parent": "親犬", "external": "外部犬"}; status_labels = {"resident": "在籍中", "reserved": "予約済み（在籍中）", "retired": "引退（在籍中）", "delivered": "販売済み", "transferred": "譲渡済み"}
+    options = "".join(f'<option value="{dog.id}" data-nonresident="{str(dog.status in {"delivered", "transferred"}).lower()}" data-search="{html.escape(" ".join(filter(None, [dog.call_name, dog.registered_name, dog.breed, category_labels.get(dog.category), status_labels.get(dog.status)])))}">{html.escape(dog.call_name)}｜{category_labels.get(dog.category, dog.category)}｜{status_labels.get(dog.status, dog.status)}{"｜" + html.escape(dog.registered_name) if dog.registered_name else ""}</option>' for dog in dogs)
+    counts: dict[int, int] = {}
+    for item in records:
+        if item.dog_id: counts[item.dog_id] = counts.get(item.dog_id, 0) + 1
+
+    def age(dog: Dog) -> str:
+        if not dog.birth_date: return "未登録"
+        today = date.today(); months = (today.year - dog.birth_date.year) * 12 + today.month - dog.birth_date.month - (today.day < dog.birth_date.day)
+        return f"{months // 12}歳{months % 12}か月" if months >= 12 else f"{max(months, 0)}か月"
+
+    resident_dogs = [dog for dog in dogs if dog.status not in {"delivered", "transferred"}]
+    dog_rows = "".join(f'<tr><td>{html.escape(dog.call_name)}</td><td>{age(dog)}</td><td>{dog.birth_date or "未登録"}</td><td>{counts.get(dog.id, 0)}回</td></tr>' for dog in resident_dogs)
+    ongoing = [item for item in records if item.dog_id and (item.status or "ongoing") == "ongoing" and not item.ended_on]
+    completed = [item for item in records if item.dog_id and ((item.status or "") == "completed" or item.ended_on)]
+    type_labels = {"dry": "ドライ", "wet": "ウェット", "raw": "生食", "prescription": "療法食", "supplement": "サプリメント", "other": "その他"}
+    rows = ""
+    for item in records:
+        dog = session.get(Dog, item.dog_id) if item.dog_id else None
+        shared = False
+        if dog:
+            share = health_share_for(session, "food", item.id); shared = bool(share and share.owner_visible)
+        amount = f"{item.amount_g:g}g" if item.amount_g is not None else "-"
+        frequency = f"1日{item.times_per_day}回" if item.times_per_day else "-"
+        share_cell = f'''<form method="post" action="/modules/health/shares/food/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if shared else 'オーナーへ共有'}</button></form>''' if dog else "旧記録"
+        rows += f'''<tr><td>{html.escape(dog.call_name) if dog else "犬未設定"}</td><td>{html.escape(item.name)}</td><td>{type_labels.get(item.food_type or "other", "その他")}</td><td>{amount}</td><td>{frequency}</td><td>{item.started_on}</td><td>{item.ended_on or "継続中"}</td><td>{html.escape(item.change_reason or "-")}</td><td>{share_cell}</td></tr>'''
+    body = f'''<a class="button secondary" href="/modules/health">健康管理へ戻る</a><h1>フード管理</h1><p>犬ごとのフード利用期間、給与量、変更履歴を管理します。</p>
+    <div class="grid"><section class="tenant"><h3>利用中</h3><strong>{len(ongoing)}件</strong></section><section class="tenant"><h3>終了済み</h3><strong>{len(completed)}件</strong></section><section class="tenant"><h3>利用履歴</h3><strong>{len(records)}件</strong></section></div>
+    <h2>犬ごとのフード変更回数</h2><div style="overflow-x:auto"><table><tr><th>対象犬</th><th>年齢</th><th>誕生日</th><th>利用履歴</th></tr>{dog_rows or '<tr><td colspan="4">対象犬はいません。</td></tr>'}</table></div>
+    <h2>フード利用記録を追加</h2><form method="post" action="/modules/health/food"><div class="grid"><div class="dog-picker"><label>対象犬を検索</label><input class="dog-search" type="search" data-dog-select="food-dog" placeholder="呼び名・血統書名・犬種・区分で検索"><label class="dog-search-all"><input type="checkbox"> 販売済み・譲渡済みの犬も検索する</label><small class="dog-search-count"></small><label>対象犬</label><select id="food-dog" name="dog_id" required>{options}</select></div>
+    <div><label>フード名</label><input name="name" required></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>種類</label><select name="food_type">{''.join(f'<option value="{key}">{label}</option>' for key, label in type_labels.items())}</select></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>利用開始日</label><input type="date" name="started_on" value="{date.today()}" required></div><div><label>利用終了日</label><input type="date" name="ended_on"></div><div><label>状態</label><select name="food_status"><option value="ongoing">利用中</option><option value="completed">終了</option></select></div><div><label>変更・終了理由</label><input name="change_reason" placeholder="例：成犬用へ切替、食いつき低下"></div></div>
+    <label>オーナーへ共有する説明</label><textarea name="owner_notes"></textarea><label>犬舎内部メモ（オーナーには表示されません）</label><textarea name="notes"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="owner_visible" value="true"> オーナーページにも共有する</label><input type="hidden" name="return_to" value="foods"><button>フード利用記録を登録</button></form>
+    <h2>フード利用履歴</h2><div style="overflow-x:auto"><table><tr><th>犬</th><th>フード</th><th>種類</th><th>1日量</th><th>回数</th><th>開始</th><th>終了・状態</th><th>変更理由</th><th>共有</th></tr>{rows or '<tr><td colspan="9">フード利用記録はまだありません。</td></tr>'}</table></div>
+    <style>.dog-picker{{grid-column:span 2;min-width:0}}.dog-search-all{{display:flex;gap:7px;align-items:center;margin:8px 0;font-weight:500}}.dog-search-all input{{width:auto;margin:0}}.dog-search-count{{display:block;color:#806b72}}@media(max-width:700px){{.dog-picker{{grid-column:1/-1}}}}</style><script>document.querySelectorAll('.dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),all=input.parentElement.querySelector('.dog-search-all input'),count=input.parentElement.querySelector('.dog-search-count'),original=Array.from(select.options).map(function(o){{return o.cloneNode(true)}});function filterDogs(){{var q=input.value.trim().toLowerCase(),current=select.value,matches=original.filter(function(o){{return (all.checked||o.dataset.nonresident!=='true')&&(!q||(o.dataset.search||o.textContent).toLowerCase().includes(q))}});select.replaceChildren.apply(select,matches.map(function(o){{return o.cloneNode(true)}}));if(matches.some(function(o){{return o.value===current}}))select.value=current;count.textContent=(all.checked?'在籍犬以外を含む ':'在籍犬 ')+matches.length+'頭から選択'}}input.addEventListener('input',filterDogs);all.addEventListener('change',filterDogs);filterDogs()}});</script>'''
+    return layout("フード管理", body, user)
+
+
+@app.post("/modules/health/food")
+def food_create(dog_id: int = Form(...), name: str = Form(...), started_on: str = Form(...), ended_on: str = Form(""), manufacturer: str = Form(""), food_type: str = Form("dry"), amount_g: str = Form(""), times_per_day: str = Form(""), food_status: str = Form("ongoing"), change_reason: str = Form(""), owner_notes: str = Form(""), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
     started = date.fromisoformat(started_on)
     ended = date.fromisoformat(ended_on) if ended_on else None
     if ended and ended < started:
         raise HTTPException(status_code=400, detail="利用終了日は開始日以降にしてください")
-    session.add(FoodHistory(tenant_id=tenant.id, name=name.strip(), started_on=started, ended_on=ended))
+    if food_type not in {"dry", "wet", "raw", "prescription", "supplement", "other"} or food_status not in {"ongoing", "completed"}:
+        raise HTTPException(status_code=400, detail="フード情報を確認してください")
+    try:
+        amount = float(amount_g) if amount_g else None
+        times = int(times_per_day) if times_per_day else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
+    if (amount is not None and amount <= 0) or (times is not None and not 1 <= times <= 10):
+        raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
+    item = FoodHistory(tenant_id=tenant.id, dog_id=dog.id, name=name.strip(), manufacturer=manufacturer.strip() or None, food_type=food_type, amount_g=amount, times_per_day=times, started_on=started, ended_on=ended, status=food_status, change_reason=change_reason.strip() or None, owner_notes=owner_notes.strip() or None, notes=notes.strip() or None)
+    session.add(item); session.flush()
+    if owner_visible: session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="food", record_id=item.id, owner_visible=True, updated_by_id=user.id))
     session.commit()
-    return RedirectResponse("/modules/health", status_code=303)
+    return RedirectResponse("/modules/health/foods" if return_to == "foods" else "/modules/health", status_code=303)
 
 
 @app.post("/modules/dogs/pedigree/scan", response_class=HTMLResponse)
@@ -4626,6 +4696,15 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
             status_labels = {"treatment": "治療中", "followup": "経過観察", "recovered": "完治", "chronic": "慢性"}
             detail = item.disease_name + (f"（{status_labels.get(item.status, item.status)}）" if item.status else "")
             entries.append((item.diagnosed_on or date.min, "病歴", detail, item.owner_notes or ""))
+    if shared_ids.get("food"):
+        for item in session.scalars(select(FoodHistory).where(
+            FoodHistory.id.in_(shared_ids["food"]), FoodHistory.dog_id == dog.id
+        )).all():
+            details = [item.name]
+            if item.amount_g is not None: details.append(f"1日量：{item.amount_g:g}g")
+            if item.times_per_day: details.append(f"1日{item.times_per_day}回")
+            if item.ended_on: details.append(f"終了：{item.ended_on}")
+            entries.append((item.started_on, "フード", " ／ ".join(details), item.owner_notes or ""))
     entries.sort(key=lambda row: row[0], reverse=True)
     rows = "".join(f"<tr><td>{item_date if item_date != date.min else '-'}</td><td>{html.escape(kind)}</td><td>{html.escape(detail)}</td><td>{html.escape(note)}</td></tr>" for item_date, kind, detail, note in entries)
     body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a>
