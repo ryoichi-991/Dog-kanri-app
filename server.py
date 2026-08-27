@@ -340,6 +340,18 @@ class OwnerHealthRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class FamilyHealthScheduleCompletion(Base):
+    __tablename__ = "family_health_schedule_completions"
+    __table_args__ = (UniqueConstraint("user_id", "dog_id", "category", "title", "due_on", name="uq_family_health_schedule_completion"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(30))
+    title: Mapped[str] = mapped_column(String(150))
+    due_on: Mapped[date] = mapped_column(Date, index=True)
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class Customer(Base):
     __tablename__ = "customers"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -4739,7 +4751,7 @@ def family_dog_health_calendar(dog_id: int, month: str = "", user: User = Depend
     events: dict[date, list[tuple[str, str, str]]] = {}
 
     def add_event(event_date: date | None, category: str, label: str, title: str):
-        if event_date and first_day <= event_date <= month_end:
+        if event_date and first_day <= event_date <= month_end and not family_health_schedule_completed(user.id, dog.id, category, title, event_date, session):
             events.setdefault(event_date, []).append((category, label, title))
 
     owner_records = session.scalars(select(OwnerHealthRecord).where(
@@ -4777,7 +4789,7 @@ def family_dog_health_calendar(dog_id: int, month: str = "", user: User = Depend
         for day in week:
             outside = day.month != first_day.month
             day_events = "".join(
-                f'<a href="/family/dogs/{dog.id}/health/{category}" style="display:block;margin:4px 0;padding:4px 6px;border-radius:8px;background:{colors[category]};color:#3f3437;font-size:.78rem"><strong>{label}</strong> {html.escape(title)}</a>'
+                f'<div style="margin:4px 0;padding:4px 6px;border-radius:8px;background:{colors[category]};color:#3f3437;font-size:.78rem"><a href="/family/dogs/{dog.id}/health/{category}" style="color:#3f3437;text-decoration:none"><strong>{label}</strong> {html.escape(title)}</a><form method="post" action="/family/dogs/{dog.id}/health/schedules/complete" style="margin:0"><input type="hidden" name="category" value="{category}"><input type="hidden" name="title" value="{html.escape(title)}"><input type="hidden" name="due_on" value="{day}"><input type="hidden" name="return_month" value="{first_day:%Y-%m}"><button class="success" style="margin:4px 0 0;padding:3px 6px;font-size:.68rem">実施済みにする</button></form></div>'
                 for category, label, title in events.get(day, [])
             )
             today_style = "outline:2px solid #b98b9a;" if day == date.today() else ""
@@ -4792,6 +4804,43 @@ def family_dog_health_calendar(dog_id: int, month: str = "", user: User = Depend
     <div style="overflow-x:auto"><table style="table-layout:fixed;min-width:800px"><tr><th style="color:#b54b56">日</th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th style="color:#416b9b">土</th></tr>{cells}</table></div>
     <p><small>表示されるのは、オーナーが登録した予定と、ブリーダーから共有された予定のみです。</small></p>'''
     return family_layout(f"{dog.call_name}の健康カレンダー｜FAMILY", body, user, session)
+
+
+@app.post("/family/dogs/{dog_id}/health/schedules/complete")
+def family_health_schedule_complete(dog_id: int, category: str = Form(...), title: str = Form(...), due_on: str = Form(...), return_month: str = Form(""), user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned:
+        raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, _ = owned
+    if category not in {"vaccination", "checkup", "medication", "disease"} or not title.strip() or len(title.strip()) > 150:
+        raise HTTPException(status_code=400, detail="健康予定を確認してください")
+    try:
+        parsed_due = date.fromisoformat(due_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="健康予定を確認してください")
+    valid = session.scalar(select(OwnerHealthRecord.id).where(
+        OwnerHealthRecord.dog_id == dog_id, OwnerHealthRecord.tenant_id == ownership.tenant_id,
+        OwnerHealthRecord.category == category, OwnerHealthRecord.title == title.strip(), OwnerHealthRecord.next_due_on == parsed_due,
+    )) is not None
+    record_types = {"vaccination": "vaccination", "checkup": "health", "medication": "medication", "disease": "disease"}
+    shared_ids = session.scalars(select(HealthRecordShare.record_id).where(
+        HealthRecordShare.dog_id == dog_id, HealthRecordShare.record_type == record_types[category], HealthRecordShare.owner_visible.is_(True)
+    )).all()
+    if not valid and shared_ids:
+        if category == "vaccination":
+            valid = session.scalar(select(Vaccination.id).where(Vaccination.id.in_(shared_ids), Vaccination.dog_id == dog_id, Vaccination.vaccine_name == title.strip(), Vaccination.next_due_on == parsed_due)) is not None
+        elif category == "checkup":
+            valid = title.strip() == "健康診断" and session.scalar(select(HealthRecord.id).where(HealthRecord.id.in_(shared_ids), HealthRecord.dog_id == dog_id, HealthRecord.category == "checkup", HealthRecord.next_due_on == parsed_due)) is not None
+        elif category == "medication":
+            valid = session.scalar(select(Medication.id).where(Medication.id.in_(shared_ids), Medication.dog_id == dog_id, Medication.medicine_name == title.strip(), Medication.next_due_on == parsed_due, Medication.status != "completed")) is not None
+        else:
+            valid = session.scalar(select(DiseaseHistory.id).where(DiseaseHistory.id.in_(shared_ids), DiseaseHistory.dog_id == dog_id, DiseaseHistory.disease_name == title.strip(), DiseaseHistory.next_followup_on == parsed_due, DiseaseHistory.status != "recovered")) is not None
+    if not valid:
+        raise HTTPException(status_code=404, detail="完了できる健康予定が見つかりません")
+    session.add(FamilyHealthScheduleCompletion(user_id=user.id, dog_id=dog_id, category=category, title=title.strip(), due_on=parsed_due))
+    session.commit()
+    month_query = f"?month={return_month}" if re.fullmatch(r"\d{4}-\d{2}", return_month) else ""
+    return RedirectResponse(f"/family/dogs/{dog_id}/health/calendar{month_query}", status_code=303)
 
 
 @app.get("/family/dogs/{dog_id}/health", response_class=HTMLResponse)
@@ -4938,8 +4987,8 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     due_items += [("再診", title, due, days, "disease") for due_dog, title, due, days in family_disease_due_items(user, session) if due_dog.id == dog.id]
     due_items.sort(key=lambda row: row[2])
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
-    due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
-    dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
+    due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td><td><form method="post" action="/family/dogs/{dog.id}/health/schedules/complete"><input type="hidden" name="category" value="{category}"><input type="hidden" name="title" value="{html.escape(title)}"><input type="hidden" name="due_on" value="{due}"><button class="success" style="margin:0;padding:7px 10px">実施済みにする</button></form></td></tr>''' for label, title, due, days, category in due_items)
+    dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th><th>操作</th></tr>{due_rows or '<tr><td colspan="5">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
     body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/calendar">健康カレンダー</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
@@ -5851,6 +5900,16 @@ def family_anniversary_notification_items(user: User, session: Session) -> list[
     return items
 
 
+def family_health_schedule_completed(user_id: int, dog_id: int, category: str, title: str, due_on: date, session: Session) -> bool:
+    return session.scalar(select(FamilyHealthScheduleCompletion.id).where(
+        FamilyHealthScheduleCompletion.user_id == user_id,
+        FamilyHealthScheduleCompletion.dog_id == dog_id,
+        FamilyHealthScheduleCompletion.category == category,
+        FamilyHealthScheduleCompletion.title == title,
+        FamilyHealthScheduleCompletion.due_on == due_on,
+    )) is not None
+
+
 def family_vaccine_due_items(user: User, session: Session) -> list[tuple[Dog, str, date, int]]:
     ownerships = session.scalars(select(DogOwnership).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True))).all()
     dog_ids = [item.dog_id for item in ownerships]
@@ -5860,13 +5919,13 @@ def family_vaccine_due_items(user: User, session: Session) -> list[tuple[Dog, st
     owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.dog_id.in_(dog_ids), OwnerHealthRecord.category == "vaccination", OwnerHealthRecord.next_due_on.is_not(None))).all()
     for item in owner_records:
         days = (item.next_due_on - today).days
-        if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
+        if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "vaccination", item.title, item.next_due_on, session): results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
     shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id.in_(dog_ids), HealthRecordShare.record_type == "vaccination", HealthRecordShare.owner_visible.is_(True))).all()
     shared_ids = [share.record_id for share in shares]
     if shared_ids:
         for item in session.scalars(select(Vaccination).where(Vaccination.id.in_(shared_ids), Vaccination.next_due_on.is_not(None))).all():
             days = (item.next_due_on - today).days
-            if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.vaccine_name, item.next_due_on, days))
+            if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "vaccination", item.vaccine_name, item.next_due_on, session): results.append((dogs[item.dog_id], item.vaccine_name, item.next_due_on, days))
     return sorted(results, key=lambda row: row[2])
 
 
@@ -5879,13 +5938,13 @@ def family_checkup_due_items(user: User, session: Session) -> list[tuple[Dog, st
     owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.dog_id.in_(dog_ids), OwnerHealthRecord.category == "checkup", OwnerHealthRecord.next_due_on.is_not(None))).all()
     for item in owner_records:
         days = (item.next_due_on - today).days
-        if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
+        if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "checkup", item.title, item.next_due_on, session): results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
     shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id.in_(dog_ids), HealthRecordShare.record_type == "health", HealthRecordShare.owner_visible.is_(True))).all()
     shared_ids = [share.record_id for share in shares]
     if shared_ids:
         for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(shared_ids), HealthRecord.category == "checkup", HealthRecord.next_due_on.is_not(None))).all():
             days = (item.next_due_on - today).days
-            if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], "健康診断", item.next_due_on, days))
+            if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "checkup", "健康診断", item.next_due_on, session): results.append((dogs[item.dog_id], "健康診断", item.next_due_on, days))
     return sorted(results, key=lambda row: row[2])
 
 
@@ -5898,13 +5957,13 @@ def family_medication_due_items(user: User, session: Session) -> list[tuple[Dog,
     owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.dog_id.in_(dog_ids), OwnerHealthRecord.category == "medication", OwnerHealthRecord.next_due_on.is_not(None), OwnerHealthRecord.value != "終了")).all()
     for item in owner_records:
         days = (item.next_due_on - today).days
-        if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
+        if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "medication", item.title, item.next_due_on, session): results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
     shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id.in_(dog_ids), HealthRecordShare.record_type == "medication", HealthRecordShare.owner_visible.is_(True))).all()
     shared_ids = [share.record_id for share in shares]
     if shared_ids:
         for item in session.scalars(select(Medication).where(Medication.id.in_(shared_ids), Medication.next_due_on.is_not(None), Medication.status != "completed")).all():
             days = (item.next_due_on - today).days
-            if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.medicine_name, item.next_due_on, days))
+            if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "medication", item.medicine_name, item.next_due_on, session): results.append((dogs[item.dog_id], item.medicine_name, item.next_due_on, days))
     return sorted(results, key=lambda row: row[2])
 
 
@@ -5917,13 +5976,13 @@ def family_disease_due_items(user: User, session: Session) -> list[tuple[Dog, st
     owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.dog_id.in_(dog_ids), OwnerHealthRecord.category == "disease", OwnerHealthRecord.next_due_on.is_not(None), OwnerHealthRecord.value != "完治")).all()
     for item in owner_records:
         days = (item.next_due_on - today).days
-        if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
+        if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "disease", item.title, item.next_due_on, session): results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
     shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id.in_(dog_ids), HealthRecordShare.record_type == "disease", HealthRecordShare.owner_visible.is_(True))).all()
     shared_ids = [share.record_id for share in shares]
     if shared_ids:
         for item in session.scalars(select(DiseaseHistory).where(DiseaseHistory.id.in_(shared_ids), DiseaseHistory.next_followup_on.is_not(None), DiseaseHistory.status != "recovered")).all():
             days = (item.next_followup_on - today).days
-            if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.disease_name, item.next_followup_on, days))
+            if -90 <= days <= 30 and item.dog_id in dogs and not family_health_schedule_completed(user.id, item.dog_id, "disease", item.disease_name, item.next_followup_on, session): results.append((dogs[item.dog_id], item.disease_name, item.next_followup_on, days))
     return sorted(results, key=lambda row: row[2])
 
 

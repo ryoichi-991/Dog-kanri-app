@@ -639,6 +639,33 @@ class HealthSharingStaticTests(unittest.TestCase):
             self.assertIn(label, segment)
         self.assertNotIn("microchip_no", segment)
 
+    def test_health_schedule_completion_has_owner_scoped_unique_record(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FamilyHealthScheduleCompletion")
+        segment = ast.get_source_segment(TEXT, model)
+        for field in ("user_id", "dog_id", "category", "title", "due_on", "completed_at"):
+            self.assertIn(field, segment)
+        self.assertIn("UniqueConstraint", segment)
+
+    def test_health_schedule_completion_requires_owned_and_existing_schedule(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_complete")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("HealthRecordShare.owner_visible.is_(True)", segment)
+        for model in ("OwnerHealthRecord", "HealthRecord", "Vaccination", "Medication", "DiseaseHistory"):
+            self.assertIn(model, segment)
+        self.assertIn("完了できる健康予定が見つかりません", segment)
+        self.assertIn("FamilyHealthScheduleCompletion", segment)
+        self.assertIn("status_code=303", segment)
+
+    def test_completed_health_schedules_are_hidden_from_alerts_and_calendar(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_completed")
+        self.assertIn("FamilyHealthScheduleCompletion", ast.get_source_segment(TEXT, helper))
+        for name in ("family_vaccine_due_items", "family_checkup_due_items", "family_medication_due_items", "family_disease_due_items", "family_dog_health_calendar"):
+            node = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == name)
+            self.assertIn("family_health_schedule_completed", ast.get_source_segment(TEXT, node))
+        dashboard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        self.assertIn("実施済みにする", ast.get_source_segment(TEXT, dashboard))
+
 
 if __name__ == "__main__":
     unittest.main()
