@@ -486,6 +486,31 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("shared_ids", segment)
         self.assertIn("owner_records", segment)
 
+    def test_owner_can_delete_only_records_they_created(self):
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_delete")
+        segment = ast.get_source_segment(TEXT, delete)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("OwnerHealthRecord.owner_id == user.id", segment)
+        self.assertIn("この健康記録を削除する権限がありません", segment)
+        self.assertIn("confirm_delete", segment)
+        self.assertIn("削除の確認が必要です", segment)
+        self.assertIn("session.delete(item)", segment)
+
+    def test_owner_record_delete_requires_explicit_ui_confirmation(self):
+        top = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        category = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        for segment in (ast.get_source_segment(TEXT, top), ast.get_source_segment(TEXT, category)):
+            self.assertIn('name="confirm_delete"', segment)
+            self.assertIn("この記録を完全に削除することを確認しました", segment)
+            self.assertIn("記録を削除", segment)
+
+    def test_owner_record_update_returns_to_category_safely(self):
+        update = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_update")
+        segment = ast.get_source_segment(TEXT, update)
+        self.assertIn("return_to", segment)
+        for category in ("weight", "vaccination", "checkup", "medication", "disease", "food"):
+            self.assertIn(f'"{category}"', segment)
+
 
 if __name__ == "__main__":
     unittest.main()

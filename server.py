@@ -4809,7 +4809,7 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
     for item in owner_records:
         owner = session.get(User, item.owner_id)
         if item.owner_id == user.id:
-            action = f'''<details><summary>この記録を編集</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><div class="grid"><div><label>カテゴリー</label><select name="category">{''.join(f'<option value="{key}" {"selected" if item.category == key else ""}>{label}</option>' for key, label in owner_category_labels.items())}</select></div><div><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required></div><div><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"></div><div><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"></div></div><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。ブリーダーは閲覧のみで、変更・削除はできません。</small><button>変更を保存</button></form></details>'''
+            action = f'''<details><summary>この記録を編集</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><div class="grid"><div><label>カテゴリー</label><select name="category">{''.join(f'<option value="{key}" {"selected" if item.category == key else ""}>{label}</option>' for key, label in owner_category_labels.items())}</select></div><div><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required></div><div><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"></div><div><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"></div></div><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。ブリーダーは閲覧のみで、変更・削除はできません。</small><button>変更を保存</button></form><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}/delete"><label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirm_delete" value="true" required> この記録を完全に削除することを確認しました</label><button class="danger">記録を削除</button></form></details>'''
         else:
             action = '<span class="badge">変更不可</span>'
         owner_edit_rows += f'''<tr><td>{item.recorded_on}</td><td>{owner_category_labels.get(item.category, "その他")}</td><td>{html.escape(item.title)}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}</td><td>{'共有中' if item.share_to_breeder else '非共有'}</td><td>{action}</td></tr>'''
@@ -4974,7 +4974,7 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
             schedule = '<span class="badge" style="background:#f4c9ca;color:#8d3037">期限超過</span>' if item.next_due_on < date.today() else ('<span class="badge" style="background:#f6e1b8;color:#755514">期限間近</span>' if item.next_due_on <= date.today() + timedelta(days=30) else f'<span class="badge">次回 {item.next_due_on}</span>')
         certificate = f'<a class="button secondary" href="/family/dogs/{dog.id}/health/records/{item.id}/attachment" target="_blank">添付ファイルを見る</a>' if item.attachment_data else ""
         if item.owner_id == user.id:
-            action = f'''<details><summary>編集</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><input type="hidden" name="category" value="{category}"><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><button>変更を保存</button></form></details>'''
+            action = f'''<details><summary>編集・誤入力修正</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><input type="hidden" name="category" value="{category}"><input type="hidden" name="return_to" value="{category}"><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><button>変更を保存</button></form><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}/delete"><input type="hidden" name="return_to" value="{category}"><label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirm_delete" value="true" required> この記録を完全に削除することを確認しました</label><button class="danger">記録を削除</button></form></details>'''
         else: action = '<span class="badge">過去オーナー記録・変更不可</span>'
         owner_rows += f'''<tr><td>{item.recorded_on}<br>{schedule}</td><td>{html.escape(item.title)}{f" ／ {html.escape(item.value)}" if item.value else ""}</td><td style="white-space:pre-wrap">{html.escape(item.details or "-")}<br>{certificate}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}<br>{'ブリーダー共有中' if item.share_to_breeder else 'ブリーダー非共有'}<br>{action}</td></tr>'''
     forms = {
@@ -5079,14 +5079,26 @@ def family_owner_health_create(dog_id: int, category: str = Form(...), recorded_
 
 
 @app.post("/family/dogs/{dog_id}/health/records/{record_id}")
-def family_owner_health_update(dog_id: int, record_id: int, category: str = Form(...), recorded_on: str = Form(...), title: str = Form(...), value: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+def family_owner_health_update(dog_id: int, record_id: int, category: str = Form(...), recorded_on: str = Form(...), title: str = Form(...), value: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), return_to: str = Form("health"), user: User = Depends(require_user), session: Session = Depends(db)):
     if not family_owned_dog(dog_id, user, session): raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
     item = session.scalar(select(OwnerHealthRecord).where(OwnerHealthRecord.id == record_id, OwnerHealthRecord.dog_id == dog_id, OwnerHealthRecord.owner_id == user.id))
     if not item: raise HTTPException(status_code=403, detail="この健康記録を変更する権限がありません")
     day = validate_owner_health_record(category, recorded_on, title, value, details)
     item.category = category; item.recorded_on = day; item.title = title.strip(); item.value = value.strip() or None; item.details = details.strip() or None; item.share_to_breeder = share_to_breeder; item.updated_at = datetime.now(timezone.utc)
     session.commit()
-    return RedirectResponse(f"/family/dogs/{dog_id}/health", status_code=303)
+    destination = f"/family/dogs/{dog_id}/health/{return_to}" if return_to in {"weight", "vaccination", "checkup", "medication", "disease", "food"} else f"/family/dogs/{dog_id}/health"
+    return RedirectResponse(destination, status_code=303)
+
+
+@app.post("/family/dogs/{dog_id}/health/records/{record_id}/delete")
+def family_owner_health_delete(dog_id: int, record_id: int, confirm_delete: bool = Form(False), return_to: str = Form("health"), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session): raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    item = session.scalar(select(OwnerHealthRecord).where(OwnerHealthRecord.id == record_id, OwnerHealthRecord.dog_id == dog_id, OwnerHealthRecord.owner_id == user.id))
+    if not item: raise HTTPException(status_code=403, detail="この健康記録を削除する権限がありません")
+    if not confirm_delete: raise HTTPException(status_code=400, detail="削除の確認が必要です")
+    session.delete(item); session.commit()
+    destination = f"/family/dogs/{dog_id}/health/{return_to}" if return_to in {"weight", "vaccination", "checkup", "medication", "disease", "food"} else f"/family/dogs/{dog_id}/health"
+    return RedirectResponse(destination, status_code=303)
 
 
 @app.get("/family/dogs/{dog_id}/health/records/{record_id}/attachment")
