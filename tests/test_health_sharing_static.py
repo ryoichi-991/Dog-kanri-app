@@ -370,6 +370,31 @@ class HealthSharingStaticTests(unittest.TestCase):
         notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
         self.assertIn("family_vaccine_due_items", ast.get_source_segment(TEXT, notifications))
 
+    def test_owner_checkup_has_summary_and_result_attachment(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("最終受診日", "次回予定", "要確認の結果", "期限間近・超過", "検査結果（PDF・JPG・PNG／8MBまで）"):
+            self.assertIn(label, segment)
+        self.assertIn('name="attachment_file"', segment)
+        self.assertIn('category == "checkup"', segment)
+
+    def test_owner_checkup_attachment_uses_private_shared_access(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "family_owner_health_category_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn('category in {"vaccination", "checkup"}', segment)
+        self.assertIn("attachment_data=attachment_data", segment)
+        breeder = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_owner_record_attachment")
+        self.assertIn("OwnerHealthRecord.share_to_breeder.is_(True)", ast.get_source_segment(TEXT, breeder))
+
+    def test_owner_checkup_due_items_appear_in_notifications(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_checkup_due_items")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn('OwnerHealthRecord.category == "checkup"', segment)
+        self.assertIn('HealthRecord.category == "checkup"', segment)
+        self.assertIn("-90 <= days <= 30", segment)
+        notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
+        self.assertIn("family_checkup_due_items", ast.get_source_segment(TEXT, notifications))
+
 
 if __name__ == "__main__":
     unittest.main()

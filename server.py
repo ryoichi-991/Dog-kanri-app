@@ -4032,6 +4032,11 @@ def family_notifications(user: User = Depends(require_user), session: Session = 
         pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
         card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/vaccination"><span class="notification-kind">ワクチン予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}予定を確認してください</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
         items.append((pseudo_time, card))
+    for dog, title, due_on, days in family_checkup_due_items(user, session):
+        timing = f"あと{days}日" if days >= 0 else f"{abs(days)}日超過"
+        pseudo_time = datetime.combine(due_on, datetime.min.time(), tzinfo=ZoneInfo("Asia/Tokyo"))
+        card = f'''<a class="notification-item unread" href="/family/dogs/{dog.id}/health/checkup"><span class="notification-kind">健診予定</span><span class="badge">{timing}</span><p><strong>{html.escape(dog.call_name)}の{html.escape(title)}予定を確認してください</strong></p><small>{due_on.strftime('%Y年%m月%d日')}</small></a>'''
+        items.append((pseudo_time, card))
     cards = "".join(card for _, card in sorted(items, key=lambda item: item[0], reverse=True))
     if not cards:
         cards = '<div class="tenant"><p>新しい通知はありません。</p><p><small>新着メッセージ、犬舎からのお知らせ、写真への「いいね」をここでまとめて確認できます。</small></p></div>'
@@ -4858,21 +4863,29 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
         upcoming = [day for day in due_dates if date.today() <= day <= date.today() + timedelta(days=30)]
         next_date = min((day for day in due_dates if day >= date.today()), default=None)
         category_summary = f'''<div class="grid"><section class="tenant"><h3>最終接種日</h3><strong>{max(all_dates) if all_dates else "記録なし"}</strong></section><section class="tenant"><h3>次回予定</h3><strong>{next_date or "未設定"}</strong></section><section class="tenant"><h3>30日以内</h3><strong>{len(upcoming)}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue else ''}">{len(overdue)}件</strong></section></div>'''
+    elif category == "checkup":
+        breeder_checkups = session.scalars(select(HealthRecord).where(HealthRecord.id.in_(ids.get("health", [0])), HealthRecord.dog_id == dog.id, HealthRecord.category == "checkup").order_by(HealthRecord.record_date.desc())).all()
+        all_dates = [item.record_date for item in breeder_checkups] + [item.recorded_on for item in records]
+        due_dates = [item.next_due_on for item in breeder_checkups if item.next_due_on] + [item.next_due_on for item in records if item.next_due_on]
+        overdue = [day for day in due_dates if day < date.today()]; upcoming = [day for day in due_dates if date.today() <= day <= date.today() + timedelta(days=30)]
+        next_date = min((day for day in due_dates if day >= date.today()), default=None)
+        attention = sum(1 for item in breeder_checkups if item.result_summary in {"followup", "recheck", "treatment"}) + sum(1 for item in records if item.value in {"経過観察", "再検査", "治療・受診が必要"})
+        category_summary = f'''<div class="grid"><section class="tenant"><h3>最終受診日</h3><strong>{max(all_dates) if all_dates else "記録なし"}</strong></section><section class="tenant"><h3>次回予定</h3><strong>{next_date or "未設定"}</strong></section><section class="tenant"><h3>要確認の結果</h3><strong>{attention}件</strong></section><section class="tenant"><h3>期限間近・超過</h3><strong class="{'error' if overdue else ''}">{len(upcoming)}件・{len(overdue)}件</strong></section></div>'''
     owner_rows = ""
     for item in records:
         owner = session.get(User, item.owner_id)
         schedule = ""
-        if category == "vaccination" and item.next_due_on:
+        if category in {"vaccination", "checkup"} and item.next_due_on:
             schedule = '<span class="badge" style="background:#f4c9ca;color:#8d3037">期限超過</span>' if item.next_due_on < date.today() else ('<span class="badge" style="background:#f6e1b8;color:#755514">期限間近</span>' if item.next_due_on <= date.today() + timedelta(days=30) else f'<span class="badge">次回 {item.next_due_on}</span>')
-        certificate = f'<a class="button secondary" href="/family/dogs/{dog.id}/health/records/{item.id}/attachment" target="_blank">証明書を見る</a>' if item.attachment_data else ""
+        certificate = f'<a class="button secondary" href="/family/dogs/{dog.id}/health/records/{item.id}/attachment" target="_blank">添付ファイルを見る</a>' if item.attachment_data else ""
         if item.owner_id == user.id:
             action = f'''<details><summary>編集</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><input type="hidden" name="category" value="{category}"><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><button>変更を保存</button></form></details>'''
         else: action = '<span class="badge">過去オーナー記録・変更不可</span>'
         owner_rows += f'''<tr><td>{item.recorded_on}<br>{schedule}</td><td>{html.escape(item.title)}{f" ／ {html.escape(item.value)}" if item.value else ""}</td><td style="white-space:pre-wrap">{html.escape(item.details or "-")}<br>{certificate}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}<br>{'ブリーダー共有中' if item.share_to_breeder else 'ブリーダー非共有'}<br>{action}</td></tr>'''
     forms = {
         "weight": '<div class="grid"><div><label>測定日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0.01" name="weight_kg" required></div><div><label>健康状態</label><select name="condition"><option>良好</option><option>少し悪い</option><option>悪い</option></select></div></div>',
-        "vaccination": '<div class="grid"><div><label>接種日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>ワクチン区分</label><select name="vaccine_type"><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div><div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>子犬期の接種順（任意）</label><select name="dose"><option value="">成犬・入力不要</option><option>1回目</option><option>2回目</option><option>3回目</option><option>追加接種</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>接種証明書・写真（PDF・JPG・PNG／8MBまで）</label><input type="file" name="certificate_file" accept="application/pdf,image/jpeg,image/png">',
-        "checkup": '<div class="grid"><div><label>受診日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>結果</label><select name="result"><option>異常なし</option><option>経過観察</option><option>再検査</option><option>治療・受診が必要</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>健診項目</label><div class="grid"><label><input style="width:auto" type="checkbox" name="physical_exam"> 触診</label><label><input style="width:auto" type="checkbox" name="blood_test"> 血液検査</label><label><input style="width:auto" type="checkbox" name="ultrasound"> エコー</label><label><input style="width:auto" type="checkbox" name="chest_xray"> 胸部X線</label></div>',
+        "vaccination": '<div class="grid"><div><label>接種日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>ワクチン区分</label><select name="vaccine_type"><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div><div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>子犬期の接種順（任意）</label><select name="dose"><option value="">成犬・入力不要</option><option>1回目</option><option>2回目</option><option>3回目</option><option>追加接種</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>接種証明書・写真（PDF・JPG・PNG／8MBまで）</label><input type="file" name="attachment_file" accept="application/pdf,image/jpeg,image/png">',
+        "checkup": '<div class="grid"><div><label>受診日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>結果</label><select name="result"><option>異常なし</option><option>経過観察</option><option>再検査</option><option>治療・受診が必要</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>健診項目</label><div class="grid"><label><input style="width:auto" type="checkbox" name="physical_exam"> 触診</label><label><input style="width:auto" type="checkbox" name="blood_test"> 血液検査</label><label><input style="width:auto" type="checkbox" name="ultrasound"> エコー</label><label><input style="width:auto" type="checkbox" name="chest_xray"> 胸部X線</label></div><label>検査結果（PDF・JPG・PNG／8MBまで）</label><input type="file" name="attachment_file" accept="application/pdf,image/jpeg,image/png">',
         "medication": '<div class="grid"><div><label>記録日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>薬剤名</label><input name="medicine_name" required></div><div><label>1回量</label><input name="dosage"></div><div><label>投薬頻度</label><input name="frequency"></div><div><label>状態</label><select name="record_status"><option>単回</option><option>継続中</option><option>終了</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div></div>',
         "disease": '<div class="grid"><div><label>診断日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>疾患名</label><input name="disease_name" required></div><div><label>状態</label><select name="record_status"><option>治療中</option><option>経過観察</option><option>完治</option><option>慢性</option></select></div><div><label>動物病院</label><input name="clinic"></div><div><label>次回診察日</label><input type="date" name="next_due_on"></div></div>',
         "food": '<div class="grid"><div><label>利用開始日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>フード名</label><input name="food_name" required></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>状態</label><select name="record_status"><option>利用中</option><option>終了</option></select></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div>'
@@ -4885,7 +4898,7 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
 
 
 @app.post("/family/dogs/{dog_id}/health/{category}/records")
-async def family_owner_health_category_create(dog_id: int, category: str, recorded_on: str = Form(...), weight_kg: str = Form(""), condition: str = Form(""), vaccine_type: str = Form("other"), vaccine_name: str = Form(""), dose: str = Form(""), next_due_on: str = Form(""), clinic: str = Form(""), result: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), medicine_name: str = Form(""), dosage: str = Form(""), frequency: str = Form(""), record_status: str = Form(""), disease_name: str = Form(""), food_name: str = Form(""), amount_g: str = Form(""), times_per_day: str = Form(""), ended_on: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), certificate_file: UploadFile | None = File(None), user: User = Depends(require_user), session: Session = Depends(db)):
+async def family_owner_health_category_create(dog_id: int, category: str, recorded_on: str = Form(...), weight_kg: str = Form(""), condition: str = Form(""), vaccine_type: str = Form("other"), vaccine_name: str = Form(""), dose: str = Form(""), next_due_on: str = Form(""), clinic: str = Form(""), result: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), medicine_name: str = Form(""), dosage: str = Form(""), frequency: str = Form(""), record_status: str = Form(""), disease_name: str = Form(""), food_name: str = Form(""), amount_g: str = Form(""), times_per_day: str = Form(""), ended_on: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), attachment_file: UploadFile | None = File(None), user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
     if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
     ownership, dog = owned
@@ -4921,11 +4934,11 @@ async def family_owner_health_category_create(dog_id: int, category: str, record
         try: due = date.fromisoformat(next_due_on)
         except ValueError: raise HTTPException(status_code=400, detail="次回予定日を確認してください")
     attachment_name = attachment_type = None; attachment_data = None
-    if category == "vaccination" and certificate_file and certificate_file.filename:
+    if category in {"vaccination", "checkup"} and attachment_file and attachment_file.filename:
         allowed = {"application/pdf", "image/jpeg", "image/png"}
-        attachment_data = await certificate_file.read(8 * 1024 * 1024 + 1)
-        if certificate_file.content_type not in allowed or not attachment_data or len(attachment_data) > 8 * 1024 * 1024: raise HTTPException(status_code=400, detail="証明書はPDF・JPG・PNGの8MB以下にしてください")
-        attachment_name = Path(certificate_file.filename).name[:255]; attachment_type = certificate_file.content_type
+        attachment_data = await attachment_file.read(8 * 1024 * 1024 + 1)
+        if attachment_file.content_type not in allowed or not attachment_data or len(attachment_data) > 8 * 1024 * 1024: raise HTTPException(status_code=400, detail="添付ファイルはPDF・JPG・PNGの8MB以下にしてください")
+        attachment_name = Path(attachment_file.filename).name[:255]; attachment_type = attachment_file.content_type
     combined = "\n".join(part for part in extras + [details.strip()] if part)
     day = validate_owner_health_record(category, recorded_on, title, value, combined)
     session.add(OwnerHealthRecord(tenant_id=ownership.tenant_id, dog_id=dog.id, owner_id=user.id, category=category, recorded_on=day, title=title, value=value or None, details=combined or None, next_due_on=due, attachment_filename=attachment_name, attachment_content_type=attachment_type, attachment_data=attachment_data, share_to_breeder=share_to_breeder)); session.commit()
@@ -5537,13 +5550,33 @@ def family_vaccine_due_items(user: User, session: Session) -> list[tuple[Dog, st
     return sorted(results, key=lambda row: row[2])
 
 
+def family_checkup_due_items(user: User, session: Session) -> list[tuple[Dog, str, date, int]]:
+    ownerships = session.scalars(select(DogOwnership).where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True))).all()
+    dog_ids = [item.dog_id for item in ownerships]
+    if not dog_ids: return []
+    dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.id.in_(dog_ids), Dog.active.is_(True))).all()}
+    today = date.today(); results: list[tuple[Dog, str, date, int]] = []
+    owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.dog_id.in_(dog_ids), OwnerHealthRecord.category == "checkup", OwnerHealthRecord.next_due_on.is_not(None))).all()
+    for item in owner_records:
+        days = (item.next_due_on - today).days
+        if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], item.title, item.next_due_on, days))
+    shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id.in_(dog_ids), HealthRecordShare.record_type == "health", HealthRecordShare.owner_visible.is_(True))).all()
+    shared_ids = [share.record_id for share in shares]
+    if shared_ids:
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(shared_ids), HealthRecord.category == "checkup", HealthRecord.next_due_on.is_not(None))).all():
+            days = (item.next_due_on - today).days
+            if -90 <= days <= 30 and item.dog_id in dogs: results.append((dogs[item.dog_id], "健康診断", item.next_due_on, days))
+    return sorted(results, key=lambda row: row[2])
+
+
 def family_notification_count(user: User, session: Session) -> int:
     setting = family_notification_setting(user, session)
     return ((len(family_unread_message_items(user, session)) if setting.messages else 0)
             + (len(family_unread_announcements(user, session)) if setting.announcements else 0)
             + ((len(family_unread_like_items(user, session)) + len(family_unread_comment_items(user, session))) if setting.likes else 0)
             + (len(family_anniversary_notification_items(user, session)) if setting.anniversaries else 0)
-            + len(family_vaccine_due_items(user, session)))
+            + len(family_vaccine_due_items(user, session))
+            + len(family_checkup_due_items(user, session)))
 
 
 def family_message_name(user_id: int, session: Session) -> str:
