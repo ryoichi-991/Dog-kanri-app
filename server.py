@@ -4843,6 +4843,48 @@ def family_health_schedule_complete(dog_id: int, category: str = Form(...), titl
     return RedirectResponse(f"/family/dogs/{dog_id}/health/calendar{month_query}", status_code=303)
 
 
+@app.get("/family/dogs/{dog_id}/health/schedules/completed", response_class=HTMLResponse)
+def family_health_schedule_completion_history(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned:
+        raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    _, dog = owned
+    completions = session.scalars(select(FamilyHealthScheduleCompletion).where(
+        FamilyHealthScheduleCompletion.user_id == user.id,
+        FamilyHealthScheduleCompletion.dog_id == dog.id,
+    ).order_by(FamilyHealthScheduleCompletion.completed_at.desc(), FamilyHealthScheduleCompletion.id.desc())).all()
+    labels = {"vaccination": "ワクチン", "checkup": "健診", "medication": "投薬", "disease": "再診"}
+    rows = ""
+    for item in completions:
+        completed_at = item.completed_at
+        if completed_at.tzinfo:
+            completed_at = completed_at.astimezone(ZoneInfo("Asia/Tokyo"))
+        rows += f'''<tr><td>{item.due_on}</td><td>{labels.get(item.category, "健康予定")}</td><td>{html.escape(item.title)}</td><td>{completed_at.strftime("%Y-%m-%d %H:%M")}</td><td><form method="post" action="/family/dogs/{dog.id}/health/schedules/completed/{item.id}/undo"><label style="font-weight:400"><input type="checkbox" name="confirm_undo" value="true" style="width:auto" required> 取り消しを確認</label><button class="secondary" style="margin:4px 0 0">未完了に戻す</button></form></td></tr>'''
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">健康管理へ戻る</a>
+    <h1>{html.escape(dog.call_name)}の実施済み健康予定</h1>
+    <p>実施済みにした健康予定を新しい順に表示します。取り消すと、対象期間の通知・健康トップ・カレンダーへ再表示されます。</p>
+    <div style="overflow-x:auto"><table><tr><th>予定日</th><th>種類</th><th>内容</th><th>完了操作日時</th><th>操作</th></tr>{rows or '<tr><td colspan="5">実施済みの健康予定はありません。</td></tr>'}</table></div>'''
+    return family_layout(f"{dog.call_name}の実施済み健康予定｜FAMILY", body, user, session)
+
+
+@app.post("/family/dogs/{dog_id}/health/schedules/completed/{completion_id}/undo")
+def family_health_schedule_completion_undo(dog_id: int, completion_id: int, confirm_undo: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not family_owned_dog(dog_id, user, session):
+        raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    if not confirm_undo:
+        raise HTTPException(status_code=400, detail="取り消しの確認が必要です")
+    completion = session.scalar(select(FamilyHealthScheduleCompletion).where(
+        FamilyHealthScheduleCompletion.id == completion_id,
+        FamilyHealthScheduleCompletion.user_id == user.id,
+        FamilyHealthScheduleCompletion.dog_id == dog_id,
+    ))
+    if not completion:
+        raise HTTPException(status_code=404, detail="実施済みの健康予定が見つかりません")
+    session.delete(completion)
+    session.commit()
+    return RedirectResponse(f"/family/dogs/{dog_id}/health/schedules/completed", status_code=303)
+
+
 @app.get("/family/dogs/{dog_id}/health", response_class=HTMLResponse)
 def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "", date_to: str = "", keyword: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
@@ -4989,7 +5031,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
     due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td><td><form method="post" action="/family/dogs/{dog.id}/health/schedules/complete"><input type="hidden" name="category" value="{category}"><input type="hidden" name="title" value="{html.escape(title)}"><input type="hidden" name="due_on" value="{due}"><button class="success" style="margin:0;padding:7px 10px">実施済みにする</button></form></td></tr>''' for label, title, due, days, category in due_items)
     dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th><th>操作</th></tr>{due_rows or '<tr><td colspan="5">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/calendar">健康カレンダー</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/calendar">健康カレンダー</a> <a class="button secondary" href="/family/dogs/{dog.id}/health/schedules/completed">実施済み履歴</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>

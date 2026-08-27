@@ -666,6 +666,33 @@ class HealthSharingStaticTests(unittest.TestCase):
         dashboard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
         self.assertIn("実施済みにする", ast.get_source_segment(TEXT, dashboard))
 
+    def test_health_dashboard_links_to_completion_history(self):
+        dashboard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, dashboard)
+        self.assertIn("実施済み履歴", segment)
+        self.assertIn("/health/schedules/completed", segment)
+
+    def test_health_completion_history_is_scoped_to_owner_and_dog(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_completion_history")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("FamilyHealthScheduleCompletion.user_id == user.id", segment)
+        self.assertIn("FamilyHealthScheduleCompletion.dog_id == dog.id", segment)
+        self.assertIn("completed_at.desc()", segment)
+        for label in ("実施済み健康予定", "未完了に戻す", "取り消しを確認"):
+            self.assertIn(label, segment)
+
+    def test_health_completion_undo_requires_owner_dog_and_confirmation(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_completion_undo")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("confirm_undo", segment)
+        self.assertIn("取り消しの確認が必要です", segment)
+        self.assertIn("FamilyHealthScheduleCompletion.user_id == user.id", segment)
+        self.assertIn("FamilyHealthScheduleCompletion.dog_id == dog_id", segment)
+        self.assertIn("session.delete(completion)", segment)
+        self.assertIn("status_code=303", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
