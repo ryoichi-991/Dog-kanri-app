@@ -61,9 +61,10 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_health_forms_have_searchable_dog_pickers(self):
         function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
         segment = ast.get_source_segment(TEXT, function)
-        for key in ("health", "medication", "disease"):
+        for key in ("health", "disease"):
             self.assertIn(f'dog_picker("{key}")', segment)
         self.assertNotIn('dog_picker("vaccine")', segment)
+        self.assertNotIn('dog_picker("medication")', segment)
         self.assertIn("呼び名・血統書名・犬種・区分で検索", segment)
         self.assertIn("d.call_name, d.registered_name, d.breed", segment)
         self.assertIn("document.querySelectorAll('.dog-search')", segment)
@@ -151,6 +152,37 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_checkup_is_not_shared_by_default(self):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
         self.assertIn("owner_visible: bool = Form(False)", ast.get_source_segment(TEXT, create))
+
+    def test_medication_management_is_a_dedicated_page(self):
+        self.assertIn('@app.get("/modules/health/medications"', TEXT)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_medications_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("対象犬", "年齢", "誕生日", "投薬回数", "継続中"):
+            self.assertIn(label, segment)
+        health = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        self.assertIn('href="/modules/health/medications"', ast.get_source_segment(TEXT, health))
+
+    def test_medication_count_is_grouped_by_dog(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_medications_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("counts[item.dog_id]", segment)
+        self.assertIn("counts.get(dog.id, 0)", segment)
+        self.assertIn("dog.birth_date", segment)
+
+    def test_medication_internal_notes_are_not_shared(self):
+        family = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, family)
+        medication_segment = segment[segment.index('shared_ids.get("medication")'):segment.index('shared_ids.get("disease")')]
+        self.assertIn("item.owner_notes", medication_segment)
+        self.assertNotIn("item.notes", medication_segment)
+
+    def test_medication_share_and_next_todo_are_explicit(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "medication_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("owner_visible: bool = Form(False)", segment)
+        self.assertIn('record_type="medication"', segment)
+        self.assertIn("TaskEvent(", segment)
+        self.assertIn('medication_status not in {"single", "ongoing", "completed"}', segment)
 
 
 if __name__ == "__main__":
