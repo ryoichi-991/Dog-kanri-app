@@ -203,7 +203,7 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_disease_internal_details_are_not_shared(self):
         family = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
         segment = ast.get_source_segment(TEXT, family)
-        disease_segment = segment[segment.index('shared_ids.get("disease")'):segment.index("entries.sort")]
+        disease_segment = segment[segment.index('shared_ids.get("disease")'):segment.index('shared_ids.get("food")')]
         self.assertIn("item.owner_notes", disease_segment)
         self.assertNotIn("item.details", disease_segment)
 
@@ -248,6 +248,43 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('record_type="food"', segment)
         self.assertIn('food_status not in {"ongoing", "completed"}', segment)
         self.assertIn("not 1 <= times <= 10", segment)
+
+    def test_owner_health_records_keep_creator_and_tenant_provenance(self):
+        self.assertIn("class OwnerHealthRecord(Base):", TEXT)
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "OwnerHealthRecord")
+        segment = ast.get_source_segment(TEXT, model)
+        for field in ("tenant_id", "dog_id", "owner_id", "share_to_breeder", "created_at", "updated_at"):
+            self.assertIn(field, segment)
+
+    def test_owner_health_management_uses_generic_breeder_label(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("うちの子健康管理", segment)
+        self.assertIn("ブリーダーへ共有する", segment)
+        self.assertIn("共有先：", segment)
+        self.assertNotIn("ESTRELLAへ共有", segment)
+
+    def test_owner_can_only_update_records_they_created(self):
+        update = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_update")
+        segment = ast.get_source_segment(TEXT, update)
+        self.assertIn("OwnerHealthRecord.owner_id == user.id", segment)
+        self.assertIn("この健康記録を変更する権限がありません", segment)
+        self.assertNotIn("session.delete", segment)
+
+    def test_breeder_shared_owner_records_are_read_only(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_owner_records_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("OwnerHealthRecord.share_to_breeder.is_(True)", segment)
+        self.assertIn("閲覧のみ", segment)
+        self.assertNotIn('<form method="post"', segment)
+        self.assertIn('href="/modules/health/owner-records"', ast.get_source_segment(TEXT, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")))
+
+    def test_owner_health_create_requires_active_dog_ownership(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("owner_id=user.id", segment)
+        self.assertIn("tenant_id=ownership.tenant_id", segment)
 
 
 if __name__ == "__main__":
