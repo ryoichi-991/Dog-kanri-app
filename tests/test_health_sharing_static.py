@@ -124,6 +124,34 @@ class HealthSharingStaticTests(unittest.TestCase):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
         self.assertIn('dose_number not in {"", "1", "2", "3", "4"}', ast.get_source_segment(TEXT, create))
 
+    def test_checkup_management_is_a_dedicated_page(self):
+        self.assertIn('@app.get("/modules/health/checkups"', TEXT)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("今年度未受診", "今年度受診済み", "触診", "血液検査", "エコー", "胸部X線"):
+            self.assertIn(label, segment)
+        self.assertIn('href="/modules/health/checkups"', ast.get_source_segment(TEXT, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")))
+        self.assertNotIn('<option value="checkup">健康診断</option>', ast.get_source_segment(TEXT, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")))
+
+    def test_checkup_requires_at_least_one_exam_item(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("not any([physical_exam, blood_test, ultrasound, chest_xray])", segment)
+        self.assertIn('category="checkup"', segment)
+        self.assertIn("TaskEvent(", segment)
+
+    def test_checkup_attachment_is_private_and_size_limited(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
+        self.assertIn("8 * 1024 * 1024 + 1", ast.get_source_segment(TEXT, create))
+        family = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_checkup_attachment")
+        segment = ast.get_source_segment(TEXT, family)
+        self.assertIn("family_owned_dog", segment)
+        self.assertIn("share.owner_visible", segment)
+
+    def test_checkup_is_not_shared_by_default(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
+        self.assertIn("owner_visible: bool = Form(False)", ast.get_source_segment(TEXT, create))
+
 
 if __name__ == "__main__":
     unittest.main()
