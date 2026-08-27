@@ -421,6 +421,32 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("投薬日を確認してください", segment)
         self.assertIn("終了日は開始日以降にしてください", segment)
 
+    def test_owner_disease_has_status_summary_and_complete_fields(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("最終診断・記録日", "治療・観察・慢性", "再発記録", "期限間近・超過", "治療開始日", "治療終了日", "担当獣医師"):
+            self.assertIn(label, segment)
+        for field in ("disease_category", "symptoms", "treatment_started_on", "treatment_ended_on", "veterinarian", "recurrence"):
+            self.assertIn(f'name="{field}"', segment)
+
+    def test_owner_disease_due_items_appear_in_notifications(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_disease_due_items")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn('OwnerHealthRecord.category == "disease"', segment)
+        self.assertIn('HealthRecordShare.record_type == "disease"', segment)
+        self.assertIn('DiseaseHistory.status != "recovered"', segment)
+        self.assertIn("-90 <= days <= 30", segment)
+        notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
+        self.assertIn("family_disease_due_items", ast.get_source_segment(TEXT, notifications))
+
+    def test_breeder_disease_validates_dates_and_shows_overdue(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_diseases_page")
+        self.assertIn("期限超過", ast.get_source_segment(TEXT, page))
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "disease_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("病歴の日付を確認してください", segment)
+        self.assertIn("治療終了日は開始日以降にしてください", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
