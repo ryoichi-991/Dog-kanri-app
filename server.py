@@ -4804,6 +4804,30 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
         for item in session.scalars(select(FoodHistory).where(FoodHistory.id.in_(ids["food"]), FoodHistory.dog_id == dog.id)).all(): inherited.append((item.started_on, item.name, item.owner_notes or ""))
     inherited.sort(key=lambda row: row[0], reverse=True)
     inherited_rows = "".join(f'<tr><td>{day if day != date.min else "-"}</td><td>{html.escape(title)}</td><td style="white-space:pre-wrap">{html.escape(note or "-")}</td><td><span class="badge">ブリーダー記録・閲覧のみ</span></td></tr>' for day, title, note in inherited)
+    category_summary = ""
+    if category == "weight":
+        weight_points: list[tuple[date, float]] = []
+        for day, value, _ in inherited:
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", value or "")
+            if match and day != date.min: weight_points.append((day, float(match.group(1))))
+        for item in records:
+            match = re.search(r"([0-9]+(?:\.[0-9]+)?)", item.value or "")
+            if match: weight_points.append((item.recorded_on, float(match.group(1))))
+        weight_points.sort(key=lambda point: point[0])
+        if weight_points:
+            latest = weight_points[-1][1]; previous = weight_points[-2][1] if len(weight_points) > 1 else None
+            difference = latest - previous if previous is not None else None
+            diff_text = f'{difference:+.2f}kg' if difference is not None else "比較データなし"
+            values = [point[1] for point in weight_points]; low, high = min(values), max(values); span = max(high - low, 0.2)
+            coords = []
+            for index, (_, value) in enumerate(weight_points):
+                x = 34 + (692 * index / max(len(weight_points) - 1, 1)); y = 178 - ((value - low) / span * 138)
+                coords.append((x, y, value))
+            polyline = " ".join(f"{x:.1f},{y:.1f}" for x, y, _ in coords)
+            circles = "".join(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5"><title>{value:g}kg</title></circle>' for x, y, value in coords)
+            category_summary = f'''<div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{latest:g}kg</strong></section><section class="tenant"><h3>前回との差</h3><strong>{diff_text}</strong></section><section class="tenant"><h3>測定回数</h3><strong>{len(weight_points)}回</strong></section><section class="tenant"><h3>記録範囲</h3><strong>{low:g}〜{high:g}kg</strong></section></div><h2>体重推移</h2><div class="owner-weight-chart"><svg viewBox="0 0 760 220" role="img" aria-label="体重の時系列推移"><line x1="34" y1="178" x2="726" y2="178"></line><polyline points="{polyline}"></polyline>{circles}<text x="34" y="207">{weight_points[0][0]}</text><text x="726" y="207" text-anchor="end">{weight_points[-1][0]}</text><text x="34" y="25">{high:g}kg</text><text x="34" y="194">{low:g}kg</text></svg></div><style>.owner-weight-chart{{overflow-x:auto;padding:12px;border:1px solid #eadfe1;border-radius:14px;background:#fffafb}}.owner-weight-chart svg{{display:block;width:100%;min-width:560px;height:auto}}.owner-weight-chart line{{stroke:#d9c9ce;stroke-width:1}}.owner-weight-chart polyline{{fill:none;stroke:#b66f7c;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}}.owner-weight-chart circle{{fill:#704454;stroke:#fff;stroke-width:2}}.owner-weight-chart text{{fill:#806b72;font-size:12px}}</style>'''
+        else:
+            category_summary = '<div class="tenant"><p>体重を登録すると、最新体重・前回差・時系列グラフが表示されます。</p></div>'
     owner_rows = ""
     for item in records:
         owner = session.get(User, item.owner_id)
@@ -4819,7 +4843,7 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
         "disease": '<div class="grid"><div><label>診断日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>疾患名</label><input name="disease_name" required></div><div><label>状態</label><select name="record_status"><option>治療中</option><option>経過観察</option><option>完治</option><option>慢性</option></select></div><div><label>動物病院</label><input name="clinic"></div><div><label>次回診察日</label><input type="date" name="next_due_on"></div></div>',
         "food": '<div class="grid"><div><label>利用開始日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>フード名</label><input name="food_name" required></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>状態</label><select name="record_status"><option>利用中</option><option>終了</option></select></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div>'
     }
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">うちの子健康管理へ戻る</a><h1>{html.escape(dog.call_name)}の{labels[category]}管理</h1><p>対象犬は{html.escape(dog.call_name)}に固定されています。</p>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">うちの子健康管理へ戻る</a><h1>{html.escape(dog.call_name)}の{labels[category]}管理</h1><p>対象犬は{html.escape(dog.call_name)}に固定されています。</p>{category_summary}
     <h2>{labels[category]}記録を追加</h2><form method="post" action="/family/dogs/{dog.id}/health/{category}/records">{forms[category]}<label>詳細・メモ</label><textarea name="details"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true"> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。ブリーダーは閲覧のみで変更・削除できません。</small><button>{labels[category]}記録を追加</button></form>
     <h2>ブリーダーから引き継いだ記録</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>内容</th><th>メモ</th><th>権限</th></tr>{inherited_rows or '<tr><td colspan="4">共有された記録はまだありません。</td></tr>'}</table></div>
     <h2>オーナーが継続入力した記録</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>内容</th><th>詳細</th><th>入力者・操作</th></tr>{owner_rows or '<tr><td colspan="4">オーナー記録はまだありません。</td></tr>'}</table></div>'''

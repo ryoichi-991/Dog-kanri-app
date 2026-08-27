@@ -320,6 +320,28 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("給与量・回数を確認してください", segment)
         self.assertIn("owner_id=user.id", segment)
 
+    def test_owner_weight_combines_breeder_and_owner_measurements(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("weight_points", segment)
+        self.assertIn("for day, value, _ in inherited", segment)
+        self.assertIn("for item in records", segment)
+        self.assertIn("weight_points.sort", segment)
+
+    def test_owner_weight_shows_latest_difference_and_range(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("最新体重", "前回との差", "測定回数", "記録範囲"):
+            self.assertIn(label, segment)
+        self.assertIn("difference = latest - previous", segment)
+
+    def test_owner_weight_has_accessible_timeline_chart(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn('aria-label="体重の時系列推移"', segment)
+        self.assertIn("owner-weight-chart", segment)
+        self.assertIn("<polyline", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
