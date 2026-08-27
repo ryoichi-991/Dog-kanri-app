@@ -534,6 +534,34 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("動物病院共有用PDF", segment)
         self.assertIn("/health/report.pdf", segment)
 
+    def test_owner_health_history_supports_combined_filters(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        for field in ("health_category", "date_from", "date_to", "keyword"):
+            self.assertIn(field, segment)
+            self.assertIn(f'name="{field}"', segment)
+        for label in ("健康記録の検索", "記録を検索", "条件をクリア", "条件に一致する健康記録はありません"):
+            self.assertIn(label, segment)
+        self.assertIn("filtered_entries", segment)
+        self.assertIn("normalized_keyword", segment)
+
+    def test_owner_health_history_validates_filter_values(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("allowed_filters", segment)
+        self.assertIn("カテゴリーを確認してください", segment)
+        self.assertIn("検索期間を確認してください", segment)
+        self.assertIn("終了日は開始日以降にしてください", segment)
+        self.assertIn("keyword.strip().lower()[:100]", segment)
+
+    def test_owner_health_filters_do_not_change_dashboard_totals(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        dashboard_segment = segment[segment.index("dashboard ="):segment.index("body =")]
+        self.assertNotIn("filtered_entries", dashboard_segment)
+        self.assertIn("upcoming_count", dashboard_segment)
+        self.assertIn("due_rows", dashboard_segment)
+
 
 if __name__ == "__main__":
     unittest.main()

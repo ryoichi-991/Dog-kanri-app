@@ -4719,7 +4719,7 @@ def family_owned_dog(dog_id: int, user: User, session: Session):
 
 
 @app.get("/family/dogs/{dog_id}/health", response_class=HTMLResponse)
-def family_dog_health(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "", date_to: str = "", keyword: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
     if not owned:
         raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
@@ -4804,7 +4804,25 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
         detail = item.title + (f" ／ {item.value}" if item.value else "")
         entries.append((item.recorded_on, f"{owner_category_labels.get(item.category, 'その他')}（{source}）", detail, item.details or ""))
     entries.sort(key=lambda row: row[0], reverse=True)
-    rows = "".join(f"<tr><td>{item_date if item_date != date.min else '-'}</td><td>{html.escape(kind)}</td><td>{html.escape(detail)}</td><td>{html.escape(note)}</td></tr>" for item_date, kind, detail, note in entries)
+    allowed_filters = {"", "weight", "vaccination", "checkup", "medication", "disease", "food"}
+    if health_category not in allowed_filters: raise HTTPException(status_code=400, detail="カテゴリーを確認してください")
+    try:
+        start_filter = date.fromisoformat(date_from) if date_from else None; end_filter = date.fromisoformat(date_to) if date_to else None
+    except ValueError: raise HTTPException(status_code=400, detail="検索期間を確認してください")
+    if start_filter and end_filter and end_filter < start_filter: raise HTTPException(status_code=400, detail="終了日は開始日以降にしてください")
+    filter_labels = {"weight": ("体重",), "vaccination": ("ワクチン",), "checkup": ("健康診断", "健診"), "medication": ("投薬",), "disease": ("病歴",), "food": ("フード",)}
+    normalized_keyword = keyword.strip().lower()[:100]
+    filtered_entries = []
+    for entry in entries:
+        item_date, kind, detail, note = entry
+        if health_category and not any(label in kind for label in filter_labels[health_category]): continue
+        if start_filter and item_date != date.min and item_date < start_filter: continue
+        if end_filter and item_date != date.min and item_date > end_filter: continue
+        if normalized_keyword and normalized_keyword not in f"{kind} {detail} {note}".lower(): continue
+        filtered_entries.append(entry)
+    rows = "".join(f"<tr><td>{item_date if item_date != date.min else '-'}</td><td>{html.escape(kind)}</td><td>{html.escape(detail)}</td><td>{html.escape(note)}</td></tr>" for item_date, kind, detail, note in filtered_entries)
+    filter_options = '<option value="">すべて</option>' + "".join(f'<option value="{key}" {"selected" if health_category == key else ""}>{label}</option>' for key, label in [("weight", "体重"), ("vaccination", "ワクチン"), ("checkup", "健診"), ("medication", "投薬"), ("disease", "病歴"), ("food", "フード")])
+    search_form = f'''<form method="get" action="/family/dogs/{dog.id}/health"><div class="grid"><div><label>カテゴリー</label><select name="health_category">{filter_options}</select></div><div><label>開始日</label><input type="date" name="date_from" value="{html.escape(date_from)}"></div><div><label>終了日</label><input type="date" name="date_to" value="{html.escape(date_to)}"></div><div><label>キーワード</label><input type="search" name="keyword" value="{html.escape(keyword[:100])}" maxlength="100" placeholder="薬剤名・病名・フード名など"></div></div><button>記録を検索</button> <a class="button secondary" href="/family/dogs/{dog.id}/health">条件をクリア</a></form><p><strong>{len(filtered_entries)}件</strong>／全{len(entries)}件を表示</p>'''
     owner_edit_rows = ""
     for item in owner_records:
         owner = session.get(User, item.owner_id)
@@ -4847,8 +4865,8 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>
-    <h2>最近の健康記録</h2>
-    <table><tr><th>日付</th><th>種類</th><th>内容</th><th>メモ</th></tr>{rows or '<tr><td colspan="4">共有されている健康記録はまだありません。</td></tr>'}</table>
+    <h2>健康記録の検索</h2>{search_form}<h2>最近の健康記録</h2>
+    <table><tr><th>日付</th><th>種類</th><th>内容</th><th>メモ</th></tr>{rows or '<tr><td colspan="4">条件に一致する健康記録はありません。</td></tr>'}</table>
     <h2>オーナーが入力した記録の管理</h2><div style="overflow-x:auto"><table><tr><th>記録日</th><th>カテゴリー</th><th>内容</th><th>入力者</th><th>ブリーダー共有</th><th>操作</th></tr>{owner_edit_rows or '<tr><td colspan="6">オーナーが入力した記録はまだありません。</td></tr>'}</table></div>
     {f'<h2>共有された検査結果</h2><p>{shared_checkup_files}</p>' if shared_checkup_files else ''}
     {f'<h2>共有された証明書</h2><p>{shared_certificates}</p>' if shared_certificates else ''}
