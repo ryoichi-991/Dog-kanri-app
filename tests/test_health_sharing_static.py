@@ -838,6 +838,44 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("LINE配信履歴", segment)
         self.assertNotIn("line_decrypt", segment)
 
+    def test_line_account_tracks_api_and_webhook_health(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LineOfficialAccount")
+        segment = ast.get_source_segment(TEXT, model)
+        for field in ("bot_basic_id", "bot_display_name", "verified_at", "last_webhook_at", "last_error"):
+            self.assertIn(field, segment)
+
+    def test_line_bot_info_uses_official_api_without_exposing_token(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_bot_info")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn("https://api.line.me/v2/bot/info", segment)
+        self.assertIn("line_decrypt(account.access_token_encrypted)", segment)
+        self.assertIn('"displayName"', segment)
+        self.assertIn('"basicId"', segment)
+
+    def test_line_connection_test_is_tenant_admin_scoped(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_test")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("require_tenant_admin", segment)
+        self.assertIn("LineOfficialAccount.tenant_id == tenant.id", segment)
+        self.assertIn("line_bot_info(account)", segment)
+        self.assertIn("account.verified_at", segment)
+        self.assertIn("account.last_error", segment)
+
+    def test_line_webhook_records_success_and_safe_error_types(self):
+        route = next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "line_webhook")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("account.last_webhook_at, account.last_error = now, None", segment)
+        for message in ("Webhook署名がありません", "Webhook署名が一致しません", "Webhook認証情報を復号できません", "WebhookイベントのJSONが不正です"):
+            self.assertIn(message, segment)
+        self.assertNotIn("channel_secret.decode", segment)
+
+    def test_line_manage_page_shows_setup_diagnostics_and_friend_link(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_manage")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("API接続確認", "Webhook最終受信", "暗号鍵", "LINE APIの接続を確認", "初期設定の手順", "LINEで友だち追加"):
+            self.assertIn(label, segment)
+        self.assertIn("https://line.me/R/ti/p/", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

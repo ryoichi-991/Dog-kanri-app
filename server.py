@@ -820,7 +820,12 @@ class LineOfficialAccount(Base):
     channel_secret_encrypted: Mapped[str] = mapped_column(Text)
     access_token_encrypted: Mapped[str] = mapped_column(Text)
     webhook_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    bot_basic_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bot_display_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_webhook_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -1085,6 +1090,21 @@ def line_reply(account: LineOfficialAccount, reply_token: str, message: str) -> 
             return 200 <= response.status < 300
     except (HTTPError, URLError, RuntimeError, TimeoutError):
         return False
+
+
+def line_bot_info(account: LineOfficialAccount) -> tuple[dict[str, str] | None, str | None]:
+    try:
+        access_token = line_decrypt(account.access_token_encrypted)
+        request = UrlRequest("https://api.line.me/v2/bot/info", method="GET", headers={"Authorization": f"Bearer {access_token}"})
+        with urlopen(request, timeout=10) as response:
+            if not 200 <= response.status < 300:
+                return None, f"LINE API status {response.status}"
+            payload = json.loads(response.read())
+        return {"displayName": str(payload.get("displayName", ""))[:150], "basicId": str(payload.get("basicId", ""))[:100]}, None
+    except HTTPError as exc:
+        return None, f"LINE API status {exc.code}"
+    except (URLError, RuntimeError, TimeoutError, json.JSONDecodeError) as exc:
+        return None, type(exc).__name__
 
 
 def send_line_push(user_id: int, tenant_id: int, category: str, message: str, url: str, dedupe_key: str, session: Session) -> bool:
@@ -1425,6 +1445,11 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_medications BOOLEAN NOT NULL DEFAULT TRUE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_followups BOOLEAN NOT NULL DEFAULT TRUE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS line_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_official_accounts ADD COLUMN IF NOT EXISTS bot_basic_id VARCHAR(100)"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_official_accounts ADD COLUMN IF NOT EXISTS bot_display_name VARCHAR(150)"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_official_accounts ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_official_accounts ADD COLUMN IF NOT EXISTS last_webhook_at TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_official_accounts ADD COLUMN IF NOT EXISTS last_error VARCHAR(500)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
@@ -4353,14 +4378,25 @@ def line_official_account_manage(access=Depends(require_tenant_admin), session: 
     linked_count = session.scalar(select(func.count(FamilyLineLink.id)).where(FamilyLineLink.tenant_id == tenant.id, FamilyLineLink.active.is_(True))) or 0
     deliveries = session.scalars(select(LineDelivery).where(LineDelivery.tenant_id == tenant.id).order_by(LineDelivery.created_at.desc()).limit(50)).all()
     delivery_rows = "".join(f'<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(item.category)}</td><td>{"成功" if item.status == "sent" else "失敗"}</td><td>{html.escape(item.error or "-")}</td></tr>' for item in deliveries)
-    status_text = "接続設定済み" if account and account.active else "未接続"
-    body = f'''<h1>LINE公式アカウント設定</h1><div class="tenant"><p>状態：<span class="badge">{status_text}</span>　連携中のお客様：<strong>{linked_count}名</strong></p><p>Webhook URL<br><code>{html.escape(webhook_url)}</code></p><p><small>LINE Official Account Manager／Developers ConsoleのWebhook URLへ設定してください。</small></p></div>
+    status_text = "接続確認済み" if account and account.active and account.verified_at else ("設定済み・未確認" if account and account.active else "未接続")
+    friend_url = f"https://line.me/R/ti/p/{quote(account.bot_basic_id)}" if account and account.bot_basic_id else ""
+    verified_text = account.verified_at.strftime("%Y-%m-%d %H:%M") if account and account.verified_at else "未確認"
+    webhook_text = account.last_webhook_at.strftime("%Y-%m-%d %H:%M") if account and account.last_webhook_at else "未受信"
+    key_state = "設定済み" if line_cipher() else "未設定（本番環境へLINE_CREDENTIALS_KEYが必要です）"
+    body = f'''<h1>LINE公式アカウント設定</h1><div class="tenant"><p>状態：<span class="badge">{status_text}</span>　連携中のお客様：<strong>{linked_count}名</strong></p>
+    <p>公式アカウント：<strong>{html.escape((account.bot_display_name or account.account_name) if account else tenant.name)}</strong>{f'（{html.escape(account.bot_basic_id)}）' if account and account.bot_basic_id else ''}</p>
+    <p>API接続確認：{verified_text}<br>Webhook最終受信：{webhook_text}<br>暗号鍵：{html.escape(key_state)}</p>
+    {f'<p class="error">直近エラー：{html.escape(account.last_error)}</p>' if account and account.last_error else ''}
+    <p>Webhook URL<br><code>{html.escape(webhook_url)}</code></p><p><small>LINE Official Account Manager／Developers ConsoleのWebhook URLへ設定してください。</small></p>
+    {f'<p><a class="button" href="{friend_url}" target="_blank" rel="noopener">LINEで友だち追加</a></p>' if friend_url else ''}</div>
     <form method="post"><label>公式アカウント名</label><input name="account_name" maxlength="150" value="{html.escape(account.account_name if account else tenant.name)}" required>
     <label>Channel ID</label><input name="channel_id" maxlength="100" value="{html.escape(account.channel_id or '') if account else ''}">
     <label>Channel secret</label><input type="password" name="channel_secret" autocomplete="new-password" placeholder="{('変更しない場合は空欄' if account else '必須')}">
     <label>Channel access token</label><textarea name="access_token" autocomplete="off" placeholder="{('変更しない場合は空欄' if account else '必須')}"></textarea>
     <label><input type="checkbox" name="active" value="true" style="width:auto" {'checked' if account and account.active else ''}> LINE連携を有効にする</label>
     <p><small>認証情報は暗号化して保存され、画面へ再表示しません。</small></p><button>LINE設定を保存</button></form>
+    {f'<form method="post" action="/family/line/manage/test"><button class="secondary">LINE APIの接続を確認</button></form>' if account else ''}
+    <h2>初期設定の手順</h2><ol><li>本番環境へ暗号鍵を設定</li><li>Channel secretと長期Channel access tokenを保存</li><li>上記Webhook URLをLINE Developersへ登録し、Webhookを有効化</li><li>「LINE APIの接続を確認」を実行</li><li>お客様がFAMILY画面から15分コードを発行して連携</li></ol>
     <h2>LINE配信履歴</h2><div style="overflow-x:auto"><table><tr><th>日時</th><th>種類</th><th>結果</th><th>エラー</th></tr>{delivery_rows or '<tr><td colspan="4">配信履歴はありません。</td></tr>'}</table></div>'''
     return layout("LINE公式アカウント設定", body, access[0])
 
@@ -4384,25 +4420,50 @@ def line_official_account_save(account_name: str = Form(...), channel_id: str = 
     return RedirectResponse("/family/line/manage", status_code=303)
 
 
+@app.post("/family/line/manage/test")
+def line_official_account_test(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.tenant_id == tenant.id))
+    if not account:
+        raise HTTPException(status_code=404, detail="LINE公式アカウント設定がありません")
+    info, error = line_bot_info(account)
+    if error or not info:
+        account.last_error, account.verified_at = f"API接続確認：{error or '応答を確認できません'}", None
+    else:
+        account.bot_display_name = info.get("displayName") or account.account_name
+        account.bot_basic_id = info.get("basicId") or None
+        account.verified_at, account.last_error = datetime.now(timezone.utc), None
+    account.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse("/family/line/manage", status_code=303)
+
+
 @app.post("/line/webhook/{webhook_key}")
 async def line_webhook(webhook_key: str, request: Request, x_line_signature: str | None = Header(None)):
     with SessionLocal() as session:
         account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.webhook_key == webhook_key, LineOfficialAccount.active.is_(True)))
-        if not account or not x_line_signature:
+        if not account:
             raise HTTPException(status_code=404)
+        if not x_line_signature:
+            account.last_error = "Webhook署名がありません"; session.commit()
+            raise HTTPException(status_code=401, detail="LINE署名を確認できません")
         raw_body = await request.body()
         try:
             channel_secret = line_decrypt(account.channel_secret_encrypted).encode()
         except RuntimeError:
+            account.last_error = "Webhook認証情報を復号できません"; session.commit()
             raise HTTPException(status_code=503, detail="LINE設定を復号できません")
         expected = base64.b64encode(hmac.new(channel_secret, raw_body, hashlib.sha256).digest()).decode()
         if not hmac.compare_digest(expected, x_line_signature):
+            account.last_error = "Webhook署名が一致しません"; session.commit()
             raise HTTPException(status_code=401, detail="LINE署名を確認できません")
         try:
             payload = json.loads(raw_body)
         except json.JSONDecodeError:
+            account.last_error = "WebhookイベントのJSONが不正です"; session.commit()
             raise HTTPException(status_code=400, detail="LINEイベントを読み取れません")
         now = datetime.now(timezone.utc)
+        account.last_webhook_at, account.last_error = now, None
         for event in payload.get("events", []):
             source = event.get("source") or {}; line_user_id = source.get("userId")
             if not line_user_id or source.get("type") != "user":
