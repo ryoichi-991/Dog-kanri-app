@@ -724,6 +724,27 @@ class HealthSharingStaticTests(unittest.TestCase):
         for field in ("health_vaccinations", "health_checkups", "health_medications", "health_followups"):
             self.assertIn(f"ADD COLUMN IF NOT EXISTS {field}", segment)
 
+    def test_scheduler_delivers_enabled_health_email_and_push(self):
+        scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
+        segment = ast.get_source_segment(TEXT, scheduler)
+        for field in ("health_vaccinations", "health_checkups", "health_medications", "health_followups"):
+            self.assertIn(field, segment)
+        for helper in ("family_vaccine_due_items", "family_checkup_due_items", "family_medication_due_items", "family_disease_due_items"):
+            self.assertIn(helper, segment)
+        self.assertIn("family_health_notification_timing", segment)
+        self.assertIn('queue_email(session, owner.email, "health_reminder"', segment)
+        self.assertIn("send_web_push", segment)
+        self.assertIn("実施済みにする", segment)
+
+    def test_health_delivery_dedupes_each_schedule_and_timing(self):
+        scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
+        segment = ast.get_source_segment(TEXT, scheduler)
+        self.assertIn("hashlib.sha256(title.encode()).hexdigest()[:12]", segment)
+        for value in ("owner.id", "dog.id", "category", "due_on.isoformat()", "days", "title_key"):
+            self.assertIn(value, segment)
+        self.assertIn('f"email:{dedupe}"', segment)
+        self.assertIn('f"push:{dedupe}"', segment)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1387,14 +1387,18 @@ def dispatch_scheduled_emails():
         session.commit()
         settings = session.scalars(select(FamilyNotificationSetting).where(
             (FamilyNotificationSetting.email_enabled.is_(True) | FamilyNotificationSetting.push_enabled.is_(True)),
-            FamilyNotificationSetting.anniversaries.is_(True)
+            (FamilyNotificationSetting.anniversaries.is_(True)
+             | FamilyNotificationSetting.health_vaccinations.is_(True)
+             | FamilyNotificationSetting.health_checkups.is_(True)
+             | FamilyNotificationSetting.health_medications.is_(True)
+             | FamilyNotificationSetting.health_followups.is_(True))
         )).all()
         base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
         for setting in settings:
             owner = session.get(User, setting.user_id)
             if not owner or not owner.active:
                 continue
-            for dog, event_type, event_date, days in family_anniversary_notification_items(owner, session):
+            for dog, event_type, event_date, days in (family_anniversary_notification_items(owner, session) if setting.anniversaries else []):
                 label = "誕生日" if event_type == "birthday" else "お迎え記念日"
                 timing = "本日" if days == 0 else ("明日" if days == 1 else "7日後")
                 if setting.email_enabled:
@@ -1403,6 +1407,25 @@ def dispatch_scheduled_emails():
                                 dog.tenant_id, owner.id, f"anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}")
                 send_web_push(owner.id, "anniversaries", f"{dog.call_name}の{label}が{timing}です", event_date.strftime("%Y年%m月%d日"),
                               "/family/anniversaries", f"push:anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}", session)
+            health_groups = [
+                ("health_vaccinations", "ワクチン", "vaccination", family_vaccine_due_items(owner, session)),
+                ("health_checkups", "健診", "checkup", family_checkup_due_items(owner, session)),
+                ("health_medications", "投薬", "medication", family_medication_due_items(owner, session)),
+                ("health_followups", "再診・経過確認", "disease", family_disease_due_items(owner, session)),
+            ]
+            for setting_name, label, category, raw_items in health_groups:
+                if not getattr(setting, setting_name, False):
+                    continue
+                for dog, title, due_on, days in family_health_notification_timing(raw_items):
+                    timing = f"{days}日後" if days > 1 else ("明日" if days == 1 else ("本日" if days == 0 else f"{abs(days)}日超過"))
+                    subject = f"【ESTRELLA FAMILY】{dog.call_name}の{label}予定が{timing}です"
+                    message = f"{owner.name} 様\n\n{dog.call_name}の{label}予定をご確認ください。\n内容：{title}\n予定日：{due_on.strftime('%Y年%m月%d日')}（{timing}）\n\n実施後は健康管理画面で「実施済みにする」を押してください。\n{base_url}/family/dogs/{dog.id}/health/{category}"
+                    title_key = hashlib.sha256(title.encode()).hexdigest()[:12]
+                    dedupe = f"health:{owner.id}:{dog.id}:{category}:{due_on.isoformat()}:{days}:{title_key}"
+                    if setting.email_enabled:
+                        queue_email(session, owner.email, "health_reminder", subject, message, dog.tenant_id, owner.id, f"email:{dedupe}")
+                    send_web_push(owner.id, setting_name, subject.removeprefix("【ESTRELLA FAMILY】"),
+                                  f"{title}／予定日 {due_on.strftime('%Y年%m月%d日')}", f"/family/dogs/{dog.id}/health/{category}", f"push:{dedupe}", session)
         session.commit()
 
 
