@@ -4687,6 +4687,8 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
         OwnerHealthRecord.dog_id == dog.id, OwnerHealthRecord.tenant_id == ownership.tenant_id
     ).order_by(OwnerHealthRecord.recorded_on.desc(), OwnerHealthRecord.id.desc())).all()
     owner_category_labels = {"weight": "体重", "vaccination": "ワクチン", "checkup": "健診", "medication": "投薬", "disease": "病歴", "food": "フード", "other": "その他"}
+    category_counts = {key: sum(1 for item in owner_records if item.category == key) for key in owner_category_labels}
+    category_counts["vaccination"] += len(shared_ids.get("vaccination", [])); category_counts["medication"] += len(shared_ids.get("medication", [])); category_counts["disease"] += len(shared_ids.get("disease", [])); category_counts["food"] += len(shared_ids.get("food", []))
 
     entries: list[tuple[date, str, str, str]] = []
     shared_checkup_files = ""
@@ -4695,6 +4697,7 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
             HealthRecord.id.in_(shared_ids["health"]), HealthRecord.dog_id == dog.id
         )).all():
             label = {"weight": "体重", "checkup": "健康診断", "treatment": "診療"}.get(item.category, "健康記録")
+            if item.category in {"weight", "checkup"}: category_counts[item.category] += 1
             detail_parts = [f"{item.weight_kg} kg"] if item.weight_kg is not None else []
             if item.category == "checkup":
                 test_labels = [name for enabled, name in [(item.physical_exam, "触診"), (item.blood_test, "血液検査"), (item.ultrasound, "エコー"), (item.chest_xray, "胸部X線")] if enabled]
@@ -4761,17 +4764,103 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
         else:
             action = '<span class="badge">変更不可</span>'
         owner_edit_rows += f'''<tr><td>{item.recorded_on}</td><td>{owner_category_labels.get(item.category, "その他")}</td><td>{html.escape(item.title)}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}</td><td>{'共有中' if item.share_to_breeder else '非共有'}</td><td>{action}</td></tr>'''
+    category_cards = "".join(f'''<a class="module" href="/family/dogs/{dog.id}/health/{key}"><h3>{label}管理</h3><p>記録 {category_counts.get(key, 0)}件</p></a>''' for key, label in owner_category_labels.items() if key != "other")
     body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
-    <h2>健康記録を追加</h2><form method="post" action="/family/dogs/{dog.id}/health/records"><div class="grid"><div><label>カテゴリー</label><select name="category">{''.join(f'<option value="{key}">{label}</option>' for key, label in owner_category_labels.items())}</select></div><div><label>記録日</label><input type="date" name="recorded_on" value="{date.today()}" required></div><div><label>記録内容</label><input name="title" maxlength="150" placeholder="例：体重測定、狂犬病ワクチン" required></div><div><label>数値・補足</label><input name="value" maxlength="150" placeholder="例：7.2kg、1日80g"></div></div><label>詳細・メモ</label><textarea name="details" placeholder="体調、病院名、薬剤名など"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true"> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。共有後もブリーダーは閲覧のみで、変更・削除はできません。</small><button>健康記録を追加</button></form>
-    <h2>引継ぎ・継続健康記録</h2>
+    <div class="grid">{category_cards}</div>
+    <h2>最近の健康記録</h2>
     <table><tr><th>日付</th><th>種類</th><th>内容</th><th>メモ</th></tr>{rows or '<tr><td colspan="4">共有されている健康記録はまだありません。</td></tr>'}</table>
     <h2>オーナーが入力した記録の管理</h2><div style="overflow-x:auto"><table><tr><th>記録日</th><th>カテゴリー</th><th>内容</th><th>入力者</th><th>ブリーダー共有</th><th>操作</th></tr>{owner_edit_rows or '<tr><td colspan="6">オーナーが入力した記録はまだありません。</td></tr>'}</table></div>
     {f'<h2>共有された検査結果</h2><p>{shared_checkup_files}</p>' if shared_checkup_files else ''}
     {f'<h2>共有された証明書</h2><p>{shared_certificates}</p>' if shared_certificates else ''}
     <p><small>緊急時や治療判断にはこの画面だけを使わず、犬舎または動物病院へご確認ください。</small></p>'''
     return family_layout(f"{dog.call_name}のうちの子健康管理｜FAMILY", body, user, session)
+
+
+@app.get("/family/dogs/{dog_id}/health/{category}", response_class=HTMLResponse)
+def family_owner_health_category_page(dog_id: int, category: str, user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, dog = owned; tenant = session.get(Tenant, ownership.tenant_id)
+    labels = {"weight": "体重", "vaccination": "ワクチン", "checkup": "健診", "medication": "投薬", "disease": "病歴", "food": "フード"}
+    if category not in labels: raise HTTPException(status_code=404, detail="健康管理カテゴリーが見つかりません")
+    records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.tenant_id == ownership.tenant_id, OwnerHealthRecord.dog_id == dog.id, OwnerHealthRecord.category == category).order_by(OwnerHealthRecord.recorded_on.desc(), OwnerHealthRecord.id.desc())).all()
+    shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id == dog.id, HealthRecordShare.owner_visible.is_(True))).all()
+    ids: dict[str, list[int]] = {}
+    for share in shares: ids.setdefault(share.record_type, []).append(share.record_id)
+    inherited: list[tuple[date, str, str]] = []
+    if category in {"weight", "checkup"} and ids.get("health"):
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(ids["health"]), HealthRecord.dog_id == dog.id, HealthRecord.category == category)).all():
+            value = f"{item.weight_kg}kg" if category == "weight" and item.weight_kg is not None else (item.result_summary or "健診記録")
+            inherited.append((item.record_date, value, item.notes or ""))
+    if category == "vaccination" and ids.get("vaccination"):
+        for item in session.scalars(select(Vaccination).where(Vaccination.id.in_(ids["vaccination"]), Vaccination.dog_id == dog.id)).all(): inherited.append((item.administered_on, item.vaccine_name, f"次回：{item.next_due_on}" if item.next_due_on else (item.notes or "")))
+    if category == "medication" and ids.get("medication"):
+        for item in session.scalars(select(Medication).where(Medication.id.in_(ids["medication"]), Medication.dog_id == dog.id)).all(): inherited.append((item.administered_on, item.medicine_name, item.owner_notes or ""))
+    if category == "disease" and ids.get("disease"):
+        for item in session.scalars(select(DiseaseHistory).where(DiseaseHistory.id.in_(ids["disease"]), DiseaseHistory.dog_id == dog.id)).all(): inherited.append((item.diagnosed_on or date.min, item.disease_name, item.owner_notes or ""))
+    if category == "food" and ids.get("food"):
+        for item in session.scalars(select(FoodHistory).where(FoodHistory.id.in_(ids["food"]), FoodHistory.dog_id == dog.id)).all(): inherited.append((item.started_on, item.name, item.owner_notes or ""))
+    inherited.sort(key=lambda row: row[0], reverse=True)
+    inherited_rows = "".join(f'<tr><td>{day if day != date.min else "-"}</td><td>{html.escape(title)}</td><td style="white-space:pre-wrap">{html.escape(note or "-")}</td><td><span class="badge">ブリーダー記録・閲覧のみ</span></td></tr>' for day, title, note in inherited)
+    owner_rows = ""
+    for item in records:
+        owner = session.get(User, item.owner_id)
+        if item.owner_id == user.id:
+            action = f'''<details><summary>編集</summary><form method="post" action="/family/dogs/{dog.id}/health/records/{item.id}"><input type="hidden" name="category" value="{category}"><label>記録日</label><input type="date" name="recorded_on" value="{item.recorded_on}" required><label>記録内容</label><input name="title" value="{html.escape(item.title)}" required maxlength="150"><label>数値・補足</label><input name="value" value="{html.escape(item.value or '')}" maxlength="150"><label>詳細・メモ</label><textarea name="details">{html.escape(item.details or '')}</textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true" {'checked' if item.share_to_breeder else ''}> ブリーダーへ共有する</label><button>変更を保存</button></form></details>'''
+        else: action = '<span class="badge">過去オーナー記録・変更不可</span>'
+        owner_rows += f'''<tr><td>{item.recorded_on}</td><td>{html.escape(item.title)}{f" ／ {html.escape(item.value)}" if item.value else ""}</td><td style="white-space:pre-wrap">{html.escape(item.details or "-")}</td><td>{html.escape(owner.name if owner else "過去のオーナー")}<br>{'ブリーダー共有中' if item.share_to_breeder else 'ブリーダー非共有'}<br>{action}</td></tr>'''
+    forms = {
+        "weight": '<div class="grid"><div><label>測定日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0.01" name="weight_kg" required></div><div><label>健康状態</label><select name="condition"><option>良好</option><option>少し悪い</option><option>悪い</option></select></div></div>',
+        "vaccination": '<div class="grid"><div><label>接種日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>子犬期の接種順（任意）</label><select name="dose"><option value="">成犬・入力不要</option><option>1回目</option><option>2回目</option><option>3回目</option><option>追加接種</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div>',
+        "checkup": '<div class="grid"><div><label>受診日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>結果</label><select name="result"><option>異常なし</option><option>経過観察</option><option>再検査</option><option>治療・受診が必要</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>健診項目</label><div class="grid"><label><input style="width:auto" type="checkbox" name="physical_exam"> 触診</label><label><input style="width:auto" type="checkbox" name="blood_test"> 血液検査</label><label><input style="width:auto" type="checkbox" name="ultrasound"> エコー</label><label><input style="width:auto" type="checkbox" name="chest_xray"> 胸部X線</label></div>',
+        "medication": '<div class="grid"><div><label>記録日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>薬剤名</label><input name="medicine_name" required></div><div><label>1回量</label><input name="dosage"></div><div><label>投薬頻度</label><input name="frequency"></div><div><label>状態</label><select name="record_status"><option>単回</option><option>継続中</option><option>終了</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div></div>',
+        "disease": '<div class="grid"><div><label>診断日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>疾患名</label><input name="disease_name" required></div><div><label>状態</label><select name="record_status"><option>治療中</option><option>経過観察</option><option>完治</option><option>慢性</option></select></div><div><label>動物病院</label><input name="clinic"></div><div><label>次回診察日</label><input type="date" name="next_due_on"></div></div>',
+        "food": '<div class="grid"><div><label>利用開始日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>フード名</label><input name="food_name" required></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>状態</label><select name="record_status"><option>利用中</option><option>終了</option></select></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div>'
+    }
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">うちの子健康管理へ戻る</a><h1>{html.escape(dog.call_name)}の{labels[category]}管理</h1><p>対象犬は{html.escape(dog.call_name)}に固定されています。</p>
+    <h2>{labels[category]}記録を追加</h2><form method="post" action="/family/dogs/{dog.id}/health/{category}/records">{forms[category]}<label>詳細・メモ</label><textarea name="details"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true"> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。ブリーダーは閲覧のみで変更・削除できません。</small><button>{labels[category]}記録を追加</button></form>
+    <h2>ブリーダーから引き継いだ記録</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>内容</th><th>メモ</th><th>権限</th></tr>{inherited_rows or '<tr><td colspan="4">共有された記録はまだありません。</td></tr>'}</table></div>
+    <h2>オーナーが継続入力した記録</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>内容</th><th>詳細</th><th>入力者・操作</th></tr>{owner_rows or '<tr><td colspan="4">オーナー記録はまだありません。</td></tr>'}</table></div>'''
+    return family_layout(f"{dog.call_name}の{labels[category]}管理｜FAMILY", body, user, session)
+
+
+@app.post("/family/dogs/{dog_id}/health/{category}/records")
+def family_owner_health_category_create(dog_id: int, category: str, recorded_on: str = Form(...), weight_kg: str = Form(""), condition: str = Form(""), vaccine_name: str = Form(""), dose: str = Form(""), next_due_on: str = Form(""), clinic: str = Form(""), result: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), medicine_name: str = Form(""), dosage: str = Form(""), frequency: str = Form(""), record_status: str = Form(""), disease_name: str = Form(""), food_name: str = Form(""), amount_g: str = Form(""), times_per_day: str = Form(""), ended_on: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, dog = owned
+    if category not in {"weight", "vaccination", "checkup", "medication", "disease", "food"}: raise HTTPException(status_code=404, detail="健康管理カテゴリーが見つかりません")
+    extras = []
+    if category == "weight":
+        try: weight = float(weight_kg)
+        except ValueError: raise HTTPException(status_code=400, detail="体重を確認してください")
+        if weight <= 0: raise HTTPException(status_code=400, detail="体重を確認してください")
+        title, value = "体重測定", f"{weight:g}kg"; extras = [f"健康状態：{condition}" if condition else ""]
+    elif category == "vaccination":
+        if not vaccine_name.strip(): raise HTTPException(status_code=400, detail="ワクチン名を入力してください")
+        title, value = vaccine_name.strip(), dose.strip(); extras = [f"次回予定：{next_due_on}" if next_due_on else "", f"動物病院：{clinic.strip()}" if clinic.strip() else ""]
+    elif category == "checkup":
+        tests = [name for enabled, name in [(physical_exam, "触診"), (blood_test, "血液検査"), (ultrasound, "エコー"), (chest_xray, "胸部X線")] if enabled]
+        if not tests: raise HTTPException(status_code=400, detail="健診項目を1つ以上選択してください")
+        title, value = "健康診断", result.strip(); extras = ["検査：" + "・".join(tests), f"次回予定：{next_due_on}" if next_due_on else "", f"動物病院：{clinic.strip()}" if clinic.strip() else ""]
+    elif category == "medication":
+        if not medicine_name.strip(): raise HTTPException(status_code=400, detail="薬剤名を入力してください")
+        title, value = medicine_name.strip(), record_status.strip(); extras = [f"1回量：{dosage.strip()}" if dosage.strip() else "", f"頻度：{frequency.strip()}" if frequency.strip() else "", f"次回予定：{next_due_on}" if next_due_on else ""]
+    elif category == "disease":
+        if not disease_name.strip(): raise HTTPException(status_code=400, detail="疾患名を入力してください")
+        title, value = disease_name.strip(), record_status.strip(); extras = [f"動物病院：{clinic.strip()}" if clinic.strip() else "", f"次回診察：{next_due_on}" if next_due_on else ""]
+    else:
+        if not food_name.strip(): raise HTTPException(status_code=400, detail="フード名を入力してください")
+        try: amount = float(amount_g) if amount_g else None; times = int(times_per_day) if times_per_day else None
+        except ValueError: raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
+        if (amount is not None and amount <= 0) or (times is not None and not 1 <= times <= 10): raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
+        title, value = food_name.strip(), record_status.strip(); extras = [f"1日量：{amount:g}g" if amount is not None else "", f"1日{times}回" if times else "", f"終了日：{ended_on}" if ended_on else ""]
+    combined = "\n".join(part for part in extras + [details.strip()] if part)
+    day = validate_owner_health_record(category, recorded_on, title, value, combined)
+    session.add(OwnerHealthRecord(tenant_id=ownership.tenant_id, dog_id=dog.id, owner_id=user.id, category=category, recorded_on=day, title=title, value=value or None, details=combined or None, share_to_breeder=share_to_breeder)); session.commit()
+    return RedirectResponse(f"/family/dogs/{dog.id}/health/{category}", status_code=303)
 
 
 def validate_owner_health_record(category: str, recorded_on: str, title: str, value: str, details: str):

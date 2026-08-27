@@ -286,6 +286,40 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("owner_id=user.id", segment)
         self.assertIn("tenant_id=ownership.tenant_id", segment)
 
+    def test_owner_health_top_matches_breeder_six_card_structure(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn('/health/{key}', segment)
+        for label in ("体重", "ワクチン", "健診", "投薬", "病歴", "フード"):
+            self.assertIn(label, segment)
+        self.assertIn("category_cards", segment)
+        self.assertNotIn("<h2>健康記録を追加</h2>", segment)
+
+    def test_owner_category_page_has_fixed_dog_and_inherited_records(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("対象犬は", segment)
+        self.assertIn("に固定されています", segment)
+        self.assertIn("ブリーダー記録・閲覧のみ", segment)
+        self.assertNotIn("対象犬を検索", segment)
+        self.assertIn("過去オーナー記録・変更不可", segment)
+
+    def test_owner_category_forms_have_breeder_equivalent_fields(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for field in ("weight_kg", "vaccine_name", "physical_exam", "blood_test", "ultrasound", "chest_xray", "medicine_name", "disease_name", "food_name", "amount_g", "times_per_day"):
+            self.assertIn(f'name="{field}"', segment)
+        self.assertIn("ブリーダーへ共有する", segment)
+        self.assertIn("共有先：", segment)
+
+    def test_owner_category_create_validates_ownership_and_category_values(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("健診項目を1つ以上選択してください", segment)
+        self.assertIn("給与量・回数を確認してください", segment)
+        self.assertIn("owner_id=user.id", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
