@@ -4825,6 +4825,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     search_form = f'''<form method="get" action="/family/dogs/{dog.id}/health"><div class="grid"><div><label>カテゴリー</label><select name="health_category">{filter_options}</select></div><div><label>開始日</label><input type="date" name="date_from" value="{html.escape(date_from)}"></div><div><label>終了日</label><input type="date" name="date_to" value="{html.escape(date_to)}"></div><div><label>キーワード</label><input type="search" name="keyword" value="{html.escape(keyword[:100])}" maxlength="100" placeholder="薬剤名・病名・フード名など"></div></div><button>記録を検索</button> <a class="button secondary" href="/family/dogs/{dog.id}/health">条件をクリア</a></form><p><strong>{len(filtered_entries)}件</strong>／全{len(entries)}件を表示</p>'''
     report_query = urlencode({key: value for key, value in {"health_category": health_category, "date_from": date_from, "date_to": date_to, "keyword": keyword[:100]}.items() if value})
     report_url = f"/family/dogs/{dog.id}/health/report.pdf" + (f"?{report_query}" if report_query else "")
+    csv_url = f"/family/dogs/{dog.id}/health/report.csv" + (f"?{report_query}" if report_query else "")
     owner_edit_rows = ""
     for item in owner_records:
         owner = session.get(User, item.owner_id)
@@ -4863,7 +4864,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
     due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
     dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="{report_url}">表示条件でPDF出力</a>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>
@@ -4934,6 +4935,47 @@ def family_dog_health_report_pdf(dog_id: int, health_category: str = "", date_fr
     pdf.save()
     filename = f"health-report-dog-{dog.id}.pdf"
     return Response(content=output.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store"})
+
+
+@app.get("/family/dogs/{dog_id}/health/report.csv")
+def family_dog_health_report_csv(dog_id: int, health_category: str = "", date_from: str = "", date_to: str = "", keyword: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, dog = owned
+    allowed_filters = {"", "weight", "vaccination", "checkup", "medication", "disease", "food"}
+    if health_category not in allowed_filters: raise HTTPException(status_code=400, detail="カテゴリーを確認してください")
+    try:
+        start_filter = date.fromisoformat(date_from) if date_from else None; end_filter = date.fromisoformat(date_to) if date_to else None
+    except ValueError: raise HTTPException(status_code=400, detail="検索期間を確認してください")
+    if start_filter and end_filter and end_filter < start_filter: raise HTTPException(status_code=400, detail="終了日は開始日以降にしてください")
+    shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id == dog.id, HealthRecordShare.owner_visible.is_(True))).all()
+    ids: dict[str, list[int]] = {}
+    for share in shares: ids.setdefault(share.record_type, []).append(share.record_id)
+    rows: list[tuple[date, str, str, str]] = []
+    if ids.get("health"):
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(ids["health"]), HealthRecord.dog_id == dog.id)).all():
+            label = {"weight": "体重", "checkup": "健康診断", "treatment": "診療"}.get(item.category, "健康記録")
+            detail = f"{item.weight_kg:g}kg" if item.weight_kg is not None else (item.result_summary or "記録あり")
+            rows.append((item.record_date, label, detail, item.notes or ""))
+    specs = [
+        ("vaccination", Vaccination, "administered_on", "ワクチン", lambda x: x.vaccine_name, lambda x: f"次回予定：{x.next_due_on or '未設定'}"),
+        ("medication", Medication, "administered_on", "投薬", lambda x: x.medicine_name, lambda x: f"用量：{x.dosage or '未登録'}／頻度：{x.frequency or '未登録'}／{x.owner_notes or ''}"),
+        ("disease", DiseaseHistory, "diagnosed_on", "病歴", lambda x: x.disease_name, lambda x: x.owner_notes or ""),
+        ("food", FoodHistory, "started_on", "フード", lambda x: x.name, lambda x: f"1日量：{f'{x.amount_g:g}g' if x.amount_g is not None else '未登録'}／{f'1日{x.times_per_day}回' if x.times_per_day else '回数未登録'}／{x.owner_notes or ''}"),
+    ]
+    for key, model, date_field, label, title_of, note_of in specs:
+        if ids.get(key):
+            for item in session.scalars(select(model).where(model.id.in_(ids[key]), model.dog_id == dog.id)).all(): rows.append((getattr(item, date_field) or date.min, label, title_of(item), note_of(item)))
+    owner_labels = {"weight": "体重", "vaccination": "ワクチン", "checkup": "健康診断", "medication": "投薬", "disease": "病歴", "food": "フード", "other": "その他"}
+    for item in session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.tenant_id == ownership.tenant_id, OwnerHealthRecord.dog_id == dog.id)).all(): rows.append((item.recorded_on, owner_labels.get(item.category, "その他"), f"{item.title}／{item.value or ''}", item.details or ""))
+    filter_labels = {"weight": ("体重",), "vaccination": ("ワクチン",), "checkup": ("健康診断", "健診"), "medication": ("投薬",), "disease": ("病歴",), "food": ("フード",)}
+    normalized_keyword = keyword.strip().lower()[:100]
+    rows = [row for row in rows if (not health_category or row[1] in filter_labels[health_category]) and (not start_filter or row[0] != date.min and row[0] >= start_filter) and (not end_filter or row[0] != date.min and row[0] <= end_filter) and (not normalized_keyword or normalized_keyword in f"{row[1]} {row[2]} {row[3]}".lower())]
+    rows.sort(key=lambda row: row[0], reverse=True)
+    output = io.StringIO(newline=""); writer = csv.writer(output); writer.writerow(["愛犬", "日付", "カテゴリー", "内容", "詳細・メモ"])
+    for day, label, detail, note in rows: writer.writerow([dog.call_name, day if day != date.min else "", label, detail, note])
+    filename = f"health-report-dog-{dog.id}.csv"
+    return Response(content="\ufeff" + output.getvalue(), media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store"})
 
 
 @app.get("/family/dogs/{dog_id}/health/{category}", response_class=HTMLResponse)

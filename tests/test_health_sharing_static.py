@@ -582,6 +582,35 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("検索期間を確認してください", segment)
         self.assertIn("終了日は開始日以降にしてください", segment)
 
+    def test_owner_health_dashboard_links_to_filtered_csv(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("csv_url", segment)
+        self.assertIn("表示条件でCSV出力", segment)
+        self.assertIn("/health/report.csv", segment)
+        self.assertIn("report_query", segment)
+
+    def test_owner_health_csv_requires_ownership_and_private_cache(self):
+        report = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_report_csv")
+        segment = ast.get_source_segment(TEXT, report)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("閲覧できる愛犬が見つかりません", segment)
+        self.assertIn('media_type="text/csv; charset=utf-8"', segment)
+        self.assertIn('"Cache-Control": "private, no-store"', segment)
+        self.assertIn('"\\ufeff" + output.getvalue()', segment)
+
+    def test_owner_health_csv_contains_all_categories_and_filters(self):
+        report = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_report_csv")
+        segment = ast.get_source_segment(TEXT, report)
+        for model in ("HealthRecord", "Vaccination", "Medication", "DiseaseHistory", "FoodHistory", "OwnerHealthRecord"):
+            self.assertIn(model, segment)
+        for field in ("health_category", "date_from", "date_to", "keyword"):
+            self.assertIn(field, segment)
+        self.assertIn("HealthRecordShare.owner_visible.is_(True)", segment)
+        self.assertIn("normalized_keyword", segment)
+        self.assertIn("writer.writerow", segment)
+        self.assertNotIn("microchip_no", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
