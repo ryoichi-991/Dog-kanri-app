@@ -395,6 +395,32 @@ class HealthSharingStaticTests(unittest.TestCase):
         notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
         self.assertIn("family_checkup_due_items", ast.get_source_segment(TEXT, notifications))
 
+    def test_owner_medication_has_status_summary_and_complete_fields(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("最終投薬記録", "継続中", "次回予定", "期限間近・超過", "目的・対象症状", "開始日", "終了日", "動物病院"):
+            self.assertIn(label, segment)
+        for field in ("medication_type", "purpose", "started_on", "ended_on"):
+            self.assertIn(f'name="{field}"', segment)
+
+    def test_owner_medication_due_items_appear_in_notifications(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_medication_due_items")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn('OwnerHealthRecord.category == "medication"', segment)
+        self.assertIn('HealthRecordShare.record_type == "medication"', segment)
+        self.assertIn('Medication.status != "completed"', segment)
+        self.assertIn("-90 <= days <= 30", segment)
+        notifications = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notifications")
+        self.assertIn("family_medication_due_items", ast.get_source_segment(TEXT, notifications))
+
+    def test_breeder_medication_validates_dates_and_shows_overdue(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_medications_page")
+        self.assertIn("期限超過", ast.get_source_segment(TEXT, page))
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "medication_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("投薬日を確認してください", segment)
+        self.assertIn("終了日は開始日以降にしてください", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
