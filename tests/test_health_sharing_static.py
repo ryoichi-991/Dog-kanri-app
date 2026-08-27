@@ -745,6 +745,99 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('f"email:{dedupe}"', segment)
         self.assertIn('f"push:{dedupe}"', segment)
 
+    def test_line_credentials_are_encrypted_and_never_rendered(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LineOfficialAccount")
+        save = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_save")
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_manage")
+        self.assertIn("channel_secret_encrypted", ast.get_source_segment(TEXT, model))
+        self.assertIn("access_token_encrypted", ast.get_source_segment(TEXT, model))
+        self.assertIn("line_encrypt", ast.get_source_segment(TEXT, save))
+        self.assertNotIn("line_decrypt", ast.get_source_segment(TEXT, page))
+        self.assertIn("認証情報は暗号化して保存", ast.get_source_segment(TEXT, page))
+
+    def test_line_accounts_and_links_are_tenant_scoped(self):
+        account = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LineOfficialAccount")
+        link = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FamilyLineLink")
+        self.assertIn("tenant_id", ast.get_source_segment(TEXT, account))
+        segment = ast.get_source_segment(TEXT, link)
+        self.assertIn('UniqueConstraint("tenant_id", "user_id")', segment)
+        self.assertIn('UniqueConstraint("tenant_id", "line_user_id")', segment)
+
+    def test_line_link_code_requires_active_ownership_and_expires(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_line_token_create")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("DogOwnership.user_id == user.id", segment)
+        self.assertIn("DogOwnership.active.is_(True)", segment)
+        self.assertIn("LineOfficialAccount.active.is_(True)", segment)
+        self.assertIn("timedelta(minutes=15)", segment)
+        self.assertIn("token_hash(raw_token)", segment)
+
+    def test_line_webhook_verifies_signature_before_processing(self):
+        route = next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "line_webhook")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("hmac.new(channel_secret, raw_body, hashlib.sha256)", segment)
+        self.assertIn("hmac.compare_digest", segment)
+        self.assertIn("status_code=401", segment)
+        self.assertIn("FamilyLineLinkToken.expires_at > now", segment)
+        self.assertIn("token.used_at = now", segment)
+
+    def test_line_link_prevents_cross_user_reassignment(self):
+        route = next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "line_webhook")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("FamilyLineLink.user_id != token.user_id", segment)
+        self.assertIn("if token and not conflict", segment)
+
+    def test_line_unlink_requires_owner_and_confirmation(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_line_unlink")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("confirm_unlink", segment)
+        self.assertIn("DogOwnership.user_id == user.id", segment)
+        self.assertIn("FamilyLineLink.user_id == user.id", segment)
+        self.assertIn("link.active, link.unlinked_at = False", segment)
+
+    def test_line_notification_is_opt_in_and_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FamilyNotificationSetting")
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notification_settings_page")
+        save = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_notification_settings_save")
+        self.assertIn("line_enabled", ast.get_source_segment(TEXT, model))
+        self.assertIn('name="line_enabled"', ast.get_source_segment(TEXT, page))
+        self.assertIn("setting.line_enabled = line_enabled", ast.get_source_segment(TEXT, save))
+
+    def test_line_push_requires_setting_account_and_owner_link(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "send_line_push")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("setting.line_enabled", segment)
+        self.assertIn("LineOfficialAccount.tenant_id == tenant_id", segment)
+        self.assertIn("FamilyLineLink.tenant_id == tenant_id", segment)
+        self.assertIn("FamilyLineLink.user_id == user_id", segment)
+        self.assertIn("FamilyLineLink.active.is_(True)", segment)
+        self.assertIn("https://api.line.me/v2/bot/message/push", segment)
+
+    def test_line_deliveries_are_deduped_and_audited(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LineDelivery")
+        send = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "send_line_push")
+        segment = ast.get_source_segment(TEXT, send)
+        self.assertIn("dedupe_key", ast.get_source_segment(TEXT, model))
+        self.assertIn('delivery.status == "sent"', segment)
+        self.assertIn('delivery.status, delivery.error, delivery.sent_at = "sent"', segment)
+        self.assertIn('delivery.status, delivery.error = "failed"', segment)
+        self.assertIn("record_operation", segment)
+
+    def test_scheduler_sends_anniversary_and_health_to_line(self):
+        scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
+        segment = ast.get_source_segment(TEXT, scheduler)
+        self.assertIn("FamilyNotificationSetting.line_enabled.is_(True)", segment)
+        self.assertGreaterEqual(segment.count("send_line_push"), 2)
+        self.assertIn('f"line:anniversary:', segment)
+        self.assertIn('f"line:{dedupe}"', segment)
+
+    def test_line_manage_page_shows_delivery_history_without_secrets(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_manage")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("LineDelivery.tenant_id == tenant.id", segment)
+        self.assertIn("LINE配信履歴", segment)
+        self.assertNotIn("line_decrypt", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

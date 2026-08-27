@@ -3,6 +3,7 @@ import base64
 import calendar
 import csv
 import hashlib
+import hmac
 import html
 import io
 import json
@@ -18,6 +19,8 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from urllib.parse import quote, urlencode
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 
@@ -35,6 +38,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfgen import canvas
+from cryptography.fernet import Fernet, InvalidToken
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://app:app@db:5432/Dog_kanri_app")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
@@ -780,6 +784,7 @@ class FamilyNotificationSetting(Base):
     health_checkups: Mapped[bool] = mapped_column(Boolean, default=True)
     health_medications: Mapped[bool] = mapped_column(Boolean, default=True)
     health_followups: Mapped[bool] = mapped_column(Boolean, default=True)
+    line_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     email_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     push_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -804,6 +809,57 @@ class FamilyPushReceipt(Base):
     dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class LineOfficialAccount(Base):
+    __tablename__ = "line_official_accounts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), unique=True, index=True)
+    account_name: Mapped[str] = mapped_column(String(150))
+    channel_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    channel_secret_encrypted: Mapped[str] = mapped_column(Text)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    webhook_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FamilyLineLink(Base):
+    __tablename__ = "family_line_links"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id"), UniqueConstraint("tenant_id", "line_user_id"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    line_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    unlinked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FamilyLineLinkToken(Base):
+    __tablename__ = "family_line_link_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class LineDelivery(Base):
+    __tablename__ = "line_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    category: Mapped[str] = mapped_column(String(40), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FamilyBackupAudit(Base):
@@ -995,6 +1051,72 @@ def email_notification_allowed(user: User, category: str, session: Session) -> b
     return bool(setting.email_enabled and getattr(setting, category, False))
 
 
+def line_cipher() -> Fernet | None:
+    raw_key = os.environ.get("LINE_CREDENTIALS_KEY", "").strip().encode()
+    try:
+        return Fernet(raw_key) if raw_key else None
+    except (ValueError, TypeError):
+        return None
+
+
+def line_encrypt(value: str) -> str:
+    cipher = line_cipher()
+    if not cipher:
+        raise HTTPException(status_code=503, detail="LINE認証情報の暗号鍵が設定されていません")
+    return cipher.encrypt(value.encode()).decode()
+
+
+def line_decrypt(value: str) -> str:
+    cipher = line_cipher()
+    if not cipher:
+        raise RuntimeError("LINE credentials key is unavailable")
+    try:
+        return cipher.decrypt(value.encode()).decode()
+    except InvalidToken as exc:
+        raise RuntimeError("LINE credentials could not be decrypted") from exc
+
+
+def line_reply(account: LineOfficialAccount, reply_token: str, message: str) -> bool:
+    try:
+        access_token = line_decrypt(account.access_token_encrypted)
+        payload = json.dumps({"replyToken": reply_token, "messages": [{"type": "text", "text": message[:5000]}]}, ensure_ascii=False).encode()
+        request = UrlRequest("https://api.line.me/v2/bot/message/reply", data=payload, method="POST", headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"})
+        with urlopen(request, timeout=10) as response:
+            return 200 <= response.status < 300
+    except (HTTPError, URLError, RuntimeError, TimeoutError):
+        return False
+
+
+def send_line_push(user_id: int, tenant_id: int, category: str, message: str, url: str, dedupe_key: str, session: Session) -> bool:
+    setting = session.scalar(select(FamilyNotificationSetting).where(FamilyNotificationSetting.user_id == user_id))
+    account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.tenant_id == tenant_id, LineOfficialAccount.active.is_(True)))
+    link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == tenant_id, FamilyLineLink.user_id == user_id, FamilyLineLink.active.is_(True)))
+    if not setting or not setting.line_enabled or not account or not link:
+        return False
+    delivery = session.scalar(select(LineDelivery).where(LineDelivery.dedupe_key == dedupe_key))
+    if delivery and delivery.status == "sent":
+        return False
+    if not delivery:
+        delivery = LineDelivery(tenant_id=tenant_id, user_id=user_id, category=category[:40], dedupe_key=dedupe_key[:200])
+        session.add(delivery); session.flush()
+    try:
+        access_token = line_decrypt(account.access_token_encrypted)
+        full_url = f"{os.environ.get('APP_BASE_URL', 'https://dog-management.benefit-navi.com').rstrip('/')}{url}"
+        text_body = f"{message}\n\n詳細を確認する\n{full_url}"[:5000]
+        payload = json.dumps({"to": link.line_user_id, "messages": [{"type": "text", "text": text_body}]}, ensure_ascii=False).encode()
+        request = UrlRequest("https://api.line.me/v2/bot/message/push", data=payload, method="POST", headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"})
+        with urlopen(request, timeout=10) as response:
+            if not 200 <= response.status < 300:
+                raise RuntimeError(f"LINE API status {response.status}")
+        delivery.status, delivery.error, delivery.sent_at = "sent", None, datetime.now(timezone.utc)
+        record_operation(session, "line", "success", "LINE通知を配信しました", tenant_id, f"user={user_id} category={category}")
+        return True
+    except (HTTPError, URLError, RuntimeError, TimeoutError) as exc:
+        delivery.status, delivery.error = "failed", f"{type(exc).__name__}: {str(exc)[:420]}"
+        record_operation(session, "line", "failed", "LINE通知の配信に失敗しました", tenant_id, f"user={user_id} category={category} error={type(exc).__name__}")
+        return False
+
+
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "")
@@ -1145,7 +1267,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
         nav = f'''<aside class="owner-header"><a class="owner-brand" href="/family"><strong>ESTRELLA</strong><small>FAMILY</small></a>
         <nav><p class="owner-nav-label">ホーム</p><a href="/family"><span>⌂</span>うちの子</a><a href="/family/notifications"><span>●</span>通知{notification_badge}</a>
         <p class="owner-nav-label">交流</p><a href="/family/messages"><span>✉</span>メッセージ</a><a href="/family/announcements"><span>◇</span>お知らせ</a><a href="/family/timeline"><span>▦</span>タイムライン</a><a href="/family/anniversaries"><span>♡</span>記念日</a><a href="/family/relatives"><span>♢</span>兄弟・親戚犬</a><a href="/family/kennel"><span>♧</span>犬舎FAMILY会</a>
-        <p class="owner-nav-label">設定</p><a href="/family/profile"><span>♙</span>プロフィール設定</a><a href="/family/consents"><span>✓</span>規約・同意</a><a href="/family/devices"><span>▣</span>アプリ・端末</a><a href="/family/account"><span>↪</span>退会・引継ぎ</a></nav>
+        <p class="owner-nav-label">設定</p><a href="/family/profile"><span>♙</span>プロフィール設定</a><a href="/family/notification-settings"><span>●</span>通知設定</a><a href="/family/line"><span>LINE</span>LINE連携</a><a href="/family/consents"><span>✓</span>規約・同意</a><a href="/family/devices"><span>▣</span>アプリ・端末</a><a href="/family/account"><span>↪</span>退会・引継ぎ</a></nav>
         <div class="owner-account"><span>{html.escape(user.name)}</span><form method="post" action="/logout"><button>ログアウト</button></form></div></aside>'''
     elif user:
         platform_link = '<a href="/platform/tenants"><span>◆</span>テナント管理</a>' if user.platform_admin else ""
@@ -1183,6 +1305,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a>
           <a href="/family/withdrawals/manage"><span>↪</span>退会申請</a>
           <a href="/family/terms/manage"><span>✓</span>規約・同意管理</a>
+          <a href="/family/line/manage"><span>LINE</span>LINE公式設定</a>
           <a href="/family/backups/manage"><span>⇩</span>データ出力</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
@@ -1234,7 +1357,8 @@ app = FastAPI(title="Dog-kanri-app")
 
 @app.middleware("http")
 async def security_headers_and_origin(request: Request, call_next):
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith("/api/v1/"):
+    external_webhook = request.url.path.startswith("/line/webhook/")
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not request.url.path.startswith("/api/v1/") and not external_webhook:
         site = request.headers.get("sec-fetch-site", "")
         origin = request.headers.get("origin")
         expected_host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
@@ -1300,6 +1424,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_checkups BOOLEAN NOT NULL DEFAULT TRUE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_medications BOOLEAN NOT NULL DEFAULT TRUE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS health_followups BOOLEAN NOT NULL DEFAULT TRUE"))
+        conn.execute(text("ALTER TABLE IF EXISTS family_notification_settings ADD COLUMN IF NOT EXISTS line_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS post_group VARCHAR(36)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
@@ -1386,7 +1511,7 @@ def dispatch_scheduled_emails():
                 deliver_email(delivery, session)
         session.commit()
         settings = session.scalars(select(FamilyNotificationSetting).where(
-            (FamilyNotificationSetting.email_enabled.is_(True) | FamilyNotificationSetting.push_enabled.is_(True)),
+            (FamilyNotificationSetting.email_enabled.is_(True) | FamilyNotificationSetting.push_enabled.is_(True) | FamilyNotificationSetting.line_enabled.is_(True)),
             (FamilyNotificationSetting.anniversaries.is_(True)
              | FamilyNotificationSetting.health_vaccinations.is_(True)
              | FamilyNotificationSetting.health_checkups.is_(True)
@@ -1407,6 +1532,8 @@ def dispatch_scheduled_emails():
                                 dog.tenant_id, owner.id, f"anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}")
                 send_web_push(owner.id, "anniversaries", f"{dog.call_name}の{label}が{timing}です", event_date.strftime("%Y年%m月%d日"),
                               "/family/anniversaries", f"push:anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}", session)
+                send_line_push(owner.id, dog.tenant_id, "anniversaries", f"{dog.call_name}の{label}が{timing}です。\n日付：{event_date.strftime('%Y年%m月%d日')}",
+                               "/family/anniversaries", f"line:anniversary:{owner.id}:{dog.id}:{event_type}:{event_date.isoformat()}:{days}", session)
             health_groups = [
                 ("health_vaccinations", "ワクチン", "vaccination", family_vaccine_due_items(owner, session)),
                 ("health_checkups", "健診", "checkup", family_checkup_due_items(owner, session)),
@@ -1426,6 +1553,9 @@ def dispatch_scheduled_emails():
                         queue_email(session, owner.email, "health_reminder", subject, message, dog.tenant_id, owner.id, f"email:{dedupe}")
                     send_web_push(owner.id, setting_name, subject.removeprefix("【ESTRELLA FAMILY】"),
                                   f"{title}／予定日 {due_on.strftime('%Y年%m月%d日')}", f"/family/dogs/{dog.id}/health/{category}", f"push:{dedupe}", session)
+                    send_line_push(owner.id, dog.tenant_id, setting_name,
+                                   f"{dog.call_name}の{label}予定が{timing}です。\n内容：{title}\n予定日：{due_on.strftime('%Y年%m月%d日')}",
+                                   f"/family/dogs/{dog.id}/health/{category}", f"line:{dedupe}", session)
         session.commit()
 
 
@@ -4135,6 +4265,8 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
     <p><small>メール配信サービスの設定後に送信されます。画面内通知はこの設定にかかわらず利用できます。</small></p></div>
     <div class="tenant"><label><input style="width:auto" type="checkbox" name="push_enabled" value="true" {checked(setting.push_enabled)}> この端末へプッシュ通知を送る</label>
     <p><button type="button" id="push-register" class="secondary">ブラウザ通知を許可する</button> <span id="push-state"></span></p><p><small>iPhoneではホーム画面へ追加したFAMILYから設定してください。</small></p></div>
+    <div class="tenant"><label><input style="width:auto" type="checkbox" name="line_enabled" value="true" {checked(setting.line_enabled)}> 連携した犬舎のLINE公式アカウントで通知を受け取る</label>
+    <p><a class="button secondary" href="/family/line">LINE公式アカウントを連携</a></p><p><small>犬舎ごとに本人連携が完了している場合だけ配信されます。</small></p></div>
     <label><input style="width:auto" type="checkbox" name="messages" value="true" {checked(setting.messages)}> 新着メッセージ</label>
     <label><input style="width:auto" type="checkbox" name="announcements" value="true" {checked(setting.announcements)}> 犬舎からのお知らせ</label>
     <label><input style="width:auto" type="checkbox" name="likes" value="true" {checked(setting.likes)}> 成長写真へのいいね</label>
@@ -4151,15 +4283,156 @@ def family_notification_settings_page(user: User = Depends(require_user), sessio
 
 
 @app.post("/family/notification-settings")
-def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), health_vaccinations: bool = Form(False), health_checkups: bool = Form(False), health_medications: bool = Form(False), health_followups: bool = Form(False), email_enabled: bool = Form(False), push_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+def family_notification_settings_save(messages: bool = Form(False), announcements: bool = Form(False), likes: bool = Form(False), anniversaries: bool = Form(False), health_vaccinations: bool = Form(False), health_checkups: bool = Form(False), health_medications: bool = Form(False), health_followups: bool = Form(False), line_enabled: bool = Form(False), email_enabled: bool = Form(False), push_enabled: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
     setting = family_notification_setting(user, session)
     setting.messages, setting.announcements, setting.likes, setting.anniversaries = messages, announcements, likes, anniversaries
     setting.health_vaccinations, setting.health_checkups = health_vaccinations, health_checkups
     setting.health_medications, setting.health_followups = health_medications, health_followups
+    setting.line_enabled = line_enabled
     setting.email_enabled = email_enabled
     setting.push_enabled = push_enabled
     session.commit()
     return RedirectResponse("/family/notification-settings", status_code=303)
+
+
+@app.get("/family/line", response_class=HTMLResponse)
+def family_line_settings(user: User = Depends(require_user), session: Session = Depends(db)):
+    records = session.execute(select(Tenant, LineOfficialAccount).join(DogOwnership, DogOwnership.tenant_id == Tenant.id)
+        .outerjoin(LineOfficialAccount, LineOfficialAccount.tenant_id == Tenant.id)
+        .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Tenant.active.is_(True), Tenant.deleted.is_(False))
+        .distinct().order_by(Tenant.name)).all()
+    cards = ""
+    for tenant, account in records:
+        link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == tenant.id, FamilyLineLink.user_id == user.id, FamilyLineLink.active.is_(True)))
+        if not account or not account.active:
+            state = '<span class="badge">犬舎側の準備中</span><p><small>LINE公式アカウントの接続後に利用できます。</small></p>'
+        elif link:
+            state = f'''<span class="badge" style="background:#dcebdc;color:#365d3b">連携済み</span><p>{html.escape(account.account_name)}から通知を受け取れます。</p><form method="post" action="/family/line/{tenant.id}/unlink"><label style="font-weight:400"><input type="checkbox" name="confirm_unlink" value="true" style="width:auto" required> 連携解除を確認</label><button class="secondary">LINE連携を解除</button></form>'''
+        else:
+            state = f'''<span class="badge">未連携</span><p>{html.escape(account.account_name)}を友だち追加した後、連携コードを公式LINEへ送信します。</p><form method="post" action="/family/line/{tenant.id}/token"><button>15分有効の連携コードを発行</button></form>'''
+        cards += f'<section class="tenant"><h2 style="margin-top:0">{html.escape(tenant.name)}</h2>{state}</section>'
+    body = f'''<a class="button secondary" href="/family/notification-settings">通知設定へ戻る</a><h1>LINE公式アカウント連携</h1>
+    <p>犬舎ごとのLINE公式アカウントとFAMILY会員を安全に紐付けます。個人LINEのIDや電話番号を入力する必要はありません。</p>{cards or '<div class="tenant">連携対象の犬舎がありません。</div>'}'''
+    return family_layout("LINE公式アカウント連携｜FAMILY", body, user, session)
+
+
+@app.post("/family/line/{tenant_id}/token", response_class=HTMLResponse)
+def family_line_token_create(tenant_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    allowed = session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.tenant_id == tenant_id, DogOwnership.active.is_(True)))
+    account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.tenant_id == tenant_id, LineOfficialAccount.active.is_(True)))
+    if not allowed or not account:
+        raise HTTPException(status_code=404, detail="連携できるLINE公式アカウントが見つかりません")
+    now = datetime.now(timezone.utc)
+    old_tokens = session.scalars(select(FamilyLineLinkToken).where(FamilyLineLinkToken.user_id == user.id, FamilyLineLinkToken.tenant_id == tenant_id, FamilyLineLinkToken.used_at.is_(None))).all()
+    for old in old_tokens:
+        old.used_at = now
+    raw_token = secrets.token_urlsafe(12)
+    session.add(FamilyLineLinkToken(tenant_id=tenant_id, user_id=user.id, token_hash=token_hash(raw_token), expires_at=now + timedelta(minutes=15)))
+    session.commit()
+    body = f'''<a class="button secondary" href="/family/line">LINE連携へ戻る</a><h1>LINE連携コード</h1><div class="tenant"><p>次の文字を<strong>{html.escape(account.account_name)}</strong>へ送信してください。</p><p style="font-size:1.5rem;letter-spacing:.08em"><strong>連携 {html.escape(raw_token)}</strong></p><p><small>有効時間は15分です。このコードを他人へ知らせないでください。使用後は自動的に無効になります。</small></p></div>'''
+    return family_layout("LINE連携コード｜FAMILY", body, user, session)
+
+
+@app.post("/family/line/{tenant_id}/unlink")
+def family_line_unlink(tenant_id: int, confirm_unlink: bool = Form(False), user: User = Depends(require_user), session: Session = Depends(db)):
+    if not confirm_unlink or not session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.tenant_id == tenant_id, DogOwnership.active.is_(True))):
+        raise HTTPException(status_code=400, detail="LINE連携解除を確認してください")
+    link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == tenant_id, FamilyLineLink.user_id == user.id, FamilyLineLink.active.is_(True)))
+    if link:
+        link.active, link.unlinked_at = False, datetime.now(timezone.utc)
+        session.commit()
+    return RedirectResponse("/family/line", status_code=303)
+
+
+@app.get("/family/line/manage", response_class=HTMLResponse)
+def line_official_account_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.tenant_id == tenant.id))
+    base_url = os.environ.get("APP_BASE_URL", "https://dog-management.benefit-navi.com").rstrip("/")
+    webhook_url = f"{base_url}/line/webhook/{account.webhook_key}" if account else "保存後に発行されます"
+    linked_count = session.scalar(select(func.count(FamilyLineLink.id)).where(FamilyLineLink.tenant_id == tenant.id, FamilyLineLink.active.is_(True))) or 0
+    deliveries = session.scalars(select(LineDelivery).where(LineDelivery.tenant_id == tenant.id).order_by(LineDelivery.created_at.desc()).limit(50)).all()
+    delivery_rows = "".join(f'<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(item.category)}</td><td>{"成功" if item.status == "sent" else "失敗"}</td><td>{html.escape(item.error or "-")}</td></tr>' for item in deliveries)
+    status_text = "接続設定済み" if account and account.active else "未接続"
+    body = f'''<h1>LINE公式アカウント設定</h1><div class="tenant"><p>状態：<span class="badge">{status_text}</span>　連携中のお客様：<strong>{linked_count}名</strong></p><p>Webhook URL<br><code>{html.escape(webhook_url)}</code></p><p><small>LINE Official Account Manager／Developers ConsoleのWebhook URLへ設定してください。</small></p></div>
+    <form method="post"><label>公式アカウント名</label><input name="account_name" maxlength="150" value="{html.escape(account.account_name if account else tenant.name)}" required>
+    <label>Channel ID</label><input name="channel_id" maxlength="100" value="{html.escape(account.channel_id or '') if account else ''}">
+    <label>Channel secret</label><input type="password" name="channel_secret" autocomplete="new-password" placeholder="{('変更しない場合は空欄' if account else '必須')}">
+    <label>Channel access token</label><textarea name="access_token" autocomplete="off" placeholder="{('変更しない場合は空欄' if account else '必須')}"></textarea>
+    <label><input type="checkbox" name="active" value="true" style="width:auto" {'checked' if account and account.active else ''}> LINE連携を有効にする</label>
+    <p><small>認証情報は暗号化して保存され、画面へ再表示しません。</small></p><button>LINE設定を保存</button></form>
+    <h2>LINE配信履歴</h2><div style="overflow-x:auto"><table><tr><th>日時</th><th>種類</th><th>結果</th><th>エラー</th></tr>{delivery_rows or '<tr><td colspan="4">配信履歴はありません。</td></tr>'}</table></div>'''
+    return layout("LINE公式アカウント設定", body, access[0])
+
+
+@app.post("/family/line/manage")
+def line_official_account_save(account_name: str = Form(...), channel_id: str = Form(""), channel_secret: str = Form(""), access_token: str = Form(""), active: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.tenant_id == tenant.id))
+    if not account:
+        if not channel_secret.strip() or not access_token.strip():
+            raise HTTPException(status_code=400, detail="Channel secretとaccess tokenを入力してください")
+        account = LineOfficialAccount(tenant_id=tenant.id, account_name=account_name.strip()[:150], channel_id=channel_id.strip()[:100] or None,
+            channel_secret_encrypted=line_encrypt(channel_secret.strip()), access_token_encrypted=line_encrypt(access_token.strip()), webhook_key=secrets.token_urlsafe(32))
+        session.add(account)
+    else:
+        account.account_name, account.channel_id = account_name.strip()[:150], channel_id.strip()[:100] or None
+        if channel_secret.strip(): account.channel_secret_encrypted = line_encrypt(channel_secret.strip())
+        if access_token.strip(): account.access_token_encrypted = line_encrypt(access_token.strip())
+    account.active, account.updated_at = active, datetime.now(timezone.utc)
+    session.commit()
+    return RedirectResponse("/family/line/manage", status_code=303)
+
+
+@app.post("/line/webhook/{webhook_key}")
+async def line_webhook(webhook_key: str, request: Request, x_line_signature: str | None = Header(None)):
+    with SessionLocal() as session:
+        account = session.scalar(select(LineOfficialAccount).where(LineOfficialAccount.webhook_key == webhook_key, LineOfficialAccount.active.is_(True)))
+        if not account or not x_line_signature:
+            raise HTTPException(status_code=404)
+        raw_body = await request.body()
+        try:
+            channel_secret = line_decrypt(account.channel_secret_encrypted).encode()
+        except RuntimeError:
+            raise HTTPException(status_code=503, detail="LINE設定を復号できません")
+        expected = base64.b64encode(hmac.new(channel_secret, raw_body, hashlib.sha256).digest()).decode()
+        if not hmac.compare_digest(expected, x_line_signature):
+            raise HTTPException(status_code=401, detail="LINE署名を確認できません")
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="LINEイベントを読み取れません")
+        now = datetime.now(timezone.utc)
+        for event in payload.get("events", []):
+            source = event.get("source") or {}; line_user_id = source.get("userId")
+            if not line_user_id or source.get("type") != "user":
+                continue
+            if event.get("type") == "unfollow":
+                link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == account.tenant_id, FamilyLineLink.line_user_id == line_user_id, FamilyLineLink.active.is_(True)))
+                if link: link.active, link.unlinked_at = False, now
+                continue
+            message = event.get("message") or {}; text_message = str(message.get("text", "")).strip() if message.get("type") == "text" else ""
+            match = re.fullmatch(r"連携\s+([A-Za-z0-9_-]{10,40})", text_message)
+            reply = "FAMILY画面で連携コードを発行し、「連携 コード」と送信してください。"
+            if match:
+                token = session.scalar(select(FamilyLineLinkToken).where(FamilyLineLinkToken.tenant_id == account.tenant_id,
+                    FamilyLineLinkToken.token_hash == token_hash(match.group(1)), FamilyLineLinkToken.used_at.is_(None), FamilyLineLinkToken.expires_at > now))
+                conflict = session.scalar(select(FamilyLineLink.id).where(FamilyLineLink.tenant_id == account.tenant_id, FamilyLineLink.line_user_id == line_user_id,
+                    FamilyLineLink.user_id != token.user_id)) if token else None
+                if token and not conflict:
+                    link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == account.tenant_id, FamilyLineLink.user_id == token.user_id))
+                    if link:
+                        link.line_user_id, link.active, link.unlinked_at, link.linked_at = line_user_id, True, None, now
+                    else:
+                        session.add(FamilyLineLink(tenant_id=account.tenant_id, user_id=token.user_id, line_user_id=line_user_id))
+                    token.used_at = now
+                    reply = "FAMILYとのLINE連携が完了しました。今後、犬舎からの大切な通知をこちらへお送りします。"
+                else:
+                    reply = "連携コードが無効または期限切れです。FAMILY画面から新しいコードを発行してください。"
+            session.commit()
+            if event.get("replyToken") and event.get("type") in {"message", "follow"}:
+                line_reply(account, event["replyToken"], reply)
+        return JSONResponse({"ok": True})
 
 
 @app.get("/family-push-worker.js")
