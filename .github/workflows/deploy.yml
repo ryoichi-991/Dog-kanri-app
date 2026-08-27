@@ -44,6 +44,14 @@ jobs:
               cd "$APP_DIR"
             fi
 
+            touch .env
+            chmod 600 .env
+            if ! grep -q '^LINE_CREDENTIALS_KEY=' .env; then
+              LINE_ENCRYPTION_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '\n')"
+              printf '\nLINE_CREDENTIALS_KEY=%s\n' "$LINE_ENCRYPTION_KEY" >> .env
+              echo "[LINE] 認証情報の暗号鍵を生成しました"
+            fi
+
             WEB_PORT=8091 docker compose build --pull --no-cache web
             WEB_PORT=8091 docker compose up -d --force-recreate --remove-orphans
             bash deploy/configure-nginx-upload.sh
