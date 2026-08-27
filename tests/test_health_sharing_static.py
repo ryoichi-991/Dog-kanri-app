@@ -447,6 +447,27 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("病歴の日付を確認してください", segment)
         self.assertIn("治療終了日は開始日以降にしてください", segment)
 
+    def test_owner_food_has_summary_and_complete_fields(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for label in ("現在利用中", "最新変更日", "終了済み", "利用履歴", "メーカー", "変更・終了理由"):
+            self.assertIn(label, segment)
+        for field in ("manufacturer", "food_type", "change_reason", "amount_g", "times_per_day"):
+            self.assertIn(f'name="{field}"', segment)
+
+    def test_owner_food_validates_status_dates_and_amount(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "family_owner_health_category_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("フード情報を確認してください", segment)
+        self.assertIn("終了済みの場合は利用終了日を入力してください", segment)
+        self.assertIn("利用終了日は開始日以降にしてください", segment)
+
+    def test_breeder_food_validates_dates_and_completed_status(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "food_create")
+        segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("フード利用日を確認してください", segment)
+        self.assertIn("終了済みの場合は利用終了日を入力してください", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

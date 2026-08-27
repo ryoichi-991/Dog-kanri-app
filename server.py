@@ -3010,12 +3010,16 @@ def health_foods_page(access=Depends(require_tenant_user), session: Session = De
 def food_create(dog_id: int = Form(...), name: str = Form(...), started_on: str = Form(...), ended_on: str = Form(""), manufacturer: str = Form(""), food_type: str = Form("dry"), amount_g: str = Form(""), times_per_day: str = Form(""), food_status: str = Form("ongoing"), change_reason: str = Form(""), owner_notes: str = Form(""), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
-    started = date.fromisoformat(started_on)
-    ended = date.fromisoformat(ended_on) if ended_on else None
+    try:
+        started = date.fromisoformat(started_on)
+        ended = date.fromisoformat(ended_on) if ended_on else None
+    except ValueError: raise HTTPException(status_code=400, detail="フード利用日を確認してください")
     if ended and ended < started:
         raise HTTPException(status_code=400, detail="利用終了日は開始日以降にしてください")
-    if food_type not in {"dry", "wet", "raw", "prescription", "supplement", "other"} or food_status not in {"ongoing", "completed"}:
+    if not name.strip() or food_type not in {"dry", "wet", "raw", "prescription", "supplement", "other"} or food_status not in {"ongoing", "completed"}:
         raise HTTPException(status_code=400, detail="フード情報を確認してください")
+    if food_status == "completed" and not ended:
+        raise HTTPException(status_code=400, detail="終了済みの場合は利用終了日を入力してください")
     try:
         amount = float(amount_g) if amount_g else None
         times = int(times_per_day) if times_per_day else None
@@ -4859,7 +4863,14 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
             if item.owner_notes: detail.append(item.owner_notes)
             inherited.append((item.diagnosed_on or date.min, item.disease_name, "\n".join(detail)))
     if category == "food" and ids.get("food"):
-        for item in session.scalars(select(FoodHistory).where(FoodHistory.id.in_(ids["food"]), FoodHistory.dog_id == dog.id)).all(): inherited.append((item.started_on, item.name, item.owner_notes or ""))
+        for item in session.scalars(select(FoodHistory).where(FoodHistory.id.in_(ids["food"]), FoodHistory.dog_id == dog.id)).all():
+            detail = ["利用中" if (item.status or "ongoing") == "ongoing" and not item.ended_on else "終了"]
+            if item.manufacturer: detail.append(f"メーカー：{item.manufacturer}")
+            if item.amount_g is not None: detail.append(f"1日量：{item.amount_g:g}g")
+            if item.times_per_day: detail.append(f"1日{item.times_per_day}回")
+            if item.change_reason: detail.append(f"変更・終了理由：{item.change_reason}")
+            if item.owner_notes: detail.append(item.owner_notes)
+            inherited.append((item.started_on, item.name, "\n".join(detail)))
     inherited.sort(key=lambda row: row[0], reverse=True)
     inherited_rows = "".join(f'<tr><td>{day if day != date.min else "-"}</td><td>{html.escape(title)}</td><td style="white-space:pre-wrap">{html.escape(note or "-")}</td><td><span class="badge">ブリーダー記録・閲覧のみ</span></td></tr>' for day, title, note in inherited)
     category_summary = ""
@@ -4918,6 +4929,14 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
         active_count = sum(1 for item in breeder_diseases if item.status in {"treatment", "followup", "chronic"}) + sum(1 for item in records if item.value in {"治療中", "経過観察", "慢性"})
         recurrence_count = sum(1 for item in breeder_diseases if item.recurrence) + sum(1 for item in records if "再発：はい" in (item.details or ""))
         category_summary = f'''<div class="grid"><section class="tenant"><h3>最終診断・記録日</h3><strong>{max(all_dates) if all_dates else "記録なし"}</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_count}件</strong></section><section class="tenant"><h3>再発記録</h3><strong>{recurrence_count}件</strong></section><section class="tenant"><h3>期限間近・超過</h3><strong class="{'error' if overdue else ''}">{len(upcoming)}件・{len(overdue)}件</strong></section></div>'''
+    elif category == "food":
+        breeder_foods = session.scalars(select(FoodHistory).where(FoodHistory.id.in_(ids.get("food", [0])), FoodHistory.dog_id == dog.id).order_by(FoodHistory.started_on.desc())).all()
+        breeder_active = [item for item in breeder_foods if (item.status or "ongoing") == "ongoing" and not item.ended_on]
+        owner_active = [item for item in records if item.value == "利用中"]
+        active_names = [item.name for item in breeder_active] + [item.title for item in owner_active]
+        latest_dates = [item.started_on for item in breeder_foods] + [item.recorded_on for item in records]
+        completed_count = sum(1 for item in breeder_foods if item.ended_on or item.status == "completed") + sum(1 for item in records if item.value == "終了")
+        category_summary = f'''<div class="grid"><section class="tenant"><h3>現在利用中</h3><strong>{len(active_names)}件</strong><p>{html.escape("、".join(active_names) or "登録なし")}</p></section><section class="tenant"><h3>最新変更日</h3><strong>{max(latest_dates) if latest_dates else "記録なし"}</strong></section><section class="tenant"><h3>終了済み</h3><strong>{completed_count}件</strong></section><section class="tenant"><h3>利用履歴</h3><strong>{len(breeder_foods) + len(records)}件</strong></section></div>'''
     owner_rows = ""
     for item in records:
         owner = session.get(User, item.owner_id)
@@ -4935,7 +4954,7 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
         "checkup": '<div class="grid"><div><label>受診日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>結果</label><select name="result"><option>異常なし</option><option>経過観察</option><option>再検査</option><option>治療・受診が必要</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div><label>健診項目</label><div class="grid"><label><input style="width:auto" type="checkbox" name="physical_exam"> 触診</label><label><input style="width:auto" type="checkbox" name="blood_test"> 血液検査</label><label><input style="width:auto" type="checkbox" name="ultrasound"> エコー</label><label><input style="width:auto" type="checkbox" name="chest_xray"> 胸部X線</label></div><label>検査結果（PDF・JPG・PNG／8MBまで）</label><input type="file" name="attachment_file" accept="application/pdf,image/jpeg,image/png">',
         "medication": '<div class="grid"><div><label>記録日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>薬剤名</label><input name="medicine_name" required></div><div><label>区分</label><select name="medication_type"><option value="treatment">治療薬</option><option value="prevention">予防薬</option><option value="supplement">サプリメント</option><option value="other">その他</option></select></div><div><label>目的・対象症状</label><input name="purpose"></div><div><label>1回量</label><input name="dosage" placeholder="例：1錠、2.5ml"></div><div><label>投薬頻度</label><input name="frequency" placeholder="例：1日2回、毎月1回"></div><div><label>開始日</label><input type="date" name="started_on"></div><div><label>終了日</label><input type="date" name="ended_on"></div><div><label>状態</label><select name="record_status"><option>単回</option><option>継続中</option><option>終了</option></select></div><div><label>次回予定日</label><input type="date" name="next_due_on"></div><div><label>動物病院</label><input name="clinic"></div></div>',
         "disease": '<div class="grid"><div><label>診断日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>疾患名</label><input name="disease_name" required></div><div><label>分類</label><select name="disease_category"><option value="digestive">消化器</option><option value="respiratory">呼吸器</option><option value="skin">皮膚</option><option value="orthopedic">整形・関節</option><option value="cardiac">循環器</option><option value="urinary">泌尿器</option><option value="reproductive">生殖器</option><option value="infectious">感染症</option><option value="other">その他</option></select></div><div><label>状態</label><select name="record_status"><option>治療中</option><option>経過観察</option><option>完治</option><option>慢性</option></select></div><div><label>治療開始日</label><input type="date" name="treatment_started_on"></div><div><label>治療終了日</label><input type="date" name="treatment_ended_on"></div><div><label>動物病院</label><input name="clinic"></div><div><label>担当獣医師</label><input name="veterinarian"></div><div><label>次回診察日</label><input type="date" name="next_due_on"></div></div><label style="font-weight:400"><input style="width:auto" type="checkbox" name="recurrence" value="true"> 同じ疾患の再発として記録する</label><label>症状</label><textarea name="symptoms"></textarea>',
-        "food": '<div class="grid"><div><label>利用開始日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>フード名</label><input name="food_name" required></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>状態</label><select name="record_status"><option>利用中</option><option>終了</option></select></div><div><label>利用終了日</label><input type="date" name="ended_on"></div></div>'
+        "food": '<div class="grid"><div><label>利用開始日</label><input type="date" name="recorded_on" value="' + str(date.today()) + '" required></div><div><label>フード名</label><input name="food_name" required></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>種類</label><select name="food_type"><option value="dry">ドライ</option><option value="wet">ウェット</option><option value="raw">生食</option><option value="prescription">療法食</option><option value="supplement">サプリメント</option><option value="other">その他</option></select></div><div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day"></div><div><label>状態</label><select name="record_status"><option>利用中</option><option>終了</option></select></div><div><label>利用終了日</label><input type="date" name="ended_on"></div><div><label>変更・終了理由</label><input name="change_reason"></div></div>'
     }
     body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">うちの子健康管理へ戻る</a><h1>{html.escape(dog.call_name)}の{labels[category]}管理</h1><p>対象犬は{html.escape(dog.call_name)}に固定されています。</p>{category_summary}
     <h2>{labels[category]}記録を追加</h2><form method="post" action="/family/dogs/{dog.id}/health/{category}/records" enctype="multipart/form-data">{forms[category]}<label>詳細・メモ</label><textarea name="details"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="share_to_breeder" value="true"> ブリーダーへ共有する</label><small>共有先：{html.escape(tenant.name if tenant else '契約犬舎')}。ブリーダーは閲覧のみで変更・削除できません。</small><button>{labels[category]}記録を追加</button></form>
@@ -4945,7 +4964,7 @@ def family_owner_health_category_page(dog_id: int, category: str, user: User = D
 
 
 @app.post("/family/dogs/{dog_id}/health/{category}/records")
-async def family_owner_health_category_create(dog_id: int, category: str, recorded_on: str = Form(...), weight_kg: str = Form(""), condition: str = Form(""), vaccine_type: str = Form("other"), vaccine_name: str = Form(""), dose: str = Form(""), next_due_on: str = Form(""), clinic: str = Form(""), result: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), medicine_name: str = Form(""), medication_type: str = Form("treatment"), purpose: str = Form(""), dosage: str = Form(""), frequency: str = Form(""), started_on: str = Form(""), record_status: str = Form(""), disease_name: str = Form(""), disease_category: str = Form("other"), symptoms: str = Form(""), treatment_started_on: str = Form(""), treatment_ended_on: str = Form(""), veterinarian: str = Form(""), recurrence: bool = Form(False), food_name: str = Form(""), amount_g: str = Form(""), times_per_day: str = Form(""), ended_on: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), attachment_file: UploadFile | None = File(None), user: User = Depends(require_user), session: Session = Depends(db)):
+async def family_owner_health_category_create(dog_id: int, category: str, recorded_on: str = Form(...), weight_kg: str = Form(""), condition: str = Form(""), vaccine_type: str = Form("other"), vaccine_name: str = Form(""), dose: str = Form(""), next_due_on: str = Form(""), clinic: str = Form(""), result: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), medicine_name: str = Form(""), medication_type: str = Form("treatment"), purpose: str = Form(""), dosage: str = Form(""), frequency: str = Form(""), started_on: str = Form(""), record_status: str = Form(""), disease_name: str = Form(""), disease_category: str = Form("other"), symptoms: str = Form(""), treatment_started_on: str = Form(""), treatment_ended_on: str = Form(""), veterinarian: str = Form(""), recurrence: bool = Form(False), food_name: str = Form(""), manufacturer: str = Form(""), food_type: str = Form("dry"), change_reason: str = Form(""), amount_g: str = Form(""), times_per_day: str = Form(""), ended_on: str = Form(""), details: str = Form(""), share_to_breeder: bool = Form(False), attachment_file: UploadFile | None = File(None), user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
     if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
     ownership, dog = owned
@@ -4981,11 +5000,16 @@ async def family_owner_health_category_create(dog_id: int, category: str, record
         if treatment_start and treatment_end and treatment_end < treatment_start: raise HTTPException(status_code=400, detail="治療終了日は開始日以降にしてください")
         title, value = disease_name.strip(), record_status.strip(); extras = [f"分類：{valid_categories[disease_category]}", f"症状：{symptoms.strip()}" if symptoms.strip() else "", f"治療開始日：{treatment_start}" if treatment_start else "", f"治療終了日：{treatment_end}" if treatment_end else "", f"再発：{'はい' if recurrence else 'いいえ'}", f"動物病院：{clinic.strip()}" if clinic.strip() else "", f"担当獣医師：{veterinarian.strip()}" if veterinarian.strip() else "", f"次回診察：{next_due_on}" if next_due_on else ""]
     else:
-        if not food_name.strip(): raise HTTPException(status_code=400, detail="フード名を入力してください")
+        if not food_name.strip() or food_type not in {"dry", "wet", "raw", "prescription", "supplement", "other"} or record_status not in {"利用中", "終了"}: raise HTTPException(status_code=400, detail="フード情報を確認してください")
         try: amount = float(amount_g) if amount_g else None; times = int(times_per_day) if times_per_day else None
         except ValueError: raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
         if (amount is not None and amount <= 0) or (times is not None and not 1 <= times <= 10): raise HTTPException(status_code=400, detail="給与量・回数を確認してください")
-        title, value = food_name.strip(), record_status.strip(); extras = [f"1日量：{amount:g}g" if amount is not None else "", f"1日{times}回" if times else "", f"終了日：{ended_on}" if ended_on else ""]
+        try: end_food = date.fromisoformat(ended_on) if ended_on else None
+        except ValueError: raise HTTPException(status_code=400, detail="利用終了日を確認してください")
+        if end_food and end_food < date.fromisoformat(recorded_on): raise HTTPException(status_code=400, detail="利用終了日は開始日以降にしてください")
+        if record_status == "終了" and not end_food: raise HTTPException(status_code=400, detail="終了済みの場合は利用終了日を入力してください")
+        type_label = {"dry": "ドライ", "wet": "ウェット", "raw": "生食", "prescription": "療法食", "supplement": "サプリメント", "other": "その他"}[food_type]
+        title, value = food_name.strip(), record_status.strip(); extras = [f"メーカー：{manufacturer.strip()}" if manufacturer.strip() else "", f"種類：{type_label}", f"1日量：{amount:g}g" if amount is not None else "", f"1日{times}回" if times else "", f"終了日：{end_food}" if end_food else "", f"変更・終了理由：{change_reason.strip()}" if change_reason.strip() else ""]
     due = None
     if next_due_on:
         try: due = date.fromisoformat(next_due_on)
