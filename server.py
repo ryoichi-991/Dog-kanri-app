@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import calendar
 import csv
 import hashlib
 import html
@@ -4718,6 +4719,81 @@ def family_owned_dog(dog_id: int, user: User, session: Session):
     ).first()
 
 
+@app.get("/family/dogs/{dog_id}/health/calendar", response_class=HTMLResponse)
+def family_dog_health_calendar(dog_id: int, month: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned:
+        raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, dog = owned
+    try:
+        selected = date.fromisoformat(f"{month}-01") if month else date.today().replace(day=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+    if month and not re.fullmatch(r"\d{4}-\d{2}", month):
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+
+    first_day = selected.replace(day=1)
+    next_month = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1)
+    previous_month = (first_day - timedelta(days=1)).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+    events: dict[date, list[tuple[str, str, str]]] = {}
+
+    def add_event(event_date: date | None, category: str, label: str, title: str):
+        if event_date and first_day <= event_date <= month_end:
+            events.setdefault(event_date, []).append((category, label, title))
+
+    owner_records = session.scalars(select(OwnerHealthRecord).where(
+        OwnerHealthRecord.dog_id == dog.id, OwnerHealthRecord.tenant_id == ownership.tenant_id,
+        OwnerHealthRecord.next_due_on.between(first_day, month_end),
+    )).all()
+    owner_labels = {"vaccination": "ワクチン", "checkup": "健診", "medication": "投薬", "disease": "再診"}
+    for item in owner_records:
+        if item.category in owner_labels and not (item.category == "medication" and item.value == "終了") and not (item.category == "disease" and item.value == "完治"):
+            add_event(item.next_due_on, item.category, owner_labels[item.category], item.title)
+
+    shares = session.scalars(select(HealthRecordShare).where(
+        HealthRecordShare.dog_id == dog.id, HealthRecordShare.owner_visible.is_(True)
+    )).all()
+    shared_ids: dict[str, list[int]] = {}
+    for share in shares:
+        shared_ids.setdefault(share.record_type, []).append(share.record_id)
+    if shared_ids.get("vaccination"):
+        for item in session.scalars(select(Vaccination).where(Vaccination.id.in_(shared_ids["vaccination"]), Vaccination.dog_id == dog.id, Vaccination.next_due_on.between(first_day, month_end))).all():
+            add_event(item.next_due_on, "vaccination", "ワクチン", item.vaccine_name)
+    if shared_ids.get("health"):
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(shared_ids["health"]), HealthRecord.dog_id == dog.id, HealthRecord.category == "checkup", HealthRecord.next_due_on.between(first_day, month_end))).all():
+            add_event(item.next_due_on, "checkup", "健診", "健康診断")
+    if shared_ids.get("medication"):
+        for item in session.scalars(select(Medication).where(Medication.id.in_(shared_ids["medication"]), Medication.dog_id == dog.id, Medication.status != "completed", Medication.next_due_on.between(first_day, month_end))).all():
+            add_event(item.next_due_on, "medication", "投薬", item.medicine_name)
+    if shared_ids.get("disease"):
+        for item in session.scalars(select(DiseaseHistory).where(DiseaseHistory.id.in_(shared_ids["disease"]), DiseaseHistory.dog_id == dog.id, DiseaseHistory.status != "recovered", DiseaseHistory.next_followup_on.between(first_day, month_end))).all():
+            add_event(item.next_followup_on, "disease", "再診", item.disease_name)
+
+    colors = {"vaccination": "#e9d7f2", "checkup": "#d8ecf2", "medication": "#f6e1b8", "disease": "#f4c9ca"}
+    cells = ""
+    for week in calendar.Calendar(firstweekday=6).monthdatescalendar(first_day.year, first_day.month):
+        cells += "<tr>"
+        for day in week:
+            outside = day.month != first_day.month
+            day_events = "".join(
+                f'<a href="/family/dogs/{dog.id}/health/{category}" style="display:block;margin:4px 0;padding:4px 6px;border-radius:8px;background:{colors[category]};color:#3f3437;font-size:.78rem"><strong>{label}</strong> {html.escape(title)}</a>'
+                for category, label, title in events.get(day, [])
+            )
+            today_style = "outline:2px solid #b98b9a;" if day == date.today() else ""
+            cells += f'<td style="vertical-align:top;height:112px;min-width:110px;padding:8px;opacity:{".35" if outside else "1"};{today_style}"><strong>{day.day}</strong>{day_events}</td>'
+        cells += "</tr>"
+    event_count = sum(len(items) for items in events.values())
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}/health">健康管理へ戻る</a>
+    <h1>{html.escape(dog.call_name)}の健康カレンダー</h1>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><a class="button secondary" href="?month={previous_month:%Y-%m}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="?month={next_month:%Y-%m}">翌月 →</a></div>
+    <p><strong>{event_count}件</strong>の健康予定があります。予定を選ぶと各カテゴリーの管理画面を開きます。</p>
+    <p><span class="badge" style="background:#e9d7f2">ワクチン</span> <span class="badge" style="background:#d8ecf2">健診</span> <span class="badge" style="background:#f6e1b8">投薬</span> <span class="badge" style="background:#f4c9ca">再診</span></p>
+    <div style="overflow-x:auto"><table style="table-layout:fixed;min-width:800px"><tr><th style="color:#b54b56">日</th><th>月</th><th>火</th><th>水</th><th>木</th><th>金</th><th style="color:#416b9b">土</th></tr>{cells}</table></div>
+    <p><small>表示されるのは、オーナーが登録した予定と、ブリーダーから共有された予定のみです。</small></p>'''
+    return family_layout(f"{dog.call_name}の健康カレンダー｜FAMILY", body, user, session)
+
+
 @app.get("/family/dogs/{dog_id}/health", response_class=HTMLResponse)
 def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "", date_to: str = "", keyword: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     owned = family_owned_dog(dog_id, user, session)
@@ -4864,7 +4940,7 @@ def family_dog_health(dog_id: int, health_category: str = "", date_from: str = "
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
     due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
     dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/calendar">健康カレンダー</a> <a class="button" href="{report_url}">表示条件でPDF出力</a> <a class="button secondary" href="{csv_url}">表示条件でCSV出力</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>

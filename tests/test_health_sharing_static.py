@@ -611,6 +611,34 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("writer.writerow", segment)
         self.assertNotIn("microchip_no", segment)
 
+    def test_owner_health_dashboard_links_to_monthly_calendar(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("健康カレンダー", segment)
+        self.assertIn("/health/calendar", segment)
+
+    def test_owner_health_calendar_requires_ownership_and_valid_month(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_calendar")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("閲覧できる愛犬が見つかりません", segment)
+        self.assertIn("表示月を確認してください", segment)
+        self.assertIn(r'\d{4}-\d{2}', segment)
+        self.assertIn("previous_month", segment)
+        self.assertIn("next_month", segment)
+
+    def test_owner_health_calendar_contains_only_owner_and_shared_due_items(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_calendar")
+        segment = ast.get_source_segment(TEXT, page)
+        for model in ("OwnerHealthRecord", "HealthRecord", "Vaccination", "Medication", "DiseaseHistory"):
+            self.assertIn(model, segment)
+        self.assertIn("HealthRecordShare.owner_visible.is_(True)", segment)
+        self.assertIn("next_due_on.between(first_day, month_end)", segment)
+        self.assertIn("next_followup_on.between(first_day, month_end)", segment)
+        for label in ("ワクチン", "健診", "投薬", "再診"):
+            self.assertIn(label, segment)
+        self.assertNotIn("microchip_no", segment)
+
 
 if __name__ == "__main__":
     unittest.main()
