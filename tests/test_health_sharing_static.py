@@ -511,6 +511,29 @@ class HealthSharingStaticTests(unittest.TestCase):
         for category in ("weight", "vaccination", "checkup", "medication", "disease", "food"):
             self.assertIn(f'"{category}"', segment)
 
+    def test_owner_health_pdf_requires_dog_ownership(self):
+        report = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_report_pdf")
+        segment = ast.get_source_segment(TEXT, report)
+        self.assertIn("family_owned_dog(dog_id, user, session)", segment)
+        self.assertIn("閲覧できる愛犬が見つかりません", segment)
+        self.assertIn('media_type="application/pdf"', segment)
+        self.assertIn('"Cache-Control": "private, no-store"', segment)
+
+    def test_owner_health_pdf_contains_shared_and_owner_records(self):
+        report = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_report_pdf")
+        segment = ast.get_source_segment(TEXT, report)
+        for model in ("HealthRecord", "Vaccination", "Medication", "DiseaseHistory", "FoodHistory", "OwnerHealthRecord"):
+            self.assertIn(model, segment)
+        self.assertIn("HealthRecordShare.owner_visible.is_(True)", segment)
+        self.assertIn("診断書ではありません", segment)
+        self.assertNotIn("microchip_no", segment)
+
+    def test_owner_health_dashboard_links_to_pdf_report(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn("動物病院共有用PDF", segment)
+        self.assertIn("/health/report.pdf", segment)
+
 
 if __name__ == "__main__":
     unittest.main()

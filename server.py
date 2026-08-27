@@ -4843,7 +4843,7 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
     overdue_count = sum(1 for _, _, _, days, _ in due_items if days < 0); upcoming_count = sum(1 for _, _, _, days, _ in due_items if days >= 0)
     due_rows = "".join(f'''<tr><td>{label}</td><td><a href="/family/dogs/{dog.id}/health/{category}">{html.escape(title)}</a></td><td>{due}</td><td><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if days < 0 else 'background:#f6e1b8;color:#755514'}">{abs(days)}日{'超過' if days < 0 else '後'}</span></td></tr>''' for label, title, due, days, category in due_items)
     dashboard = f'''<h2>健康サマリー</h2><div class="grid"><section class="tenant"><h3>最新体重</h3><strong>{f'{latest_weight[1]:g}kg' if latest_weight else '未登録'}</strong><p>{latest_weight[0] if latest_weight else ''}</p></section><section class="tenant"><h3>継続中の投薬</h3><strong>{active_medications}件</strong></section><section class="tenant"><h3>治療・観察・慢性</h3><strong>{active_diseases}件</strong></section><section class="tenant"><h3>現在のフード</h3><strong>{len(active_food_names)}件</strong><p>{html.escape('、'.join(active_food_names) or '未登録')}</p></section></div><div class="grid"><section class="tenant"><h3>30日以内の予定</h3><strong>{upcoming_count}件</strong></section><section class="tenant"><h3>期限超過</h3><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></section></div><h2>これからの健康予定</h2><div style="overflow-x:auto"><table><tr><th>種類</th><th>内容</th><th>予定日</th><th>状態</th></tr>{due_rows or '<tr><td colspan="4">30日以内または期限超過の予定はありません。</td></tr>'}</table></div>'''
-    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a>
+    body = f'''<a class="button secondary" href="/family/dogs/{dog.id}">{html.escape(dog.call_name)}のページへ戻る</a> <a class="button" href="/family/dogs/{dog.id}/health/report.pdf">動物病院共有用PDF</a>
     <h1>{html.escape(dog.call_name)}のうちの子健康管理</h1><div class="tenant"><p>ブリーダーから引き継いだ記録と、オーナー様が継続して登録する記録をまとめて表示します。</p>
     <p>ブリーダーが登録した過去データは閲覧のみです。オーナー様が登録した記録は入力した本人だけが変更できます。</p></div>
     {dashboard}<h2>カテゴリー別管理</h2><div class="grid">{category_cards}</div>
@@ -4854,6 +4854,53 @@ def family_dog_health(dog_id: int, user: User = Depends(require_user), session: 
     {f'<h2>共有された証明書</h2><p>{shared_certificates}</p>' if shared_certificates else ''}
     <p><small>緊急時や治療判断にはこの画面だけを使わず、犬舎または動物病院へご確認ください。</small></p>'''
     return family_layout(f"{dog.call_name}のうちの子健康管理｜FAMILY", body, user, session)
+
+
+@app.get("/family/dogs/{dog_id}/health/report.pdf")
+def family_dog_health_report_pdf(dog_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    owned = family_owned_dog(dog_id, user, session)
+    if not owned: raise HTTPException(status_code=404, detail="閲覧できる愛犬が見つかりません")
+    ownership, dog = owned; tenant = session.get(Tenant, ownership.tenant_id)
+    shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.dog_id == dog.id, HealthRecordShare.owner_visible.is_(True))).all()
+    ids: dict[str, list[int]] = {}
+    for share in shares: ids.setdefault(share.record_type, []).append(share.record_id)
+    rows: list[tuple[date, str, str]] = []
+    if ids.get("health"):
+        for item in session.scalars(select(HealthRecord).where(HealthRecord.id.in_(ids["health"]), HealthRecord.dog_id == dog.id)).all():
+            label = {"weight": "体重", "checkup": "健康診断", "treatment": "診療"}.get(item.category, "健康記録")
+            detail = f"{item.weight_kg:g}kg" if item.weight_kg is not None else (item.result_summary or item.notes or "記録あり")
+            rows.append((item.record_date, label, detail))
+    model_specs = [
+        ("vaccination", Vaccination, "administered_on", "ワクチン", lambda x: f"{x.vaccine_name}／次回 {x.next_due_on or '未設定'}"),
+        ("medication", Medication, "administered_on", "投薬", lambda x: f"{x.medicine_name}／{x.dosage or '用量未登録'}／{x.frequency or '頻度未登録'}／{x.owner_notes or ''}"),
+        ("disease", DiseaseHistory, "diagnosed_on", "病歴", lambda x: f"{x.disease_name}／{ {'treatment':'治療中','followup':'経過観察','recovered':'完治','chronic':'慢性'}.get(x.status, '状態未登録')}／{x.owner_notes or ''}"),
+        ("food", FoodHistory, "started_on", "フード", lambda x: f"{x.name}／1日量 {f'{x.amount_g:g}g' if x.amount_g is not None else '未登録'}／{f'1日{x.times_per_day}回' if x.times_per_day else '回数未登録'}／{x.owner_notes or ''}"),
+    ]
+    for key, model, date_field, label, describe in model_specs:
+        if ids.get(key):
+            for item in session.scalars(select(model).where(model.id.in_(ids[key]), model.dog_id == dog.id)).all(): rows.append((getattr(item, date_field) or date.min, label, describe(item)))
+    owner_records = session.scalars(select(OwnerHealthRecord).where(OwnerHealthRecord.tenant_id == ownership.tenant_id, OwnerHealthRecord.dog_id == dog.id)).all()
+    labels = {"weight": "体重", "vaccination": "ワクチン", "checkup": "健康診断", "medication": "投薬", "disease": "病歴", "food": "フード", "other": "その他"}
+    for item in owner_records: rows.append((item.recorded_on, labels.get(item.category, "その他"), f"{item.title}／{item.value or ''}／{item.details or ''}"))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    output = io.BytesIO(); pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5")); pdf = canvas.Canvas(output, pagesize=A4); width, height = A4
+    def header():
+        pdf.setFont("HeiseiKakuGo-W5", 16); pdf.drawString(36, height - 38, f"{dog.call_name} 健康記録レポート")
+        pdf.setFont("HeiseiKakuGo-W5", 9); pdf.drawString(36, height - 56, f"犬種：{dog.breed or '未登録'}　生年月日：{dog.birth_date or '未登録'}　共有元：{tenant.name if tenant else 'ブリーダー'}")
+        pdf.drawString(36, height - 71, f"作成日：{date.today()}　※診断書ではありません。診療時の参考資料としてご利用ください。")
+        pdf.line(36, height - 79, width - 36, height - 79)
+    header(); y = height - 98; pdf.setFont("HeiseiKakuGo-W5", 9)
+    for day, label, detail in rows:
+        clean = re.sub(r"\s+", " ", detail).strip(); lines = [clean[index:index + 52] for index in range(0, len(clean), 52)] or ["－"]
+        needed = 16 * max(len(lines), 1) + 8
+        if y - needed < 36: pdf.showPage(); header(); y = height - 98; pdf.setFont("HeiseiKakuGo-W5", 9)
+        pdf.drawString(36, y, str(day) if day != date.min else "－"); pdf.drawString(105, y, label)
+        for index, line in enumerate(lines): pdf.drawString(165, y - index * 14, line)
+        y -= needed
+    if not rows: pdf.drawString(36, y, "共有・登録されている健康記録はありません。")
+    pdf.save()
+    filename = f"health-report-dog-{dog.id}.pdf"
+    return Response(content=output.getvalue(), media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store"})
 
 
 @app.get("/family/dogs/{dog_id}/health/{category}", response_class=HTMLResponse)
