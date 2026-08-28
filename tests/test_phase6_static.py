@@ -121,6 +121,45 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn(".page-guide-grid{{display:grid;grid-template-columns:repeat(3", layout_source)
         self.assertIn(".page-guide-grid{{grid-template-columns:1fr}}", layout_source)
 
+    def test_business_calendar_combines_manual_and_automatic_schedules(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for model in ("TaskEvent", "HeatCycle", "BreedingRecord", "Litter", "Vaccination", "HealthRecord", "Medication", "DiseaseHistory", "LegalDocument"):
+            self.assertIn(model, segment)
+        for source in ("Todo", "ヒート記録", "交配記録", "ワクチン", "健診", "投薬", "再診・経過確認", "法令・行政"):
+            self.assertIn(source, segment)
+        self.assertNotIn("今後、ヒート・交配", segment)
+
+    def test_business_calendar_is_tenant_scoped_and_validates_filters(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertGreaterEqual(segment.count("tenant.id"), 9)
+        for marker in ("allowed_categories", "allowed_states", "表示月を確認してください", "検索条件を確認してください"):
+            self.assertIn(marker, segment)
+        for field in ("month", "calendar_category", "calendar_state"):
+            self.assertIn(f'name="{field}"', segment)
+
+    def test_business_calendar_calculates_predictions_and_states(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("item.start_date + timedelta(days=180)", segment)
+        self.assertIn("item.mating_date + timedelta(days=63)", segment)
+        self.assertIn('"overdue" if day < date.today()', segment)
+        self.assertIn('item.status == "completed"', segment)
+        self.assertIn("item.id in completed_breedings", segment)
+        self.assertIn("event_keys", segment)
+        self.assertIn("if key in event_keys", segment)
+        self.assertIn('task_category = item.category if item.category in {"breeding", "health", "legal", "sales"}', segment)
+
+    def test_business_calendar_has_mobile_cards(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("calendar-mobile-card", segment)
+        self.assertIn("calendar-desktop-only", segment)
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn(".calendar-mobile-only{{display:none}}", layout_source)
+        self.assertIn(".health-mobile-only,.calendar-mobile-only{{display:block}}", layout_source)
+
 
 if __name__ == "__main__":
     unittest.main()
