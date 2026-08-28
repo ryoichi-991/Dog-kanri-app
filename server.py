@@ -62,6 +62,7 @@ MODULES = {
     "finance/budgets": ("予算管理・予実比較", "月別の入金目標、経費予算、実績差異の管理"),
     "finance/cashflow": ("資金繰り・90日予測", "入出金予定、未入金請求、将来残高の確認"),
     "finance/recurring": ("定期収支・自動登録", "毎月の入金・経費を重複なく台帳へ自動登録"),
+    "finance/accounts": ("口座・現金残高管理", "銀行口座、現金、決済口座ごとの残高と振替"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
@@ -466,6 +467,36 @@ class FinanceRecurringPosting(Base):
     period: Mapped[str] = mapped_column(String(7), index=True)
     financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceAccount(Base):
+    __tablename__ = "finance_accounts"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    account_type: Mapped[str] = mapped_column(String(30), index=True)
+    opening_balance: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class FinanceAccountEntry(Base):
+    __tablename__ = "finance_account_entries"
+    __table_args__ = (UniqueConstraint("financial_entry_id", name="uq_finance_account_entry"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="CASCADE"), index=True)
+
+
+class FinanceAccountTransfer(Base):
+    __tablename__ = "finance_account_transfers"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    transferred_on: Mapped[date] = mapped_column(Date, index=True)
+    from_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
+    to_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class Invoice(Base):
@@ -1419,6 +1450,7 @@ def page_usage_guide(title: str) -> str:
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
+        (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。"], "口座間振替は収益・経費へ計上されません。台帳記録を誤った口座へ割り当てないよう、日付・内容・金額を確認してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
@@ -1467,7 +1499,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4594,6 +4626,75 @@ def finance_recurring_stop(rule_id: int, access=Depends(require_tenant_user), se
         raise HTTPException(status_code=400, detail="定期ルールを確認してください")
     rule.active = False; session.commit()
     return RedirectResponse("/modules/finance/recurring", status_code=303)
+
+
+FINANCE_ACCOUNT_TYPES = {"bank": "銀行口座", "cash": "現金", "card": "決済・カード", "other": "その他"}
+
+
+@app.get("/modules/finance/accounts", response_class=HTMLResponse)
+def finance_accounts_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id).order_by(FinanceAccount.active.desc(), FinanceAccount.id)).all()
+    assignments = session.scalars(select(FinanceAccountEntry).where(FinanceAccountEntry.tenant_id == tenant.id)).all()
+    entry_ids = [item.financial_entry_id for item in assignments]
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id)).all()
+    entries_by_id = {item.id: item for item in entries}; assigned_ids = set(entry_ids)
+    transfers = session.scalars(select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant.id).order_by(FinanceAccountTransfer.transferred_on.desc(), FinanceAccountTransfer.id.desc())).all()
+    balances = {item.id: item.opening_balance for item in accounts}
+    for assignment in assignments:
+        entry = entries_by_id.get(assignment.financial_entry_id)
+        if entry and assignment.account_id in balances: balances[assignment.account_id] += entry.amount if entry.entry_type == "income" else -entry.amount
+    for transfer in transfers:
+        if transfer.from_account_id in balances: balances[transfer.from_account_id] -= transfer.amount
+        if transfer.to_account_id in balances: balances[transfer.to_account_id] += transfer.amount
+    account_cards = "".join(f'<div class="module"><h3>{html.escape(item.name)}</h3><p>{FINANCE_ACCOUNT_TYPES.get(item.account_type, item.account_type)}</p><p><strong class="{"error" if balances[item.id] < 0 else ""}" style="font-size:25px">¥{balances[item.id]:,}</strong></p></div>' for item in accounts)
+    active_accounts = [item for item in accounts if item.active]
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_accounts)
+    unassigned = [item for item in sorted(entries, key=lambda value: (value.occurred_on, value.id), reverse=True) if item.id not in assigned_ids][:100]
+    unassigned_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(item.description)}／¥{item.amount:,}</option>' for item in unassigned)
+    transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.from_account_id), "不明"))}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.to_account_id), "不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in transfers[:50])
+    type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ACCOUNT_TYPES.items())
+    body = f'''<h1>口座・現金残高管理</h1><p>銀行口座・現金・決済口座ごとに台帳記録と振替を反映し、現在残高を確認します。</p><div class="grid">{account_cards or '<div class="tenant">口座を登録してください。</div>'}</div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a></div>
+    <h2>口座を登録</h2><form method="post" action="/modules/finance/accounts"><div class="grid"><div><label>口座名</label><input name="name" maxlength="100" required></div><div><label>種類</label><select name="account_type">{type_options}</select></div><div><label>開始残高</label><input type="number" name="opening_balance" min="-999999999" max="999999999" value="0" required></div></div><button>口座を登録</button></form>
+    <h2>台帳記録を口座へ割り当て</h2>{f'<form method="post" action="/modules/finance/accounts/assign"><div class="grid"><div><label>未割当の台帳記録</label><select name="financial_entry_id">{unassigned_options}</select></div><div><label>口座</label><select name="account_id">{account_options}</select></div></div><button>口座へ割り当て</button></form>' if unassigned and active_accounts else '<p class="tenant">割り当て可能な台帳記録または口座がありません。</p>'}
+    <h2>口座間振替</h2>{f'<form method="post" action="/modules/finance/accounts/transfer"><div class="grid"><div><label>振替日</label><input type="date" name="transferred_on" value="{date.today()}" required></div><div><label>振替元</label><select name="from_account_id">{account_options}</select></div><div><label>振替先</label><select name="to_account_id">{account_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>メモ</label><input name="notes" maxlength="500"><button>振替を登録</button></form>' if len(active_accounts) >= 2 else '<p class="tenant">振替には有効な口座が2つ以上必要です。</p>'}
+    <h2>直近の振替履歴</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>振替元</th><th>振替先</th><th>金額</th><th>メモ</th></tr>{transfer_rows or '<tr><td colspan="5">振替履歴はありません。</td></tr>'}</table></div>'''
+    return layout("口座・現金残高管理", body, user)
+
+
+@app.post("/modules/finance/accounts")
+def finance_account_create(name: str = Form(...), account_type: str = Form(...), opening_balance: int = Form(0), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access; clean_name = name.strip()
+    if not clean_name or len(clean_name) > 100 or account_type not in FINANCE_ACCOUNT_TYPES or opening_balance < -999999999 or opening_balance > 999999999:
+        raise HTTPException(status_code=400, detail="口座情報を確認してください")
+    session.add(FinanceAccount(tenant_id=tenant.id, name=clean_name, account_type=account_type, opening_balance=opening_balance)); session.commit()
+    return RedirectResponse("/modules/finance/accounts", status_code=303)
+
+
+@app.post("/modules/finance/accounts/assign")
+def finance_account_assign(financial_entry_id: int = Form(...), account_id: int = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == financial_entry_id, FinancialEntry.tenant_id == tenant.id))
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    exists = session.scalar(select(FinanceAccountEntry.id).where(FinanceAccountEntry.financial_entry_id == financial_entry_id))
+    if not entry or not account or exists:
+        raise HTTPException(status_code=400, detail="台帳記録または口座を確認してください")
+    session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id)); session.commit()
+    return RedirectResponse("/modules/finance/accounts", status_code=303)
+
+
+@app.post("/modules/finance/accounts/transfer")
+def finance_account_transfer(transferred_on: str = Form(...), from_account_id: int = Form(...), to_account_id: int = Form(...), amount: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    try: transfer_day = date.fromisoformat(transferred_on)
+    except ValueError: raise HTTPException(status_code=400, detail="振替日を確認してください")
+    source = session.scalar(select(FinanceAccount).where(FinanceAccount.id == from_account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    destination = session.scalar(select(FinanceAccount).where(FinanceAccount.id == to_account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    if not source or not destination or source.id == destination.id or amount <= 0 or amount > 999999999 or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="振替内容を確認してください")
+    session.add(FinanceAccountTransfer(tenant_id=tenant.id, transferred_on=transfer_day, from_account_id=source.id, to_account_id=destination.id, amount=amount, notes=notes.strip() or None)); session.commit()
+    return RedirectResponse("/modules/finance/accounts", status_code=303)
 
 
 def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:

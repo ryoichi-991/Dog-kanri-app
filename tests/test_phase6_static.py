@@ -508,6 +508,42 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn('href="/modules/finance/recurring"', SOURCE)
         self.assertIn('"finance/recurring": ("定期収支・自動登録"', SOURCE)
 
+    def test_finance_account_models_and_routes_are_tenant_scoped(self):
+        for model_name in ("FinanceAccount", "FinanceAccountEntry", "FinanceAccountTransfer"):
+            model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == model_name)
+            self.assertIn("tenant_id", ast.get_source_segment(SOURCE, model))
+        assignment = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceAccountEntry")
+        self.assertIn("uq_finance_account_entry", ast.get_source_segment(SOURCE, assignment))
+        for route_name in ("finance_accounts_page", "finance_account_create", "finance_account_assign", "finance_account_transfer"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+
+    def test_finance_account_balances_include_entries_and_transfers(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_accounts_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("opening_balance", "FinanceAccountEntry", "entry.entry_type == \"income\"", "transfer.from_account_id", "transfer.to_account_id", "unassigned", "assigned_ids"):
+            self.assertIn(marker, segment)
+        for label in ("口座・現金残高管理", "台帳記録を口座へ割り当て", "口座間振替", "直近の振替履歴"):
+            self.assertIn(label, segment)
+
+    def test_finance_account_assignment_and_transfer_are_validated(self):
+        assign = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_assign")
+        assign_source = ast.get_source_segment(SOURCE, assign)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "FinanceAccount.active.is_(True)", "FinanceAccountEntry.financial_entry_id == financial_entry_id", "if not entry or not account or exists"):
+            self.assertIn(marker, assign_source)
+        transfer = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_transfer")
+        transfer_source = ast.get_source_segment(SOURCE, transfer)
+        for marker in ("source.id == destination.id", "amount <= 0", "amount > 999999999", "len(notes) > 500", "FinanceAccountTransfer"):
+            self.assertIn(marker, transfer_source)
+
+    def test_finance_accounts_have_guide_and_navigation(self):
+        self.assertIn('href="/modules/finance/accounts"', SOURCE)
+        self.assertIn('"finance/accounts": ("口座・現金残高管理"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("口座・現金", guide_source)
+        self.assertIn("収益・経費へ計上されません", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
