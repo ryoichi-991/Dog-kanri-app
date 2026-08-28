@@ -370,6 +370,39 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("経営収益", guide_source)
         self.assertIn("決算・税務申告", guide_source)
 
+    def test_finance_export_routes_require_tenant_admin_and_password(self):
+        for route_name in ("finance_export_page", "finance_export_download"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            segment = ast.get_source_segment(SOURCE, route)
+            self.assertIn("require_tenant_admin", segment)
+            self.assertIn("tenant.", segment)
+        download = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        segment = ast.get_source_segment(SOURCE, download)
+        for marker in ("passwords.verify", "not confirmed", "year < 2000", "year > 2100", "FinancialEntry.tenant_id == tenant.id", "Invoice.tenant_id == tenant.id", "CostAllocation.tenant_id == tenant.id", "FinanceDocument.tenant_id == tenant.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_export_contains_csv_documents_and_checksums(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_csv")
+        helper_source = ast.get_source_segment(SOURCE, helper)
+        for marker in ('startswith(("=", "+", "-", "@"))', '"\\ufeff"', 'replace("\\x00", "")'):
+            self.assertIn(marker, helper_source)
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("ledger.csv", "invoices.csv", "cost-allocations.csv", "documents.csv", "manifest.json", "hashlib.sha256", "zipfile.ZIP_DEFLATED", "document_files", "record_operation"):
+            self.assertIn(marker, segment)
+
+    def test_finance_export_has_safety_limits_private_response_and_guide(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("200 * 1024 * 1024", "len(documents) > 5000", 'media_type="application/zip"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, segment)
+        self.assertIn('"finance/export": ("会計・証憑一括出力"', SOURCE)
+        self.assertIn('href="/modules/finance/export"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("会計・証憑一括出力", guide_source)
+        self.assertIn("安全な共有方法", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

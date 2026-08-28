@@ -59,6 +59,7 @@ MODULES = {
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
     "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
     "finance/reports": ("経営収益ダッシュボード", "月別収支、経費構成、未入金、証憑保管状況"),
+    "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
     "finance/documents": ("領収書・証憑管理", "台帳記録に紐づく領収書・請求書の保管"),
@@ -1360,6 +1361,7 @@ def page_usage_guide(title: str) -> str:
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
         (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
+        (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
         (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
@@ -1407,7 +1409,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4353,10 +4355,68 @@ def finance_reports_page(year: str = "", access=Depends(require_tenant_user), se
     body = f'''<h1>経営収益ダッシュボード</h1><p>登録済みの台帳・販売・請求書・証憑を集計し、犬舎経営の年間状況を確認します。</p>
     <form method="get" action="/modules/finance/reports"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{report_year}" required></div></div><button>集計を表示</button> <a class="button secondary" href="/modules/finance/reports">今年へ戻る</a></form>
     <div class="grid"><div class="module"><h3>年間入金</h3><p><strong style="font-size:25px">¥{annual_income:,}</strong></p></div><div class="module"><h3>年間経費</h3><p><strong style="font-size:25px">¥{annual_expense:,}</strong></p></div><div class="module"><h3>年間収支</h3><p><strong class="{'error' if annual_balance < 0 else ''}" style="font-size:25px">¥{annual_balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div><div class="module"><h3>期限超過請求</h3><p><strong class="{'error' if overdue_invoices else ''}" style="font-size:25px">{len(overdue_invoices)}件／¥{overdue_total:,}</strong></p></div><div class="module"><h3>経費証憑保管率</h3><p><strong class="{'error' if missing_documents else ''}" style="font-size:25px">{document_rate}%</strong></p><small>未保管 {missing_documents}件</small></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
     <h2>{report_year}年の月別推移</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金</th><th>経費</th><th>収支</th></tr>{month_rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
     <h2>年間の経費構成</h2><div style="overflow-x:auto"><table><tr><th>費目</th><th>金額</th><th>比較</th></tr>{category_rows or '<tr><td colspan="3">経費記録はありません。</td></tr>'}</table></div>'''
     return layout("経営収益ダッシュボード", body, user)
+
+
+def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:
+    def safe_cell(value) -> str:
+        text_value = str(value if value is not None else "").replace("\x00", "").replace("\r", " ").replace("\n", " ")
+        return "'" + text_value if text_value.startswith(("=", "+", "-", "@")) else text_value
+    output = io.StringIO(newline="")
+    writer = csv.writer(output); writer.writerow(headers)
+    for row in rows: writer.writerow([safe_cell(value) for value in row])
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+
+@app.get("/modules/finance/export", response_class=HTMLResponse)
+def finance_export_page(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    body = f'''<h1>会計・証憑一括出力</h1><p>{html.escape(tenant.name)}の会計資料を年度単位のZIPにまとめ、税理士への共有や年度保管に利用します。</p>
+    <div class="tenant"><strong>ZIPに含まれる内容</strong><ul><li>収支・経費台帳CSV</li><li>請求書CSV</li><li>原価配賦CSV</li><li>領収書・証憑原本と一覧CSV</li><li>全ファイルのSHA-256整合性情報</li></ul></div>
+    <form method="post" action="/modules/finance/export"><div class="grid"><div><label>対象年</label><input type="number" name="year" min="2000" max="2100" value="{date.today().year}" required></div><div><label>管理者パスワード</label><input type="password" name="admin_password" autocomplete="current-password" required></div></div>
+    <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 個人情報・取引情報を含むZIPとして安全に保管します</label><button class="success">ZIPを作成・ダウンロード</button></form>
+    <p><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボードへ戻る</a></p>'''
+    return layout("会計・証憑一括出力", body, user)
+
+
+@app.post("/modules/finance/export")
+def finance_export_download(year: int = Form(...), admin_password: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if year < 2000 or year > 2100 or not confirmed or not passwords.verify(admin_password, user.password_hash):
+        raise HTTPException(status_code=403, detail="対象年、管理者パスワード、確認項目を確認してください")
+    year_start, year_end = date(year, 1, 1), date(year, 12, 31)
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= year_start, FinancialEntry.occurred_on <= year_end).order_by(FinancialEntry.occurred_on, FinancialEntry.id)).all()
+    entry_ids = [item.id for item in entries]
+    invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.issued_on >= year_start, Invoice.issued_on <= year_end).order_by(Invoice.issued_on, Invoice.id)).all()
+    allocations = session.scalars(select(CostAllocation).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id.in_(entry_ids)).order_by(CostAllocation.id)).all() if entry_ids else []
+    documents = session.scalars(select(FinanceDocument).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(entry_ids)).order_by(FinanceDocument.id)).all() if entry_ids else []
+    document_bytes = sum(len(item.file_data) for item in documents)
+    if document_bytes > 200 * 1024 * 1024 or len(documents) > 5000:
+        raise HTTPException(status_code=413, detail="証憑の合計容量または件数が安全上限を超えています。期間を分けて管理してください")
+    entry_map = {item.id: item for item in entries}
+    ledger_csv = finance_export_csv(["ID", "日付", "区分", "費目", "内容", "金額", "メモ"], [[item.id, item.occurred_on, "入金" if item.entry_type == "income" else "経費", FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.notes or ""] for item in entries])
+    invoice_csv = finance_export_csv(["ID", "請求番号", "発行日", "支払期限", "金額", "状態", "販売案件ID", "台帳ID", "備考"], [[item.id, item.invoice_no, item.issued_on, item.due_on or "", item.amount, INVOICE_STATUSES.get(item.status, item.status), item.puppy_sale_id, item.ledger_entry_id or "", item.notes or ""] for item in invoices])
+    allocation_csv = finance_export_csv(["ID", "台帳ID", "台帳内容", "犬ID", "出産回ID", "配賦額", "メモ"], [[item.id, item.financial_entry_id, entry_map[item.financial_entry_id].description, item.dog_id or "", item.litter_id or "", item.amount, item.notes or ""] for item in allocations])
+    extension_by_type = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+    document_rows = []; document_files: list[tuple[str, bytes]] = []
+    for item in documents:
+        archive_name = f'documents/document-{item.id}.{extension_by_type.get(item.content_type, "bin")}'
+        entry = entry_map[item.financial_entry_id]
+        document_rows.append([item.id, item.financial_entry_id, entry.occurred_on, entry.description, FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type), item.issued_by or "", item.document_no or "", item.filename, archive_name])
+        document_files.append((archive_name, item.file_data))
+    documents_csv = finance_export_csv(["ID", "台帳ID", "台帳日付", "台帳内容", "書類種別", "発行元", "書類番号", "元ファイル名", "ZIP内ファイル"], document_rows)
+    output = io.BytesIO(); checksums = {}
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        for filename, content in [("ledger.csv", ledger_csv), ("invoices.csv", invoice_csv), ("cost-allocations.csv", allocation_csv), ("documents.csv", documents_csv), *document_files]:
+            archive.writestr(filename, content); checksums[filename] = hashlib.sha256(content).hexdigest()
+        manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
+    record_operation(session, "finance_export", "success", "会計・証憑一括出力", tenant.id, f"year={year} ledger={len(entries)} invoices={len(invoices)} documents={len(documents)}")
+    session.commit()
+    return Response(content=output.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="finance-export-{tenant.id}-{year}.zip"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 INVOICE_STATUSES = {"draft": "下書き", "issued": "発行済み", "paid": "入金済み", "cancelled": "取消"}
