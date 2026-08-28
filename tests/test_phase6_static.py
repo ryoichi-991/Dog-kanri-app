@@ -403,6 +403,40 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("会計・証憑一括出力", guide_source)
         self.assertIn("安全な共有方法", guide_source)
 
+    def test_finance_budget_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceBudget")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "year", "month", "entry_type", "category", "amount", "uq_finance_budget_period_category"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_budgets_page", "finance_budget_save"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+        self.assertIn('"finance/budgets": ("予算管理・予実比較"', SOURCE)
+
+    def test_finance_budget_save_validates_and_upserts(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_budget_save")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("year < 2000", "year > 2100", "month < 1", "month > 12", 'entry_type not in {"income", "expense"}', "category not in FINANCE_CATEGORIES", "amount < 0", "amount > 999999999", "FinanceBudget.tenant_id == tenant.id", "item.amount = amount"):
+            self.assertIn(marker, segment)
+
+    def test_finance_budgets_compare_monthly_actuals_and_mobile(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_budgets_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("monthly", "income_budget", "expense_budget", "income_actual", "expense_actual", "income_rate", "expense_rate", "income_gap", "expense_gap", "FinancialEntry.tenant_id == tenant.id"):
+            self.assertIn(marker, segment)
+        for label in ("年間入金目標", "入金実績・達成率", "年間経費予算", "経費実績・消化率", "月別予実"):
+            self.assertIn(label, segment)
+        self.assertIn("calendar-mobile-card", segment)
+        self.assertIn("calendar-mobile-only", segment)
+
+    def test_finance_budgets_have_specific_guide_and_navigation(self):
+        self.assertIn('href="/modules/finance/budgets"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("予算管理", guide_source)
+        self.assertIn("予実比較", guide_source)
+        self.assertIn("経営判断用の目安", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

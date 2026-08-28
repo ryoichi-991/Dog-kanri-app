@@ -59,6 +59,7 @@ MODULES = {
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
     "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
     "finance/reports": ("経営収益ダッシュボード", "月別収支、経費構成、未入金、証憑保管状況"),
+    "finance/budgets": ("予算管理・予実比較", "月別の入金目標、経費予算、実績差異の管理"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
@@ -411,6 +412,19 @@ class FinancialEntry(Base):
     amount: Mapped[int] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceBudget(Base):
+    __tablename__ = "finance_budgets"
+    __table_args__ = (UniqueConstraint("tenant_id", "year", "month", "entry_type", "category", name="uq_finance_budget_period_category"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    month: Mapped[int] = mapped_column(Integer, index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Invoice(Base):
@@ -1361,6 +1375,7 @@ def page_usage_guide(title: str) -> str:
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
         (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
+        (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
@@ -1409,7 +1424,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4355,10 +4370,61 @@ def finance_reports_page(year: str = "", access=Depends(require_tenant_user), se
     body = f'''<h1>経営収益ダッシュボード</h1><p>登録済みの台帳・販売・請求書・証憑を集計し、犬舎経営の年間状況を確認します。</p>
     <form method="get" action="/modules/finance/reports"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{report_year}" required></div></div><button>集計を表示</button> <a class="button secondary" href="/modules/finance/reports">今年へ戻る</a></form>
     <div class="grid"><div class="module"><h3>年間入金</h3><p><strong style="font-size:25px">¥{annual_income:,}</strong></p></div><div class="module"><h3>年間経費</h3><p><strong style="font-size:25px">¥{annual_expense:,}</strong></p></div><div class="module"><h3>年間収支</h3><p><strong class="{'error' if annual_balance < 0 else ''}" style="font-size:25px">¥{annual_balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div><div class="module"><h3>期限超過請求</h3><p><strong class="{'error' if overdue_invoices else ''}" style="font-size:25px">{len(overdue_invoices)}件／¥{overdue_total:,}</strong></p></div><div class="module"><h3>経費証憑保管率</h3><p><strong class="{'error' if missing_documents else ''}" style="font-size:25px">{document_rate}%</strong></p><small>未保管 {missing_documents}件</small></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/budgets">予算・予実比較</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
     <h2>{report_year}年の月別推移</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金</th><th>経費</th><th>収支</th></tr>{month_rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
     <h2>年間の経費構成</h2><div style="overflow-x:auto"><table><tr><th>費目</th><th>金額</th><th>比較</th></tr>{category_rows or '<tr><td colspan="3">経費記録はありません。</td></tr>'}</table></div>'''
     return layout("経営収益ダッシュボード", body, user)
+
+
+@app.get("/modules/finance/budgets", response_class=HTMLResponse)
+def finance_budgets_page(year: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        budget_year = int(year) if year else date.today().year
+    except ValueError:
+        raise HTTPException(status_code=400, detail="表示年を確認してください")
+    if budget_year < 2000 or budget_year > 2100:
+        raise HTTPException(status_code=400, detail="表示年を確認してください")
+    budgets = session.scalars(select(FinanceBudget).where(FinanceBudget.tenant_id == tenant.id, FinanceBudget.year == budget_year).order_by(FinanceBudget.month, FinanceBudget.entry_type, FinanceBudget.category)).all()
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= date(budget_year, 1, 1), FinancialEntry.occurred_on <= date(budget_year, 12, 31))).all()
+    monthly = {month: {"income_budget": 0, "expense_budget": 0, "income_actual": 0, "expense_actual": 0} for month in range(1, 13)}
+    for item in budgets: monthly[item.month][f"{item.entry_type}_budget"] += item.amount
+    for item in entries:
+        if item.entry_type in {"income", "expense"}: monthly[item.occurred_on.month][f"{item.entry_type}_actual"] += item.amount
+    income_budget = sum(value["income_budget"] for value in monthly.values()); expense_budget = sum(value["expense_budget"] for value in monthly.values())
+    income_actual = sum(value["income_actual"] for value in monthly.values()); expense_actual = sum(value["expense_actual"] for value in monthly.values())
+    income_rate = round(income_actual / income_budget * 100) if income_budget else 0
+    expense_rate = round(expense_actual / expense_budget * 100) if expense_budget else 0
+    rows = ""; mobile_cards = ""
+    for month, values in monthly.items():
+        income_gap = values["income_actual"] - values["income_budget"]; expense_gap = values["expense_budget"] - values["expense_actual"]
+        rows += f'<tr><td>{month}月</td><td>¥{values["income_budget"]:,}</td><td>¥{values["income_actual"]:,}</td><td class="{"error" if income_gap < 0 else ""}">¥{income_gap:,}</td><td>¥{values["expense_budget"]:,}</td><td>¥{values["expense_actual"]:,}</td><td class="{"error" if expense_gap < 0 else ""}">¥{expense_gap:,}</td></tr>'
+        mobile_cards += f'<article class="calendar-mobile-card"><h3>{budget_year}年{month}月</h3><p>入金目標 ¥{values["income_budget"]:,}／実績 <strong>¥{values["income_actual"]:,}</strong></p><p>経費予算 ¥{values["expense_budget"]:,}／実績 <strong class="{"error" if expense_gap < 0 else ""}">¥{values["expense_actual"]:,}</strong></p></article>'
+    budget_rows = "".join(f'<tr><td>{item.month}月</td><td>{"入金目標" if item.entry_type == "income" else "経費予算"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>¥{item.amount:,}</td></tr>' for item in budgets)
+    month_options = "".join(f'<option value="{month}">{month}月</option>' for month in range(1, 13))
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    body = f'''<h1>予算管理・予実比較</h1><p>月ごとの入金目標と経費予算を登録し、収支台帳の実績との差を確認します。</p>
+    <form method="get" action="/modules/finance/budgets"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{budget_year}" required></div></div><button>予実を表示</button> <a class="button secondary" href="/modules/finance/budgets">今年へ戻る</a></form>
+    <div class="grid"><div class="module"><h3>年間入金目標</h3><p><strong style="font-size:25px">¥{income_budget:,}</strong></p></div><div class="module"><h3>入金実績・達成率</h3><p><strong class="{'error' if income_budget and income_actual < income_budget else ''}" style="font-size:25px">¥{income_actual:,}／{income_rate}%</strong></p></div><div class="module"><h3>年間経費予算</h3><p><strong style="font-size:25px">¥{expense_budget:,}</strong></p></div><div class="module"><h3>経費実績・消化率</h3><p><strong class="{'error' if expense_budget and expense_actual > expense_budget else ''}" style="font-size:25px">¥{expense_actual:,}／{expense_rate}%</strong></p></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
+    <h2>予算・目標を登録</h2><form method="post" action="/modules/finance/budgets"><div class="grid"><div><label>年</label><input type="number" name="year" min="2000" max="2100" value="{budget_year}" required></div><div><label>月</label><select name="month">{month_options}</select></div><div><label>区分</label><select name="entry_type"><option value="income">入金目標</option><option value="expense">経費予算</option></select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="0" max="999999999" required></div></div><button>登録・更新</button></form>
+    <h2>{budget_year}年の月別予実</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金目標</th><th>入金実績</th><th>入金差額</th><th>経費予算</th><th>経費実績</th><th>経費残額</th></tr>{rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
+    <h2>登録済みの予算・目標</h2><div style="overflow-x:auto"><table><tr><th>月</th><th>区分</th><th>費目</th><th>金額</th></tr>{budget_rows or '<tr><td colspan="4">予算・目標はまだ登録されていません。</td></tr>'}</table></div>'''
+    return layout("予算管理・予実比較", body, user)
+
+
+@app.post("/modules/finance/budgets")
+def finance_budget_save(year: int = Form(...), month: int = Form(...), entry_type: str = Form(...), category: str = Form(...), amount: int = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    if year < 2000 or year > 2100 or month < 1 or month > 12 or entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount < 0 or amount > 999999999:
+        raise HTTPException(status_code=400, detail="予算・目標の内容を確認してください")
+    item = session.scalar(select(FinanceBudget).where(FinanceBudget.tenant_id == tenant.id, FinanceBudget.year == year, FinanceBudget.month == month, FinanceBudget.entry_type == entry_type, FinanceBudget.category == category))
+    if item:
+        item.amount = amount; item.updated_at = datetime.now(timezone.utc)
+    else:
+        session.add(FinanceBudget(tenant_id=tenant.id, year=year, month=month, entry_type=entry_type, category=category, amount=amount))
+    session.commit()
+    return RedirectResponse(f"/modules/finance/budgets?year={year}", status_code=303)
 
 
 def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:
