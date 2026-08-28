@@ -61,6 +61,7 @@ MODULES = {
     "finance/reports": ("経営収益ダッシュボード", "月別収支、経費構成、未入金、証憑保管状況"),
     "finance/budgets": ("予算管理・予実比較", "月別の入金目標、経費予算、実績差異の管理"),
     "finance/cashflow": ("資金繰り・90日予測", "入出金予定、未入金請求、将来残高の確認"),
+    "finance/recurring": ("定期収支・自動登録", "毎月の入金・経費を重複なく台帳へ自動登録"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
@@ -439,6 +440,31 @@ class FinanceCashPlan(Base):
     amount: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
     ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceRecurringRule(Base):
+    __tablename__ = "finance_recurring_rules"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    day_of_month: Mapped[int] = mapped_column(Integer)
+    entry_type: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[int] = mapped_column(Integer)
+    start_on: Mapped[date] = mapped_column(Date)
+    end_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class FinanceRecurringPosting(Base):
+    __tablename__ = "finance_recurring_postings"
+    __table_args__ = (UniqueConstraint("rule_id", "period", name="uq_finance_recurring_rule_period"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("finance_recurring_rules.id", ondelete="CASCADE"), index=True)
+    period: Mapped[str] = mapped_column(String(7), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1392,6 +1418,7 @@ def page_usage_guide(title: str) -> str:
         (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
+        (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
@@ -1440,7 +1467,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -1660,6 +1687,7 @@ def startup():
 
 def dispatch_scheduled_emails():
     with SessionLocal() as session:
+        generate_due_finance_recurring(session, date.today())
         if smtp_ready():
             pending = session.scalars(select(EmailDelivery).where(
                 EmailDelivery.status.in_(["pending", "failed"]), EmailDelivery.purpose != "password_reset", EmailDelivery.attempts < 5,
@@ -4502,6 +4530,70 @@ def finance_cashflow_complete(plan_id: int, access=Depends(require_tenant_user),
     plan.status = "completed"; plan.ledger_entry_id = entry.id
     session.commit()
     return RedirectResponse("/modules/finance/cashflow", status_code=303)
+
+
+def generate_due_finance_recurring(session: Session, target_day: date) -> int:
+    rules = session.scalars(select(FinanceRecurringRule).where(FinanceRecurringRule.active.is_(True), FinanceRecurringRule.start_on <= target_day, (FinanceRecurringRule.end_on.is_(None) | (FinanceRecurringRule.end_on >= target_day)))).all()
+    period = target_day.strftime("%Y-%m"); created = 0
+    last_day = calendar.monthrange(target_day.year, target_day.month)[1]
+    for rule in rules:
+        posting_day = date(target_day.year, target_day.month, min(rule.day_of_month, last_day))
+        if target_day < posting_day or posting_day < rule.start_on or (rule.end_on and posting_day > rule.end_on):
+            continue
+        exists = session.scalar(select(FinanceRecurringPosting.id).where(FinanceRecurringPosting.tenant_id == rule.tenant_id, FinanceRecurringPosting.rule_id == rule.id, FinanceRecurringPosting.period == period))
+        if exists:
+            continue
+        entry = FinancialEntry(tenant_id=rule.tenant_id, occurred_on=posting_day, entry_type=rule.entry_type, category=rule.category, description=rule.description, amount=rule.amount, notes=f"定期収支ルール #{rule.id}から自動登録")
+        session.add(entry); session.flush()
+        session.add(FinanceRecurringPosting(tenant_id=rule.tenant_id, rule_id=rule.id, period=period, financial_entry_id=entry.id)); created += 1
+    session.commit()
+    return created
+
+
+@app.get("/modules/finance/recurring", response_class=HTMLResponse)
+def finance_recurring_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    rules = session.scalars(select(FinanceRecurringRule).where(FinanceRecurringRule.tenant_id == tenant.id).order_by(FinanceRecurringRule.active.desc(), FinanceRecurringRule.id.desc())).all()
+    postings = session.execute(select(FinanceRecurringPosting, FinanceRecurringRule, FinancialEntry).join(FinanceRecurringRule, FinanceRecurringRule.id == FinanceRecurringPosting.rule_id).join(FinancialEntry, FinancialEntry.id == FinanceRecurringPosting.financial_entry_id).where(FinanceRecurringPosting.tenant_id == tenant.id).order_by(FinanceRecurringPosting.id.desc()).limit(50)).all()
+    rule_rows = ""; mobile_cards = ""
+    for item in rules:
+        action = f'<form method="post" action="/modules/finance/recurring/{item.id}/stop"><button class="secondary">停止する</button></form>' if item.active else '<span class="badge">停止済み</span>'
+        period_text = f'{item.start_on}〜{item.end_on or "終了日なし"}'
+        rule_rows += f'<tr><td>{item.day_of_month}日</td><td>{"入金" if item.entry_type == "income" else "経費"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{period_text}</td><td>{action}</td></tr>'
+        mobile_cards += f'<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>毎月{item.day_of_month}日／{"入金" if item.entry_type == "income" else "経費"}／<strong>¥{item.amount:,}</strong></p><p>{period_text}</p><div class="health-toolbar">{action}</div></article>'
+    history_rows = "".join(f'<tr><td>{posting.period}</td><td>{entry.occurred_on}</td><td>{html.escape(rule.description)}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>¥{entry.amount:,}</td></tr>' for posting, rule, entry in postings)
+    categories = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    body = f'''<h1>定期収支・自動登録</h1><p>毎月発生する入金・経費を指定日に収支台帳へ自動登録します。</p>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a></div>
+    <h2>定期ルールを登録</h2><form method="post" action="/modules/finance/recurring"><div class="grid"><div><label>毎月の登録日</label><input type="number" name="day_of_month" min="1" max="31" value="1" required></div><div><label>区分</label><select name="entry_type"><option value="expense">経費</option><option value="income">入金</option></select></div><div><label>費目</label><select name="category">{categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div><div><label>開始日</label><input type="date" name="start_on" value="{date.today()}" required></div><div><label>終了日（任意）</label><input type="date" name="end_on"></div></div><label>内容</label><input name="description" maxlength="200" required><button>定期ルールを登録</button></form>
+    <h2>登録済みルール</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>登録日</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>期間</th><th>操作</th></tr>{rule_rows or '<tr><td colspan="7">定期ルールはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">定期ルールはありません。</div>'}</section>
+    <h2>直近の自動登録履歴</h2><div style="overflow-x:auto"><table><tr><th>対象月</th><th>台帳日付</th><th>内容</th><th>区分</th><th>金額</th></tr>{history_rows or '<tr><td colspan="5">自動登録履歴はありません。</td></tr>'}</table></div>'''
+    return layout("定期収支・自動登録", body, user)
+
+
+@app.post("/modules/finance/recurring")
+def finance_recurring_create(day_of_month: int = Form(...), entry_type: str = Form(...), category: str = Form(...), amount: int = Form(...), description: str = Form(...), start_on: str = Form(...), end_on: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    try:
+        start_day = date.fromisoformat(start_on); end_day = date.fromisoformat(end_on) if end_on else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="適用期間を確認してください")
+    clean_description = description.strip()
+    if day_of_month < 1 or day_of_month > 31 or entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount <= 0 or amount > 999999999 or not clean_description or len(clean_description) > 200 or (end_day and end_day < start_day):
+        raise HTTPException(status_code=400, detail="定期収支の内容を確認してください")
+    session.add(FinanceRecurringRule(tenant_id=tenant.id, day_of_month=day_of_month, entry_type=entry_type, category=category, amount=amount, description=clean_description, start_on=start_day, end_on=end_day))
+    session.flush(); generate_due_finance_recurring(session, date.today())
+    return RedirectResponse("/modules/finance/recurring", status_code=303)
+
+
+@app.post("/modules/finance/recurring/{rule_id}/stop")
+def finance_recurring_stop(rule_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    rule = session.scalar(select(FinanceRecurringRule).where(FinanceRecurringRule.id == rule_id, FinanceRecurringRule.tenant_id == tenant.id))
+    if not rule or not rule.active:
+        raise HTTPException(status_code=400, detail="定期ルールを確認してください")
+    rule.active = False; session.commit()
+    return RedirectResponse("/modules/finance/recurring", status_code=303)
 
 
 def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:

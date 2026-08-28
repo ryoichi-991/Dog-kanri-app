@@ -476,6 +476,38 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("資金繰り", guide_source)
         self.assertIn("二重計上", guide_source)
 
+    def test_recurring_finance_models_and_routes_are_tenant_scoped(self):
+        for model_name in ("FinanceRecurringRule", "FinanceRecurringPosting"):
+            model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == model_name)
+            self.assertIn("tenant_id", ast.get_source_segment(SOURCE, model))
+        posting = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceRecurringPosting")
+        self.assertIn("uq_finance_recurring_rule_period", ast.get_source_segment(SOURCE, posting))
+        for route_name in ("finance_recurring_page", "finance_recurring_create", "finance_recurring_stop"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+
+    def test_recurring_generator_is_month_end_safe_and_idempotent(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "generate_due_finance_recurring")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("calendar.monthrange", "min(rule.day_of_month, last_day)", "target_day < posting_day", "posting_day < rule.start_on", "posting_day > rule.end_on", "FinanceRecurringPosting.period == period", "if exists", "FinancialEntry", "FinanceRecurringPosting", "session.commit()"):
+            self.assertIn(marker, segment)
+        scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
+        self.assertIn("generate_due_finance_recurring(session, date.today())", ast.get_source_segment(SOURCE, scheduler))
+
+    def test_recurring_create_validation_stop_and_mobile_guide(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_recurring_create")
+        segment = ast.get_source_segment(SOURCE, create)
+        for marker in ("day_of_month < 1", "day_of_month > 31", 'entry_type not in {"income", "expense"}', "category not in FINANCE_CATEGORIES", "amount <= 0", "amount > 999999999", "end_day < start_day", "generate_due_finance_recurring"):
+            self.assertIn(marker, segment)
+        stop = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_recurring_stop")
+        self.assertIn("rule.active = False", ast.get_source_segment(SOURCE, stop))
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_recurring_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        self.assertIn("calendar-mobile-card", page_source)
+        self.assertIn("calendar-mobile-only", page_source)
+        self.assertIn('href="/modules/finance/recurring"', SOURCE)
+        self.assertIn('"finance/recurring": ("定期収支・自動登録"', SOURCE)
+
 
 if __name__ == "__main__":
     unittest.main()
