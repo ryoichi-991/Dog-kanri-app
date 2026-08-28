@@ -937,6 +937,45 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("failed_count", summary)
         self.assertNotIn("normalized_owner", summary)
 
+    def test_notification_delivery_dashboard_exports_current_filters(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("export_query = urlencode", segment)
+        self.assertIn("表示条件でCSV出力", segment)
+        self.assertIn("表示条件でPDF出力", segment)
+        for field in ("delivery_status", "channel", "notification_category", "date_from", "date_to", "owner_keyword"):
+            self.assertIn(f'"{field}":', segment)
+
+    def test_notification_delivery_export_is_tenant_scoped_and_filtered(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_delivery_export_items")
+        segment = ast.get_source_segment(TEXT, helper)
+        self.assertIn("DogOwnership.tenant_id == tenant.id", segment)
+        self.assertIn("LineDelivery.tenant_id == tenant.id", segment)
+        self.assertIn("EmailDelivery.user_id.in_(related_ids)", segment)
+        self.assertIn("FamilyPushReceipt.user_id.in_(related_ids)", segment)
+        for marker in ("allowed_statuses", "allowed_channels", "allowed_categories", "start_filter", "end_filter", "normalized_owner"):
+            self.assertIn(marker, segment)
+
+    def test_notification_delivery_csv_has_audit_columns_and_private_cache(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_report_csv")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("notification_delivery_export_items", segment)
+        for label in ("作成日時", "オーナー", "配信経路", "通知種類", "結果", "試行回数", "最終配信日時", "失敗理由"):
+            self.assertIn(label, segment)
+        self.assertIn('media_type="text/csv; charset=utf-8"', segment)
+        self.assertIn('"Cache-Control": "private, no-store"', segment)
+        self.assertIn("safe_csv_cell", segment)
+        self.assertIn('startswith(("=", "+", "-", "@"))', segment)
+
+    def test_notification_delivery_pdf_is_japanese_and_private(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_report_pdf")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("notification_delivery_export_items", segment)
+        self.assertIn('UnicodeCIDFont("HeiseiKakuGo-W5")', segment)
+        self.assertIn("landscape(A4)", segment)
+        self.assertIn('media_type="application/pdf"', segment)
+        self.assertIn('"Cache-Control": "private, no-store"', segment)
+
     def test_unified_line_retry_is_confirmed_and_tenant_scoped(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_line_delivery_retry")
         segment = ast.get_source_segment(TEXT, route)
