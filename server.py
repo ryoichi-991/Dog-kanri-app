@@ -8152,8 +8152,23 @@ def email_deliveries_manage(access=Depends(require_tenant_admin), session: Sessi
 
 
 @app.get("/admin/notification-deliveries", response_class=HTMLResponse)
-def notification_deliveries_manage(retry: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def notification_deliveries_manage(retry: str = "", delivery_status: str = "", channel: str = "", notification_category: str = "",
+                                   date_from: str = "", date_to: str = "", owner_keyword: str = "",
+                                   access=Depends(require_tenant_admin), session: Session = Depends(db)):
     actor, tenant = access
+    allowed_statuses = {"", "sent", "failed", "pending"}
+    allowed_channels = {"", "line", "email", "browser"}
+    allowed_categories = {"", "anniversary", "health", "test"}
+    if delivery_status not in allowed_statuses or channel not in allowed_channels or notification_category not in allowed_categories:
+        raise HTTPException(status_code=400, detail="検索条件を確認してください")
+    try:
+        start_filter = date.fromisoformat(date_from) if date_from else None
+        end_filter = date.fromisoformat(date_to) if date_to else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="検索期間を確認してください")
+    if start_filter and end_filter and start_filter > end_filter:
+        raise HTTPException(status_code=400, detail="終了日は開始日以降にしてください")
+    normalized_owner = owner_keyword.strip().lower()[:100]
     related_ids = set(session.scalars(select(DogOwnership.user_id).where(
         DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
     owners = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(related_ids))).all()} if related_ids else {}
@@ -8192,6 +8207,23 @@ def notification_deliveries_manage(retry: str = "", access=Depends(require_tenan
     last_sent = max((item[6] for item in items if item[6]), default=None)
     labels = {"anniversaries": "記念日", "anniversary": "記念日", "health_vaccinations": "ワクチン", "health_checkups": "健診",
               "health_medications": "投薬", "health_followups": "再診・経過確認", "health_reminder": "健康予定", "health": "健康予定", "test": "テスト"}
+    all_count = len(items)
+    def category_group(value: str) -> str:
+        if "anniversar" in value: return "anniversary"
+        if value == "test": return "test"
+        return "health"
+    channel_labels = {"line": "LINE（主通知）", "email": "メール（予備）", "browser": "ブラウザ（予備）"}
+    items = [item for item in items if
+             (not delivery_status or item[4] == delivery_status) and
+             (not channel or item[2] == channel_labels[channel]) and
+             (not notification_category or category_group(item[3]) == notification_category) and
+             (not start_filter or item[0].date() >= start_filter) and
+             (not end_filter or item[0].date() <= end_filter) and
+             (not normalized_owner or normalized_owner in item[1].lower())]
+    status_options = "".join(f'<option value="{value}" {"selected" if delivery_status == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("sent", "成功"), ("failed", "失敗"), ("pending", "保留")))
+    channel_options = "".join(f'<option value="{value}" {"selected" if channel == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("line", "LINE"), ("email", "メール"), ("browser", "ブラウザ")))
+    category_options = "".join(f'<option value="{value}" {"selected" if notification_category == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("health", "健康予定"), ("anniversary", "記念日"), ("test", "テスト")))
+    search_form = f'''<form method="get" action="/admin/notification-deliveries"><h2>配信履歴を検索</h2><div class="grid"><div><label>結果</label><select name="delivery_status">{status_options}</select></div><div><label>配信経路</label><select name="channel">{channel_options}</select></div><div><label>通知種類</label><select name="notification_category">{category_options}</select></div><div><label>開始日</label><input type="date" name="date_from" value="{html.escape(date_from)}"></div><div><label>終了日</label><input type="date" name="date_to" value="{html.escape(date_to)}"></div><div><label>オーナー名</label><input type="search" name="owner_keyword" value="{html.escape(owner_keyword[:100])}" maxlength="100" placeholder="氏名の一部"></div></div><button>履歴を検索</button> <a class="button secondary" href="/admin/notification-deliveries">条件をクリア</a></form><p><strong>{len(items)}件</strong>／全{all_count}件を表示</p>'''
     rows = "".join(f'''<tr><td>{created.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(owner)}</td><td>{html.escape(channel)}</td>
         <td>{html.escape(labels.get(category, category))}</td><td><span class="badge">{html.escape(status)}</span></td><td>{attempts}</td>
         <td>{sent_at.strftime("%Y-%m-%d %H:%M") if sent_at else "－"}</td><td>{html.escape(error)}</td><td>{action}</td></tr>'''
@@ -8203,8 +8235,9 @@ def notification_deliveries_manage(retry: str = "", access=Depends(require_tenan
     <div class="tenant"><strong>最終配信日時</strong><h2>{last_sent.strftime("%Y-%m-%d %H:%M") if last_sent else "配信なし"}</h2></div>
     <div class="tenant"><strong>主通知</strong><h2>LINE</h2><small>メール・ブラウザは予備</small></div></div>
     <p><a class="button secondary" href="/family/line/manage">LINE公式設定</a> <a class="button secondary" href="/admin/email-deliveries">メール送信履歴</a></p>
+    {search_form}
     <div style="overflow-x:auto"><table><tr><th>作成日時</th><th>オーナー</th><th>経路</th><th>種類</th><th>結果</th><th>試行</th><th>最終配信</th><th>失敗理由</th><th>操作</th></tr>
-    {rows or '<tr><td colspan="9">健康・記念日通知の配信履歴はありません。</td></tr>'}</table></div>'''
+    {rows or '<tr><td colspan="9">条件に一致する配信履歴はありません。</td></tr>'}</table></div>'''
     return layout("通知配信履歴", body, actor)
 
 

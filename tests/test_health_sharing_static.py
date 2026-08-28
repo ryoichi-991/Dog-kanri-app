@@ -911,6 +911,32 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("/admin/notification-deliveries/line/", segment)
         self.assertIn("/admin/notification-deliveries/email/", segment)
 
+    def test_notification_delivery_dashboard_supports_combined_filters(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        for field in ("delivery_status", "channel", "notification_category", "date_from", "date_to", "owner_keyword"):
+            self.assertIn(field, segment)
+            self.assertIn(f'name="{field}"', segment)
+        for label in ("配信履歴を検索", "履歴を検索", "条件をクリア", "条件に一致する配信履歴はありません"):
+            self.assertIn(label, segment)
+        self.assertIn("all_count", segment)
+        self.assertIn("category_group", segment)
+
+    def test_notification_delivery_filters_validate_values_and_period(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        for marker in ("allowed_statuses", "allowed_channels", "allowed_categories", "検索条件を確認してください", "検索期間を確認してください", "終了日は開始日以降にしてください"):
+            self.assertIn(marker, segment)
+        self.assertIn("owner_keyword.strip().lower()[:100]", segment)
+
+    def test_notification_delivery_summary_is_not_changed_by_filters(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        summary = segment[segment.index("since ="):segment.index("all_count =")]
+        self.assertIn("success_count", summary)
+        self.assertIn("failed_count", summary)
+        self.assertNotIn("normalized_owner", summary)
+
     def test_unified_line_retry_is_confirmed_and_tenant_scoped(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_line_delivery_retry")
         segment = ast.get_source_segment(TEXT, route)
