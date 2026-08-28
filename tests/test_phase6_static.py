@@ -138,6 +138,8 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         for field in ("month", "calendar_category", "calendar_state"):
             self.assertIn(f'name="{field}"', segment)
+        self.assertIn('name="show_all"', segment)
+        self.assertIn("show_all or first_day <= item[0] <= month_end", segment)
 
     def test_business_calendar_calculates_predictions_and_states(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
@@ -159,6 +161,34 @@ class Phase6StaticTests(unittest.TestCase):
         layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
         self.assertIn(".calendar-mobile-only{{display:none}}", layout_source)
         self.assertIn(".health-mobile-only,.calendar-mobile-only{{display:block}}", layout_source)
+
+    def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
+        segment = ast.get_source_segment(SOURCE, helper)
+        self.assertIn("TaskEvent.tenant_id == tenant_id", segment)
+        self.assertIn("TaskEvent.completed.is_(False)", segment)
+        self.assertIn("LegalDocument.tenant_id == tenant_id", segment)
+        self.assertIn('LegalDocument.status != "completed"', segment)
+        self.assertIn("today + timedelta(days=7)", segment)
+        self.assertIn("return items[:50]", segment)
+
+    def test_dashboard_shows_overdue_today_and_week_priorities(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("dashboard_priority_items(tenant.id, session)", segment)
+        for marker in ("overdue_count", "today_count", "week_count", "期限超過", "本日の予定", "7日以内", "今日の要対応"):
+            self.assertIn(marker, segment)
+        self.assertIn("priority_items[:10]", segment)
+        self.assertIn("calendar_state=overdue&show_all=true", segment)
+
+    def test_dashboard_has_quick_actions_and_mobile_priority_layout(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard")
+        segment = ast.get_source_segment(SOURCE, route)
+        for label in ("業務カレンダー", "Todoを登録", "健康管理"):
+            self.assertIn(label, segment)
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn(".priority-list{{display:grid", layout_source)
+        self.assertIn(".priority-item{{align-items:flex-start;flex-direction:column}}", layout_source)
 
 
 if __name__ == "__main__":
