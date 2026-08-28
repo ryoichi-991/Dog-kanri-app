@@ -63,6 +63,37 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("position:fixed;inset:0 auto 0 0", layout_source)
         self.assertIn(".owner-view main{{margin:0 0 0 260px", layout_source)
 
+    def test_business_navigation_uses_two_level_groups(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn('class="nav-home" href="/dashboard"', layout_source)
+        self.assertIn("管理画面TOP", layout_source)
+        for key, label in (
+            ("daily", "日常業務"),
+            ("dogs", "犬の管理"),
+            ("breeding", "繁殖と血統"),
+            ("business", "健康と販売"),
+            ("family-admin", "FAMILY管理"),
+            ("system", "システム設定"),
+        ):
+            self.assertIn(f'data-nav-group="{key}"', layout_source)
+            self.assertIn(f"</span>{label}</summary>", layout_source)
+        self.assertEqual(layout_source.count('class="nav-group"'), 6)
+
+    def test_business_navigation_restores_and_opens_current_group(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        for marker in (
+            "active.closest('.nav-group')",
+            "current.open=true",
+            "localStorage.getItem(key)==='open'",
+            "localStorage.setItem(key,group.open?'open':'closed')",
+        ):
+            self.assertIn(marker, layout_source)
+        self.assertIn(".sidebar nav a:hover,.sidebar nav a.active", layout_source)
+
+    def test_business_navigation_stays_two_column_on_mobile(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn(".sidebar .nav-group-links{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", layout_source)
+
 
 if __name__ == "__main__":
     unittest.main()
