@@ -94,6 +94,33 @@ class Phase6StaticTests(unittest.TestCase):
         layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
         self.assertIn(".sidebar .nav-group-links{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))", layout_source)
 
+    def test_authenticated_pages_get_collapsible_usage_guide_automatically(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn("page_usage_guide(title)", layout_source)
+        self.assertIn("if user and", layout_source)
+        self.assertIn("heading_end = content.find", layout_source)
+        self.assertIn("{content}</div>", layout_source)
+
+    def test_usage_guide_has_consistent_beginner_sections(self):
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        segment = ast.get_source_segment(SOURCE, guide)
+        for label in ("この画面の使い方を見る", "この画面でできること", "基本的な使い方", "操作上の注意"):
+            self.assertIn(label, segment)
+        self.assertIn('<details class="page-guide">', segment)
+        self.assertIn("html.escape", segment)
+
+    def test_usage_guide_covers_major_business_and_family_features(self):
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        segment = ast.get_source_segment(SOURCE, guide)
+        for keyword in ("通知配信履歴", "LINE公式", "健康", "交配", "出産", "販売犬", "顧客", "法令", "FAMILY", "バックアップ"):
+            self.assertIn(keyword, segment)
+        self.assertIn("今後追加する画面", ast.get_docstring(guide))
+
+    def test_usage_guide_is_single_column_on_mobile(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        self.assertIn(".page-guide-grid{{display:grid;grid-template-columns:repeat(3", layout_source)
+        self.assertIn(".page-guide-grid{{grid-template-columns:1fr}}", layout_source)
+
 
 if __name__ == "__main__":
     unittest.main()
