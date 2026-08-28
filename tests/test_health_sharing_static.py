@@ -672,6 +672,41 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("実施済み履歴", segment)
         self.assertIn("/health/schedules/completed", segment)
 
+    def test_health_mobile_css_has_touch_targets_and_single_column_forms(self):
+        layout_source = TEXT[TEXT.index("def layout"):TEXT.index("def family_layout")]
+        for marker in (".health-mobile-only", ".health-mobile-card", ".health-toolbar", ".health-entry-form"):
+            self.assertIn(marker, layout_source)
+        self.assertIn("@media(max-width:700px)", layout_source)
+        self.assertIn("min-height:46px", layout_source)
+        self.assertIn("font-size:16px", layout_source)
+
+    def test_health_calendar_has_mobile_agenda_without_horizontal_scroll(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health_calendar")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("mobile_calendar_items", segment)
+        self.assertIn('class="health-desktop-only"', segment)
+        self.assertIn('class="health-mobile-only" aria-label="今月の健康予定"', segment)
+        self.assertIn("実施済みにする", segment)
+
+    def test_health_dashboard_has_mobile_due_cards_and_toolbar(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("due_mobile_cards", segment)
+        self.assertIn('class="health-toolbar"', segment)
+        self.assertIn('class="health-mobile-card"', segment)
+        self.assertIn("実施済みにする", segment)
+
+    def test_completed_health_schedules_have_mobile_cards(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_completion_history")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("mobile_cards", segment)
+        self.assertIn('class="health-mobile-card"', segment)
+        self.assertIn("未完了に戻す", segment)
+
+    def test_owner_health_category_form_is_mobile_optimized(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_owner_health_category_page")
+        self.assertIn('class="health-entry-form"', ast.get_source_segment(TEXT, route))
+
     def test_health_completion_history_is_scoped_to_owner_and_dog(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_health_schedule_completion_history")
         segment = ast.get_source_segment(TEXT, page)
