@@ -311,6 +311,39 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
 
+    def test_finance_document_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceDocument")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "financial_entry_id", "document_type", "issued_by", "document_no", "filename", "content_type", "file_data"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_documents_page", "finance_document_create", "finance_document_file"):
+            route = next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+        self.assertIn('"finance/documents": ("領収書・証憑管理"', SOURCE)
+
+    def test_finance_document_upload_validates_type_size_and_filename(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "finance_document_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", '"application/pdf"', '"image/jpeg"', '"image/png"', '"image/webp"', "8 * 1024 * 1024 + 1", "len(content) > 8 * 1024 * 1024", "Path(document_file.filename", "allowed_extensions", "suffix not in allowed_extensions", "tenant_id=tenant.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_document_file_is_private_and_nosniff(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_document_file")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceDocument.tenant_id == tenant.id", '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"', "Content-Disposition", "quote(item.filename)"):
+            self.assertIn(marker, segment)
+
+    def test_finance_documents_have_search_guide_navigation_and_mobile_cards(self):
+        self.assertIn('href="/modules/finance/documents"', SOURCE)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_documents_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ('name="document_type"', 'name="document_keyword"', "calendar-mobile-card", "calendar-mobile-only"):
+            self.assertIn(marker, page_source)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("領収書", "証憑", "個人情報や口座情報"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
