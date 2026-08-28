@@ -576,6 +576,43 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("会計期間ロック", guide_source)
         self.assertIn("締めた月", guide_source)
 
+    def test_finance_reconciliation_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceAccountReconciliation")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_account_reconciliation", "tenant_id", "account_id", "statement_on", "ledger_balance", "actual_balance", "difference", "checked_by_id"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_reconciliation_page", "finance_reconciliation_save"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+
+    def test_finance_reconciliation_calculates_historical_account_balance(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_balance_on")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("opening_balance", "FinanceAccountEntry", "FinancialEntry.occurred_on <= target_day", "FinanceAccountTransfer.transferred_on <= target_day", "transfer.to_account_id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_reconciliation_validates_difference_and_upserts(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reconciliation_save")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("actual_balance - ledger_balance", "difference and not notes.strip()", "FinanceAccount.active.is_(True)", "item.checked_at", "FinanceAccountReconciliation("):
+            self.assertIn(marker, segment)
+        for label in ("口座残高照合・差額チェック", "通帳・現金の実残高", "照合履歴", "差額がある場合は必須"):
+            self.assertIn(label, SOURCE)
+
+    def test_monthly_close_surfaces_unreconciled_accounts(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinanceAccountReconciliation", "reconciliation_day", "unreconciled_count", "月末残高未照合・差額あり", "口座残高を照合"):
+            self.assertIn(marker, segment)
+
+    def test_finance_reconciliation_has_guide_and_navigation(self):
+        self.assertIn('href="/modules/finance/reconciliation', SOURCE)
+        self.assertIn('"finance/reconciliation": ("口座残高照合・差額チェック"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("口座残高照合", guide_source)
+        self.assertIn("架空取引", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

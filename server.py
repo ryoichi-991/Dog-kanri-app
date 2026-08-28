@@ -63,6 +63,7 @@ MODULES = {
     "finance/cashflow": ("資金繰り・90日予測", "入出金予定、未入金請求、将来残高の確認"),
     "finance/recurring": ("定期収支・自動登録", "毎月の入金・経費を重複なく台帳へ自動登録"),
     "finance/accounts": ("口座・現金残高管理", "銀行口座、現金、決済口座ごとの残高と振替"),
+    "finance/reconciliation": ("口座残高照合・差額チェック", "帳簿残高と銀行・現金の実残高を照合"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -497,6 +498,21 @@ class FinanceAccountTransfer(Base):
     from_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
     to_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
     amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FinanceAccountReconciliation(Base):
+    __tablename__ = "finance_account_reconciliations"
+    __table_args__ = (UniqueConstraint("tenant_id", "account_id", "statement_on", name="uq_finance_account_reconciliation"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
+    statement_on: Mapped[date] = mapped_column(Date, index=True)
+    ledger_balance: Mapped[int] = mapped_column(Integer)
+    actual_balance: Mapped[int] = mapped_column(Integer)
+    difference: Mapped[int] = mapped_column(Integer)
+    checked_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
@@ -1467,6 +1483,7 @@ def page_usage_guide(title: str) -> str:
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
         (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。"], "口座間振替は収益・経費へ計上されません。台帳記録を誤った口座へ割り当てないよう、日付・内容・金額を確認してください。"),
+        (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を修正してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1516,7 +1533,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4380,6 +4397,19 @@ def ensure_finance_period_open(session: Session, tenant_id: int, target_day: dat
         raise HTTPException(status_code=409, detail=f"{target_day:%Y年%m月}は月次締め済みです。管理者が締めを解除してから登録してください")
 
 
+def finance_account_balance_on(session: Session, tenant_id: int, account: FinanceAccount, target_day: date) -> int:
+    balance = account.opening_balance
+    assignments = session.scalars(select(FinanceAccountEntry).where(FinanceAccountEntry.tenant_id == tenant_id, FinanceAccountEntry.account_id == account.id)).all()
+    entry_ids = [item.financial_entry_id for item in assignments]
+    if entry_ids:
+        entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.id.in_(entry_ids), FinancialEntry.occurred_on <= target_day)).all()
+        balance += sum(item.amount if item.entry_type == "income" else -item.amount for item in entries)
+    transfers = session.scalars(select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant_id, FinanceAccountTransfer.transferred_on <= target_day, ((FinanceAccountTransfer.from_account_id == account.id) | (FinanceAccountTransfer.to_account_id == account.id)))).all()
+    for transfer in transfers:
+        balance += transfer.amount if transfer.to_account_id == account.id else -transfer.amount
+    return balance
+
+
 @app.get("/modules/finance/closing", response_class=HTMLResponse)
 def finance_closing_page(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4399,6 +4429,11 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
     unassigned_count = len(set(entry_ids) - assigned_ids)
     missing_document_count = len(set(expense_ids) - documented_ids)
+    active_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
+    reconciliation_day = min(month_end, date.today())
+    reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
+    reconciled_by_account = {item.account_id: item for item in reconciliations}
+    unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or reconciled_by_account[account.id].difference != 0)
     closed = finance_period_close(session, tenant.id, first_day)
     role_is_admin = tenant_role(user, tenant, session) == Role.admin
     status_card = (f'<div class="tenant"><h2>締め済み</h2><p><strong>{closed.closed_at.strftime("%Y-%m-%d %H:%M")}に確定</strong></p><p>確定時：入金 ¥{closed.income_total:,}／経費 ¥{closed.expense_total:,}／{closed.entry_count}件</p><p>{html.escape(closed.notes or "")}</p></div>' if closed else '<div class="tenant"><h2>未締め</h2><p>点検後、管理者がこの月を確定してください。</p></div>')
@@ -4409,8 +4444,8 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
 
 
@@ -4750,12 +4785,71 @@ def finance_accounts_page(access=Depends(require_tenant_user), session: Session 
     transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.from_account_id), "不明"))}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.to_account_id), "不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in transfers[:50])
     type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ACCOUNT_TYPES.items())
     body = f'''<h1>口座・現金残高管理</h1><p>銀行口座・現金・決済口座ごとに台帳記録と振替を反映し、現在残高を確認します。</p><div class="grid">{account_cards or '<div class="tenant">口座を登録してください。</div>'}</div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/finance/reconciliation">口座残高照合</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
     <h2>口座を登録</h2><form method="post" action="/modules/finance/accounts"><div class="grid"><div><label>口座名</label><input name="name" maxlength="100" required></div><div><label>種類</label><select name="account_type">{type_options}</select></div><div><label>開始残高</label><input type="number" name="opening_balance" min="-999999999" max="999999999" value="0" required></div></div><button>口座を登録</button></form>
     <h2>台帳記録を口座へ割り当て</h2>{f'<form method="post" action="/modules/finance/accounts/assign"><div class="grid"><div><label>未割当の台帳記録</label><select name="financial_entry_id">{unassigned_options}</select></div><div><label>口座</label><select name="account_id">{account_options}</select></div></div><button>口座へ割り当て</button></form>' if unassigned and active_accounts else '<p class="tenant">割り当て可能な台帳記録または口座がありません。</p>'}
     <h2>口座間振替</h2>{f'<form method="post" action="/modules/finance/accounts/transfer"><div class="grid"><div><label>振替日</label><input type="date" name="transferred_on" value="{date.today()}" required></div><div><label>振替元</label><select name="from_account_id">{account_options}</select></div><div><label>振替先</label><select name="to_account_id">{account_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>メモ</label><input name="notes" maxlength="500"><button>振替を登録</button></form>' if len(active_accounts) >= 2 else '<p class="tenant">振替には有効な口座が2つ以上必要です。</p>'}
     <h2>直近の振替履歴</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>振替元</th><th>振替先</th><th>金額</th><th>メモ</th></tr>{transfer_rows or '<tr><td colspan="5">振替履歴はありません。</td></tr>'}</table></div>'''
     return layout("口座・現金残高管理", body, user)
+
+
+@app.get("/modules/finance/reconciliation", response_class=HTMLResponse)
+def finance_reconciliation_page(as_of: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        target_day = date.fromisoformat(as_of) if as_of else date.today()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="照合日を確認してください")
+    if target_day < date(2000, 1, 1) or target_day > date.today():
+        raise HTTPException(status_code=400, detail="照合日を確認してください")
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id).order_by(FinanceAccount.active.desc(), FinanceAccount.id)).all()
+    active_accounts = [item for item in accounts if item.active]
+    balances = {item.id: finance_account_balance_on(session, tenant.id, item, target_day) for item in accounts}
+    histories = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id).order_by(FinanceAccountReconciliation.statement_on.desc(), FinanceAccountReconciliation.id.desc())).all()
+    account_names = {item.id: item.name for item in accounts}
+    latest_by_account: dict[int, FinanceAccountReconciliation] = {}
+    for item in histories:
+        latest_by_account.setdefault(item.account_id, item)
+    summary_cards = ""
+    for account in accounts:
+        latest = latest_by_account.get(account.id)
+        state = "未照合" if not latest else ("一致" if latest.difference == 0 else f"差額 ¥{latest.difference:,}")
+        summary_cards += f'''<div class="module"><h3>{html.escape(account.name)}</h3><p>{FINANCE_ACCOUNT_TYPES.get(account.account_type, account.account_type)}</p><p><strong>帳簿 ¥{balances[account.id]:,}</strong></p><p><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if not latest or latest.difference else ''}">{state}</span></p><small>{f'最終照合 {latest.statement_on}' if latest else '照合履歴なし'}</small></div>'''
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}／帳簿残高 ¥{balances[item.id]:,}</option>' for item in active_accounts)
+    rows = ""; mobile_cards = ""
+    for item in histories[:100]:
+        difference_label = "一致" if item.difference == 0 else f"¥{item.difference:,}"
+        rows += f'<tr><td>{item.statement_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>¥{item.ledger_balance:,}</td><td>¥{item.actual_balance:,}</td><td class="{"error" if item.difference else ""}">{difference_label}</td><td>{html.escape(item.notes or "－")}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(account_names.get(item.account_id, "口座未登録"))}／{item.statement_on}</h3><p>帳簿 ¥{item.ledger_balance:,}／実残高 ¥{item.actual_balance:,}</p><p>差額 <strong class="{'error' if item.difference else ''}">{difference_label}</strong></p><p>{html.escape(item.notes or '')}</p></article>'''
+    form = f'''<form method="post" action="/modules/finance/reconciliation"><div class="grid"><div><label>照合日</label><input type="date" name="statement_on" value="{target_day}" max="{date.today()}" required></div><div><label>口座</label><select name="account_id">{account_options}</select></div><div><label>通帳・現金の実残高</label><input type="number" name="actual_balance" min="-999999999" max="999999999" required></div></div><label>確認メモ（差額がある場合は必須）</label><input name="notes" maxlength="500" placeholder="例：未記帳の振込を確認中"><button>残高を照合する</button></form>''' if active_accounts else '<p class="tenant">先に口座・現金を登録してください。</p>'
+    body = f'''<h1>口座残高照合・差額チェック</h1><p>帳簿残高と、通帳・現金・決済サービスで確認した実残高を比較します。</p>
+    <form method="get"><div class="grid"><div><label>帳簿残高の基準日</label><input type="date" name="as_of" value="{target_day}" max="{date.today()}" required></div></div><button>基準日を変更</button></form><div class="grid">{summary_cards or '<div class="tenant">口座が登録されていません。</div>'}</div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/closing?month={target_day:%Y-%m}">月次締め</a></div><h2>実残高を入力して照合</h2>{form}
+    <h2>照合履歴</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>照合日</th><th>口座</th><th>帳簿残高</th><th>実残高</th><th>差額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">照合履歴はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">照合履歴はありません。</div>'}</section>'''
+    return layout("口座残高照合・差額チェック", body, user)
+
+
+@app.post("/modules/finance/reconciliation")
+def finance_reconciliation_save(statement_on: str = Form(...), account_id: int = Form(...), actual_balance: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        target_day = date.fromisoformat(statement_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="照合日を確認してください")
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    if not account or target_day < date(2000, 1, 1) or target_day > date.today() or actual_balance < -999999999 or actual_balance > 999999999 or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="残高照合の内容を確認してください")
+    ledger_balance = finance_account_balance_on(session, tenant.id, account, target_day)
+    difference = actual_balance - ledger_balance
+    if difference and not notes.strip():
+        raise HTTPException(status_code=400, detail="差額がある場合は確認状況をメモへ入力してください")
+    item = session.scalar(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.account_id == account.id, FinanceAccountReconciliation.statement_on == target_day))
+    if item:
+        item.ledger_balance = ledger_balance; item.actual_balance = actual_balance; item.difference = difference; item.checked_by_id = user.id; item.checked_at = datetime.now(timezone.utc); item.notes = notes.strip() or None
+    else:
+        session.add(FinanceAccountReconciliation(tenant_id=tenant.id, account_id=account.id, statement_on=target_day, ledger_balance=ledger_balance, actual_balance=actual_balance, difference=difference, checked_by_id=user.id, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse(f"/modules/finance/reconciliation?as_of={target_day}", status_code=303)
 
 
 @app.post("/modules/finance/accounts")
