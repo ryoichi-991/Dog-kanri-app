@@ -1335,6 +1335,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
           <a href="/family/line/manage"><span>LINE</span>LINE公式設定</a>
           <a href="/family/backups/manage"><span>⇩</span>データ出力</a>
           <a href="/admin/password-resets"><span>⌁</span>パスワード再設定</a>
+          <a href="/admin/notification-deliveries"><span>●</span>通知配信履歴</a>
           <a href="/admin/email-deliveries"><span>✉</span>メール送信履歴</a>
           <a href="/admin/operations"><span>◉</span>運用監視</a>
           {platform_link}
@@ -8153,6 +8154,60 @@ def email_deliveries_manage(access=Depends(require_tenant_admin), session: Sessi
     body = f'''<h1>メール送信履歴</h1><div class="tenant"><p><strong>配信設定：</strong>{state}</p><p>失敗した通常通知は設定修正後に再送できます。パスワード再設定リンクは安全のため再送せず、新しいリンクを発行します。</p></div>
     <table><tr><th>作成日時</th><th>宛先</th><th>件名</th><th>状態</th><th>試行</th><th>エラー</th><th>操作</th></tr>{rows or '<tr><td colspan="7">送信履歴はありません。</td></tr>'}</table>'''
     return layout("メール送信履歴", body, actor)
+
+
+@app.get("/admin/notification-deliveries", response_class=HTMLResponse)
+def notification_deliveries_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    related_ids = set(session.scalars(select(DogOwnership.user_id).where(
+        DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
+    owners = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(related_ids))).all()} if related_ids else {}
+    items: list[tuple[datetime, str, str, str, str, int, datetime | None, str, str]] = []
+    line_categories = {"anniversaries", "health_vaccinations", "health_checkups", "health_medications", "health_followups", "test"}
+    line_records = session.scalars(select(LineDelivery).where(
+        LineDelivery.tenant_id == tenant.id, LineDelivery.category.in_(line_categories)
+    ).order_by(LineDelivery.created_at.desc()).limit(200)).all()
+    for delivery in line_records:
+        action = f'<a href="/family/line/manage">LINE配信履歴・再送</a>' if delivery.status != "sent" else "－"
+        items.append((delivery.created_at, owners.get(delivery.user_id, "－") or "－", "LINE（主通知）", delivery.category,
+                      delivery.status, delivery.attempts or 0, delivery.sent_at, delivery.error or "－", action))
+    if related_ids:
+        email_records = session.scalars(select(EmailDelivery).where(
+            EmailDelivery.user_id.in_(related_ids), EmailDelivery.purpose.in_(["health_reminder", "anniversary"])
+        ).order_by(EmailDelivery.created_at.desc()).limit(200)).all()
+        for delivery in email_records:
+            action = '<a href="/admin/email-deliveries">メール履歴・再送</a>' if delivery.status != "sent" else "－"
+            items.append((delivery.created_at, owners.get(delivery.user_id, "－") or "－", "メール（予備）", delivery.purpose,
+                          delivery.status, delivery.attempts or 0, delivery.sent_at, delivery.error or "－", action))
+        push_records = session.scalars(select(FamilyPushReceipt).where(
+            FamilyPushReceipt.user_id.in_(related_ids),
+            (FamilyPushReceipt.dedupe_key.like("push:health:%") | FamilyPushReceipt.dedupe_key.like("push:anniversary:%"))
+        ).order_by(FamilyPushReceipt.created_at.desc()).limit(200)).all()
+        for receipt in push_records:
+            category = "anniversary" if "anniversary" in receipt.dedupe_key else "health"
+            items.append((receipt.created_at, owners.get(receipt.user_id, "－") or "－", "ブラウザ（予備）", category,
+                          receipt.status, 1, receipt.created_at if receipt.status == "sent" else None, "－", "－"))
+    items.sort(key=lambda item: item[0], reverse=True)
+    items = items[:300]
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    success_count = sum(1 for item in items if (item[0] if item[0].tzinfo else item[0].replace(tzinfo=timezone.utc)) >= since and item[4] == "sent")
+    failed_count = sum(1 for item in items if (item[0] if item[0].tzinfo else item[0].replace(tzinfo=timezone.utc)) >= since and item[4] not in {"sent", "pending"})
+    last_sent = max((item[6] for item in items if item[6]), default=None)
+    labels = {"anniversaries": "記念日", "anniversary": "記念日", "health_vaccinations": "ワクチン", "health_checkups": "健診",
+              "health_medications": "投薬", "health_followups": "再診・経過確認", "health_reminder": "健康予定", "health": "健康予定", "test": "テスト"}
+    rows = "".join(f'''<tr><td>{created.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(owner)}</td><td>{html.escape(channel)}</td>
+        <td>{html.escape(labels.get(category, category))}</td><td><span class="badge">{html.escape(status)}</span></td><td>{attempts}</td>
+        <td>{sent_at.strftime("%Y-%m-%d %H:%M") if sent_at else "－"}</td><td>{html.escape(error)}</td><td>{action}</td></tr>'''
+        for created, owner, channel, category, status, attempts, sent_at, error, action in items)
+    body = f'''<h1>健康・記念日通知の配信履歴</h1><p>LINEを主通知、メールとブラウザ通知を予備経路としてまとめて確認します。</p>
+    <div class="grid"><div class="tenant"><strong>24時間の成功</strong><h2>{success_count}件</h2></div>
+    <div class="tenant"><strong>24時間の失敗</strong><h2 class="{'error' if failed_count else ''}">{failed_count}件</h2></div>
+    <div class="tenant"><strong>最終配信日時</strong><h2>{last_sent.strftime("%Y-%m-%d %H:%M") if last_sent else "配信なし"}</h2></div>
+    <div class="tenant"><strong>主通知</strong><h2>LINE</h2><small>メール・ブラウザは予備</small></div></div>
+    <p><a class="button secondary" href="/family/line/manage">LINE公式設定</a> <a class="button secondary" href="/admin/email-deliveries">メール送信履歴</a></p>
+    <div style="overflow-x:auto"><table><tr><th>作成日時</th><th>オーナー</th><th>経路</th><th>種類</th><th>結果</th><th>試行</th><th>最終配信</th><th>失敗理由</th><th>操作</th></tr>
+    {rows or '<tr><td colspan="9">健康・記念日通知の配信履歴はありません。</td></tr>'}</table></div>'''
+    return layout("通知配信履歴", body, actor)
 
 
 @app.post("/admin/email-deliveries/{delivery_id}/retry")

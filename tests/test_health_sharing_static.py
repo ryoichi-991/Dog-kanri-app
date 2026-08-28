@@ -851,6 +851,27 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("delivery.status == \"sent\"", segment)
         self.assertIn("send_line_push", segment)
 
+    def test_notification_delivery_dashboard_combines_primary_and_backup_channels(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        for model in ("LineDelivery", "EmailDelivery", "FamilyPushReceipt"):
+            self.assertIn(model, segment)
+        for label in ("LINE（主通知）", "メール（予備）", "ブラウザ（予備）", "24時間の成功", "24時間の失敗", "最終配信日時"):
+            self.assertIn(label, segment)
+
+    def test_notification_delivery_dashboard_is_tenant_admin_scoped(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("require_tenant_admin", segment)
+        self.assertIn("DogOwnership.tenant_id == tenant.id", segment)
+        self.assertIn("LineDelivery.tenant_id == tenant.id", segment)
+        self.assertIn("EmailDelivery.user_id.in_(related_ids)", segment)
+        self.assertIn("FamilyPushReceipt.user_id.in_(related_ids)", segment)
+
+    def test_admin_navigation_links_notification_delivery_dashboard(self):
+        layout_source = TEXT[TEXT.index("def layout"):TEXT.index("def family_layout")]
+        self.assertIn('href="/admin/notification-deliveries"', layout_source)
+
     def test_scheduler_sends_anniversary_and_health_to_line(self):
         scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
         segment = ast.get_source_segment(TEXT, scheduler)
