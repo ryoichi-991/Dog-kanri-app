@@ -344,6 +344,32 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("領収書", "証憑", "個人情報や口座情報"):
             self.assertIn(marker, guide_source)
 
+    def test_finance_reports_are_tenant_scoped_and_year_bounded(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reports_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "PuppySale.tenant_id == tenant.id", "Invoice.tenant_id == tenant.id", "FinanceDocument.tenant_id == tenant.id", "report_year < 2000", "report_year > 2100"):
+            self.assertIn(marker, segment)
+        self.assertIn('"finance/reports": ("経営収益ダッシュボード"', SOURCE)
+
+    def test_finance_reports_aggregate_management_indicators(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reports_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("monthly", "annual_income", "annual_expense", "annual_balance", "unpaid_total", "overdue_invoices", "overdue_total", "document_rate", "missing_documents", "category_totals"):
+            self.assertIn(marker, segment)
+        for label in ("年間入金", "年間経費", "年間収支", "販売未入金", "期限超過請求", "経費証憑保管率", "月別推移", "年間の経費構成"):
+            self.assertIn(label, segment)
+
+    def test_finance_reports_have_guide_navigation_and_mobile_cards(self):
+        self.assertIn('href="/modules/finance/reports"', SOURCE)
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reports_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('name="year"', "calendar-mobile-card", "calendar-mobile-only", 'href="/modules/invoices"', 'href="/modules/finance/documents"', 'href="/modules/costs"'):
+            self.assertIn(marker, segment)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("経営収益", guide_source)
+        self.assertIn("決算・税務申告", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
