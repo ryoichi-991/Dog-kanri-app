@@ -823,6 +823,34 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('delivery.status, delivery.error = "failed"', segment)
         self.assertIn("record_operation", segment)
 
+    def test_line_deliveries_keep_retry_payload_and_attempts(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LineDelivery")
+        send = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "send_line_push")
+        model_segment = ast.get_source_segment(TEXT, model)
+        send_segment = ast.get_source_segment(TEXT, send)
+        for field in ("attempts", "message", "target_url"):
+            self.assertIn(field, model_segment)
+        self.assertIn("delivery.attempts = (delivery.attempts or 0) + 1", send_segment)
+        self.assertIn("message=message[:5000]", send_segment)
+
+    def test_owner_can_send_line_test_after_linking(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_line_settings")
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_line_test")
+        self.assertIn("LINEテスト通知を受け取る", ast.get_source_segment(TEXT, page))
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("DogOwnership.user_id == user.id", segment)
+        self.assertIn('"test"', segment)
+        self.assertIn("send_line_push", segment)
+
+    def test_failed_line_delivery_can_be_retried_by_tenant_admin(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_official_account_manage")
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "line_delivery_retry")
+        self.assertIn("再送", ast.get_source_segment(TEXT, page))
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("delivery.tenant_id != tenant.id", segment)
+        self.assertIn("delivery.status == \"sent\"", segment)
+        self.assertIn("send_line_push", segment)
+
     def test_scheduler_sends_anniversary_and_health_to_line(self):
         scheduler = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dispatch_scheduled_emails")
         segment = ast.get_source_segment(TEXT, scheduler)

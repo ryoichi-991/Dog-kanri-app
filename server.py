@@ -862,6 +862,9 @@ class LineDelivery(Base):
     category: Mapped[str] = mapped_column(String(40), index=True)
     dedupe_key: Mapped[str] = mapped_column(String(200), unique=True, index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    target_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1117,8 +1120,12 @@ def send_line_push(user_id: int, tenant_id: int, category: str, message: str, ur
     if delivery and delivery.status == "sent":
         return False
     if not delivery:
-        delivery = LineDelivery(tenant_id=tenant_id, user_id=user_id, category=category[:40], dedupe_key=dedupe_key[:200])
+        delivery = LineDelivery(tenant_id=tenant_id, user_id=user_id, category=category[:40], dedupe_key=dedupe_key[:200],
+                                message=message[:5000], target_url=url[:500])
         session.add(delivery); session.flush()
+    else:
+        delivery.message, delivery.target_url = message[:5000], url[:500]
+    delivery.attempts = (delivery.attempts or 0) + 1
     try:
         access_token = line_decrypt(account.access_token_encrypted)
         full_url = f"{os.environ.get('APP_BASE_URL', 'https://dog-management.benefit-navi.com').rstrip('/')}{url}"
@@ -1507,6 +1514,9 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS owner_health_records ADD COLUMN IF NOT EXISTS attachment_filename VARCHAR(255)"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_health_records ADD COLUMN IF NOT EXISTS attachment_content_type VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS owner_health_records ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_deliveries ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_deliveries ADD COLUMN IF NOT EXISTS message TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS line_deliveries ADD COLUMN IF NOT EXISTS target_url VARCHAR(500)"))
     with SessionLocal() as session:
         ensure_vapid_keys(session)
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
@@ -4321,24 +4331,40 @@ def family_notification_settings_save(messages: bool = Form(False), announcement
 
 
 @app.get("/family/line", response_class=HTMLResponse)
-def family_line_settings(user: User = Depends(require_user), session: Session = Depends(db)):
+def family_line_settings(test: str = "", user: User = Depends(require_user), session: Session = Depends(db)):
     records = session.execute(select(Tenant, LineOfficialAccount).join(DogOwnership, DogOwnership.tenant_id == Tenant.id)
         .outerjoin(LineOfficialAccount, LineOfficialAccount.tenant_id == Tenant.id)
         .where(DogOwnership.user_id == user.id, DogOwnership.active.is_(True), Tenant.active.is_(True), Tenant.deleted.is_(False))
         .distinct().order_by(Tenant.name)).all()
     cards = ""
+    setting = family_notification_setting(user, session)
     for tenant, account in records:
         link = session.scalar(select(FamilyLineLink).where(FamilyLineLink.tenant_id == tenant.id, FamilyLineLink.user_id == user.id, FamilyLineLink.active.is_(True)))
         if not account or not account.active:
             state = '<span class="badge">犬舎側の準備中</span><p><small>LINE公式アカウントの接続後に利用できます。</small></p>'
         elif link:
-            state = f'''<span class="badge" style="background:#dcebdc;color:#365d3b">連携済み</span><p>{html.escape(account.account_name)}から通知を受け取れます。</p><form method="post" action="/family/line/{tenant.id}/unlink"><label style="font-weight:400"><input type="checkbox" name="confirm_unlink" value="true" style="width:auto" required> 連携解除を確認</label><button class="secondary">LINE連携を解除</button></form>'''
+            delivery_state = '<span class="badge" style="background:#dcebdc;color:#365d3b">通知ON</span>' if setting.line_enabled else '<span class="badge">通知OFF</span>'
+            test_button = f'<form method="post" action="/family/line/{tenant.id}/test"><button>LINEテスト通知を受け取る</button></form>' if setting.line_enabled else '<p><a class="button" href="/family/notification-settings">通知設定でLINEをONにする</a></p>'
+            state = f'''<span class="badge" style="background:#dcebdc;color:#365d3b">連携済み</span> {delivery_state}<p>{html.escape(account.account_name)}から通知を受け取れます。</p>{test_button}<form method="post" action="/family/line/{tenant.id}/unlink"><label style="font-weight:400"><input type="checkbox" name="confirm_unlink" value="true" style="width:auto" required> 連携解除を確認</label><button class="secondary">LINE連携を解除</button></form>'''
         else:
             state = f'''<span class="badge">未連携</span><p>{html.escape(account.account_name)}を友だち追加した後、連携コードを公式LINEへ送信します。</p><form method="post" action="/family/line/{tenant.id}/token"><button>15分有効の連携コードを発行</button></form>'''
         cards += f'<section class="tenant"><h2 style="margin-top:0">{html.escape(tenant.name)}</h2>{state}</section>'
-    body = f'''<a class="button secondary" href="/family/notification-settings">通知設定へ戻る</a><h1>LINE公式アカウント連携</h1>
+    notice = '<div class="success">LINEテスト通知を送信しました。</div>' if test == "sent" else ('<div class="error">LINEテスト通知を送信できませんでした。管理者へ連絡してください。</div>' if test == "failed" else '')
+    body = f'''<a class="button secondary" href="/family/notification-settings">通知設定へ戻る</a><h1>LINE公式アカウント連携</h1>{notice}
     <p>犬舎ごとのLINE公式アカウントとFAMILY会員を安全に紐付けます。個人LINEのIDや電話番号を入力する必要はありません。</p>{cards or '<div class="tenant">連携対象の犬舎がありません。</div>'}'''
     return family_layout("LINE公式アカウント連携｜FAMILY", body, user, session)
+
+
+@app.post("/family/line/{tenant_id}/test")
+def family_line_test(tenant_id: int, user: User = Depends(require_user), session: Session = Depends(db)):
+    allowed = session.scalar(select(DogOwnership.id).where(DogOwnership.user_id == user.id, DogOwnership.tenant_id == tenant_id, DogOwnership.active.is_(True)))
+    if not allowed:
+        raise HTTPException(status_code=404)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    sent = send_line_push(user.id, tenant_id, "test", "LINE通知の接続テストに成功しました。今後、設定した健康予定や記念日をお知らせします。",
+                          "/family/notifications", f"line:test:{user.id}:{tenant_id}:{stamp}", session)
+    session.commit()
+    return RedirectResponse(f"/family/line?test={'sent' if sent else 'failed'}", status_code=303)
 
 
 @app.post("/family/line/{tenant_id}/token", response_class=HTMLResponse)
@@ -4377,7 +4403,8 @@ def line_official_account_manage(access=Depends(require_tenant_admin), session: 
     webhook_url = f"{base_url}/line/webhook/{account.webhook_key}" if account else "保存後に発行されます"
     linked_count = session.scalar(select(func.count(FamilyLineLink.id)).where(FamilyLineLink.tenant_id == tenant.id, FamilyLineLink.active.is_(True))) or 0
     deliveries = session.scalars(select(LineDelivery).where(LineDelivery.tenant_id == tenant.id).order_by(LineDelivery.created_at.desc()).limit(50)).all()
-    delivery_rows = "".join(f'<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(item.category)}</td><td>{"成功" if item.status == "sent" else "失敗"}</td><td>{html.escape(item.error or "-")}</td></tr>' for item in deliveries)
+    owners = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_({item.user_id for item in deliveries}))).all()} if deliveries else {}
+    delivery_rows = "".join(f'''<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(owners.get(item.user_id, "-") or "-")}</td><td>{html.escape(item.category)}</td><td>{"成功" if item.status == "sent" else "失敗"}</td><td>{item.attempts or 0}</td><td>{html.escape(item.error or "-")}</td><td>{f'<form method="post" action="/family/line/manage/deliveries/{item.id}/retry"><button class="secondary">再送</button></form>' if item.status != "sent" and item.message and item.target_url else '－'}</td></tr>''' for item in deliveries)
     status_text = "接続確認済み" if account and account.active and account.verified_at else ("設定済み・未確認" if account and account.active else "未接続")
     friend_url = f"https://line.me/R/ti/p/{quote(account.bot_basic_id)}" if account and account.bot_basic_id else ""
     verified_text = account.verified_at.strftime("%Y-%m-%d %H:%M") if account and account.verified_at else "未確認"
@@ -4397,8 +4424,19 @@ def line_official_account_manage(access=Depends(require_tenant_admin), session: 
     <p><small>認証情報は暗号化して保存され、画面へ再表示しません。</small></p><button>LINE設定を保存</button></form>
     {f'<form method="post" action="/family/line/manage/test"><button class="secondary">LINE APIの接続を確認</button></form>' if account else ''}
     <h2>初期設定の手順</h2><ol><li>本番環境へ暗号鍵を設定</li><li>Channel secretと長期Channel access tokenを保存</li><li>上記Webhook URLをLINE Developersへ登録し、Webhookを有効化</li><li>「LINE APIの接続を確認」を実行</li><li>お客様がFAMILY画面から15分コードを発行して連携</li></ol>
-    <h2>LINE配信履歴</h2><div style="overflow-x:auto"><table><tr><th>日時</th><th>種類</th><th>結果</th><th>エラー</th></tr>{delivery_rows or '<tr><td colspan="4">配信履歴はありません。</td></tr>'}</table></div>'''
+    <h2>LINE配信履歴</h2><div style="overflow-x:auto"><table><tr><th>日時</th><th>お客様</th><th>種類</th><th>結果</th><th>試行</th><th>エラー</th><th>操作</th></tr>{delivery_rows or '<tr><td colspan="7">配信履歴はありません。</td></tr>'}</table></div>'''
     return layout("LINE公式アカウント設定", body, access[0])
+
+
+@app.post("/family/line/manage/deliveries/{delivery_id}/retry")
+def line_delivery_retry(delivery_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    delivery = session.get(LineDelivery, delivery_id)
+    if not delivery or delivery.tenant_id != tenant.id or delivery.status == "sent" or not delivery.message or not delivery.target_url:
+        raise HTTPException(status_code=404)
+    send_line_push(delivery.user_id, delivery.tenant_id, delivery.category, delivery.message, delivery.target_url, delivery.dedupe_key, session)
+    session.commit()
+    return RedirectResponse("/family/line/manage", status_code=303)
 
 
 @app.post("/family/line/manage")
