@@ -613,6 +613,53 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("口座残高照合", guide_source)
         self.assertIn("架空取引", guide_source)
 
+    def test_finance_statement_models_are_tenant_scoped_and_deduplicated(self):
+        imported = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceStatementImport")
+        import_source = ast.get_source_segment(SOURCE, imported)
+        for marker in ("uq_finance_statement_import_hash", "tenant_id", "account_id", "content_hash", "row_count", "matched_count", "imported_by_id"):
+            self.assertIn(marker, import_source)
+        line = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceStatementLine")
+        line_source = ast.get_source_segment(SOURCE, line)
+        for marker in ("uq_finance_statement_line_row", "tenant_id", "transacted_on", "entry_type", "amount", "status", "financial_entry_id"):
+            self.assertIn(marker, line_source)
+
+    def test_statement_csv_import_is_bounded_and_supports_japanese_files(self):
+        route = next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "finance_statement_import")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("2 * 1024 * 1024", '"utf-8-sig", "cp932"', "csv.DictReader", "row_no > 1001", "日付", "摘要", "入金額", "出金額", "content_hash"):
+            self.assertIn(marker, segment)
+        self.assertIn("同じ口座へ同じCSVが取り込み済みです", segment)
+
+    def test_statement_import_auto_matches_only_one_safe_ledger_candidate(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "finance_statement_import")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.occurred_on == transaction_day", "FinancialEntry.entry_type == entry_type", "FinancialEntry.amount == amount", "len(usable) == 1", "FinanceStatementLine.financial_entry_id == candidate.id", "finance_period_close", "FinanceAccountEntry"):
+            self.assertIn(marker, segment)
+
+    def test_unmatched_statement_line_posts_once_to_open_ledger_period(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_line_post")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('FinanceStatementLine.status == "unmatched"', "category not in FINANCE_CATEGORIES", "ensure_finance_period_open", "FinancialEntry(", "FinanceAccountEntry(", 'line.status = "matched"'):
+            self.assertIn(marker, segment)
+
+    def test_finance_statements_have_mobile_ui_guide_and_navigation(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statements_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for label in ("銀行明細CSV取込・自動照合", "照合済み", "未処理", "CSVを取り込む", "取込明細", "取込履歴", "calendar-mobile-card"):
+            self.assertIn(label, segment)
+        self.assertIn('href="/modules/finance/statements', SOURCE)
+        self.assertIn('"finance/statements": ("銀行明細CSV取込・自動照合"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("銀行明細CSV", guide_source)
+        self.assertIn("重複取込", guide_source)
+
+    def test_monthly_close_surfaces_unmatched_statement_lines(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinanceStatementLine", 'FinanceStatementLine.status == "unmatched"', "statement_unmatched_count", "銀行明細未処理", "銀行明細の未処理"):
+            self.assertIn(marker, segment)
+
 
 if __name__ == "__main__":
     unittest.main()
