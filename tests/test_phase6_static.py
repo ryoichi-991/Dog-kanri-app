@@ -277,6 +277,40 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
 
+    def test_cost_allocation_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "CostAllocation")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "financial_entry_id", "dog_id", "litter_id", "amount", "notes"):
+            self.assertIn(marker, model_source)
+        for route_name in ("costs_page", "cost_allocate"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+        self.assertIn('"costs": ("原価・利益管理"', SOURCE)
+
+    def test_cost_allocation_rejects_cross_tenant_and_over_allocation(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "cost_allocate")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", 'FinancialEntry.entry_type == "expense"', "Dog.tenant_id == tenant.id", "Litter.tenant_id == tenant.id", "CostAllocation.tenant_id == tenant.id", "bool(dog) == bool(litter)", "allocated + amount >", "amount <= 0"):
+            self.assertIn(marker, segment)
+
+    def test_costs_page_calculates_litter_revenue_cost_and_profit(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "costs_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("dog.dam_id == litter.dam_id", "dog.birth_date == litter.birth_date", "planned", "received", "unpaid", "litter_cost", "dog_cost", "profit", "realized_profit", "unallocated_total"):
+            self.assertIn(marker, segment)
+        for label in ("販売予定額", "配賦済み原価", "予定利益", "入金基準利益", "未配賦経費", "出産回別の採算"):
+            self.assertIn(label, segment)
+
+    def test_costs_page_has_specific_guide_navigation_and_mobile_cards(self):
+        self.assertIn('href="/modules/costs"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertLess(guide_source.index('(("原価", "利益", "採算")'), guide_source.index('(("収支", "経費", "原価", "請求")'))
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "costs_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        self.assertIn("calendar-mobile-card", page_source)
+        self.assertIn("calendar-mobile-only", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()

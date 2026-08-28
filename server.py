@@ -59,6 +59,7 @@ MODULES = {
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
     "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
+    "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
 }
 PREFECTURES = [
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
@@ -422,6 +423,18 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class CostAllocation(Base):
+    __tablename__ = "cost_allocations"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id", ondelete="CASCADE"), nullable=True, index=True)
+    litter_id: Mapped[int | None] = mapped_column(ForeignKey("litters.id", ondelete="CASCADE"), nullable=True, index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1330,6 +1343,7 @@ def page_usage_guide(title: str) -> str:
         (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
+        (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
         (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
         (("犬・血統書", "犬一覧", "在籍犬", "親犬", "販売犬", "譲渡済", "外部犬"), ["犬の基本情報、在籍区分、写真、血統書を管理できます。", "親犬・仔犬・販売犬・譲渡済犬などの状態を確認できます。"], ["対象犬を検索または一覧から選びます。", "登録・編集画面で必要項目を入力します。", "保存後に名前、性別、生年月日、在籍状態を確認します。"], "販売・譲渡・死亡などの状態変更は、一覧表示や帳票に影響します。対象犬を確認して操作してください。"),
         (("販売", "顧客", "商談", "契約", "引渡"), ["顧客、商談、契約、販売・引渡し状況を管理できます。", "進捗確認と必要書類の作成・出力に利用できます。"], ["顧客と対象犬を確認します。", "商談や契約の進捗を入力します。", "引渡し前に契約内容と必要書類を確認します。"], "個人情報を含むため、閲覧・出力したデータの取扱いに注意してください。"),
@@ -1375,7 +1389,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4387,9 +4401,74 @@ def invoice_pdf(invoice_id: int, access=Depends(require_tenant_user), session: S
     return Response(content=content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_no}.pdf"', "Cache-Control": "private, no-store"})
 
 
+@app.get("/modules/costs", response_class=HTMLResponse)
+def costs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    expenses = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.entry_type == "expense").order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
+    allocations = session.scalars(select(CostAllocation).where(CostAllocation.tenant_id == tenant.id).order_by(CostAllocation.id.desc())).all()
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    litters = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id).order_by(Litter.birth_date.desc(), Litter.id.desc())).all()
+    dogs_by_id = {item.id: item for item in dogs}; litters_by_id = {item.id: item for item in litters}
+    allocated_by_entry: dict[int, int] = {}
+    for item in allocations: allocated_by_entry[item.financial_entry_id] = allocated_by_entry.get(item.financial_entry_id, 0) + item.amount
+    remaining_expenses = [(item, item.amount - allocated_by_entry.get(item.id, 0)) for item in expenses if item.amount - allocated_by_entry.get(item.id, 0) > 0]
+    expense_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{html.escape(item.description)}／未配賦 ¥{remaining:,}</option>' for item, remaining in remaining_expenses)
+    dog_options = '<option value="">犬へ配賦しない</option>' + "".join(f'<option value="{item.id}">{html.escape(item.call_name)}／{html.escape(item.registered_name or "血統名未登録")}</option>' for item in dogs)
+    litter_options = '<option value="">出産回へ配賦しない</option>'
+    for litter in litters:
+        dam = dogs_by_id.get(litter.dam_id) or session.get(Dog, litter.dam_id)
+        litter_options += f'<option value="{litter.id}">{litter.birth_date}／{html.escape(dam.call_name if dam else "母犬未登録")}／{litter.alive_count}頭</option>'
+    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.status != "cancelled")).all()
+    sales_by_dog: dict[int, list[PuppySale]] = {}
+    for sale in sales: sales_by_dog.setdefault(sale.dog_id, []).append(sale)
+    planned_total = received_total = cost_total = 0; rows = ""; mobile_cards = ""
+    for litter in litters:
+        dam = dogs_by_id.get(litter.dam_id) or session.get(Dog, litter.dam_id)
+        puppies = [dog for dog in dogs if dog.category == "puppy" and dog.dam_id == litter.dam_id and dog.birth_date == litter.birth_date]
+        litter_sales = [sale for puppy in puppies for sale in sales_by_dog.get(puppy.id, [])]
+        planned = sum(sale.price or 0 for sale in litter_sales); received = sum(sale.paid_amount or 0 for sale in litter_sales)
+        litter_cost = sum(item.amount for item in allocations if item.litter_id == litter.id)
+        dog_cost = sum(item.amount for item in allocations if item.dog_id in {puppy.id for puppy in puppies})
+        cost = litter_cost + dog_cost; profit = planned - cost; realized_profit = received - cost; unpaid = max(planned - received, 0)
+        planned_total += planned; received_total += received; cost_total += cost
+        title = f"{dam.call_name if dam else '母犬未登録'}／{litter.birth_date}"
+        rows += f'<tr><td>{html.escape(title)}</td><td>{len(puppies)}頭</td><td>¥{planned:,}</td><td>¥{received:,}</td><td>¥{unpaid:,}</td><td>¥{cost:,}</td><td class="{"error" if profit < 0 else ""}">¥{profit:,}</td><td class="{"error" if realized_profit < 0 else ""}">¥{realized_profit:,}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(title)}／{len(puppies)}頭</h3><p>販売予定 <strong>¥{planned:,}</strong>／入金 <strong>¥{received:,}</strong></p><p>原価 <strong>¥{cost:,}</strong>／予定利益 <strong class="{'error' if profit < 0 else ''}">¥{profit:,}</strong></p><p>入金基準利益 <strong class="{'error' if realized_profit < 0 else ''}">¥{realized_profit:,}</strong></p></article>'''
+    unallocated_total = sum(remaining for _, remaining in remaining_expenses)
+    allocation_rows = ""
+    for item in allocations[:50]:
+        entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == item.financial_entry_id, FinancialEntry.tenant_id == tenant.id))
+        target = dogs_by_id.get(item.dog_id).call_name if item.dog_id and dogs_by_id.get(item.dog_id) else ""
+        if item.litter_id and item.litter_id in litters_by_id:
+            litter = litters_by_id[item.litter_id]; dam = dogs_by_id.get(litter.dam_id) or session.get(Dog, litter.dam_id); target = f"{dam.call_name if dam else '母犬未登録'} {litter.birth_date}出産"
+        allocation_rows += f'<tr><td>{html.escape(entry.description if entry else "経費未登録")}</td><td>{html.escape(target or "対象未登録")}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>'
+    profit_total = planned_total - cost_total; realized_total = received_total - cost_total
+    body = f'''<h1>原価・利益管理</h1><p>収支台帳の経費を犬・出産回へ配賦し、販売売上と比較して採算を確認します。</p>
+    <div class="grid"><div class="module"><h3>販売予定額</h3><p><strong style="font-size:24px">¥{planned_total:,}</strong></p></div><div class="module"><h3>配賦済み原価</h3><p><strong style="font-size:24px">¥{cost_total:,}</strong></p></div><div class="module"><h3>予定利益</h3><p><strong class="{'error' if profit_total < 0 else ''}" style="font-size:24px">¥{profit_total:,}</strong></p></div><div class="module"><h3>入金基準利益</h3><p><strong class="{'error' if realized_total < 0 else ''}" style="font-size:24px">¥{realized_total:,}</strong></p></div><div class="module"><h3>未配賦経費</h3><p><strong style="font-size:24px">¥{unallocated_total:,}</strong></p></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/sales">販売管理</a></div>
+    <h2>経費を配賦</h2>{f'<form method="post" action="/modules/costs"><div class="grid"><div><label>経費記録</label><select name="financial_entry_id">{expense_options}</select></div><div><label>対象犬（どちらか一方）</label><select name="dog_id">{dog_options}</select></div><div><label>対象出産回（どちらか一方）</label><select name="litter_id">{litter_options}</select></div><div><label>配賦額</label><input type="number" name="amount" min="1" required></div></div><label>配賦メモ</label><input name="notes" maxlength="500"><button>原価へ配賦する</button></form>' if remaining_expenses else '<p class="tenant">未配賦の経費はありません。収支・経費台帳で経費を登録してください。</p>'}
+    <h2>出産回別の採算</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>出産回</th><th>仔犬</th><th>販売予定</th><th>入金</th><th>未入金</th><th>原価</th><th>予定利益</th><th>入金基準利益</th></tr>{rows or '<tr><td colspan="8">出産記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">出産記録はありません。</div>'}</section>
+    <h2>配賦履歴</h2><table><tr><th>経費</th><th>配賦先</th><th>金額</th><th>メモ</th></tr>{allocation_rows or '<tr><td colspan="4">配賦履歴はありません。</td></tr>'}</table>'''
+    return layout("原価・利益管理", body, user)
+
+
+@app.post("/modules/costs")
+def cost_allocate(financial_entry_id: int = Form(...), amount: int = Form(...), dog_id: int | None = Form(None), litter_id: int | None = Form(None), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    expense = session.scalar(select(FinancialEntry).where(FinancialEntry.id == financial_entry_id, FinancialEntry.tenant_id == tenant.id, FinancialEntry.entry_type == "expense"))
+    dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant.id)) if dog_id else None
+    litter = session.scalar(select(Litter).where(Litter.id == litter_id, Litter.tenant_id == tenant.id)) if litter_id else None
+    allocated = session.scalar(select(func.coalesce(func.sum(CostAllocation.amount), 0)).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id == financial_entry_id)) or 0
+    if not expense or bool(dog) == bool(litter) or amount <= 0 or allocated + amount > (expense.amount if expense else 0) or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="原価配賦の内容を確認してください")
+    session.add(CostAllocation(tenant_id=tenant.id, financial_entry_id=expense.id, dog_id=dog.id if dog else None, litter_id=litter.id if litter else None, amount=amount, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/costs", status_code=303)
+
+
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales", "finance", "invoices"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales", "finance", "invoices", "costs"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]
