@@ -56,6 +56,7 @@ MODULES = {
     "health": ("健康・ワクチン", "体重、診療、予防接種、次回予定"),
     "genetics": ("遺伝子検査", "遺伝病検査結果と交配リスク"),
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
+    "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
 }
 PREFECTURES = [
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
@@ -391,6 +392,19 @@ class PuppySale(Base):
     microchip_transfer_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="inquiry")
+
+
+class FinancialEntry(Base):
+    __tablename__ = "financial_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class DogTransfer(Base):
@@ -1297,6 +1311,7 @@ def page_usage_guide(title: str) -> str:
         (("健康", "体重", "ワクチン", "健診", "投薬", "病歴", "フード"), ["愛犬の健康記録、予定、共有データを確認・登録できます。", "検索、実施済み管理、カレンダー表示、帳票出力ができます。"], ["対象犬と健康カテゴリーを確認します。", "日付と内容を入力して記録します。", "必要な記録だけブリーダーまたはオーナーへ共有します。"], "健康記録は診断書ではありません。緊急時や判断に迷う場合は獣医師へ相談してください。"),
         (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
+        (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
         (("犬・血統書", "犬一覧", "在籍犬", "親犬", "販売犬", "譲渡済", "外部犬"), ["犬の基本情報、在籍区分、写真、血統書を管理できます。", "親犬・仔犬・販売犬・譲渡済犬などの状態を確認できます。"], ["対象犬を検索または一覧から選びます。", "登録・編集画面で必要項目を入力します。", "保存後に名前、性別、生年月日、在籍状態を確認します。"], "販売・譲渡・死亡などの状態変更は、一覧表示や帳票に影響します。対象犬を確認して操作してください。"),
         (("販売", "顧客", "商談", "契約", "引渡"), ["顧客、商談、契約、販売・引渡し状況を管理できます。", "進捗確認と必要書類の作成・出力に利用できます。"], ["顧客と対象犬を確認します。", "商談や契約の進捗を入力します。", "引渡し前に契約内容と必要書類を確認します。"], "個人情報を含むため、閲覧・出力したデータの取扱いに注意してください。"),
         (("法令", "行政", "帳簿", "届出"), ["動物取扱業に必要な記録や行政書類を確認・作成できます。", "登録情報をもとに帳票を出力できます。"], ["対象期間と提出先を確認します。", "不足している情報を登録します。", "出力後に原簿・提出要領と照合します。"], "自治体ごとに様式や提出要件が異なる場合があります。提出前に管轄行政機関へ確認してください。"),
@@ -1341,7 +1356,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4184,9 +4199,68 @@ def sale_update(sale_id: int, status_value: str = Form(..., alias="status"), nex
     return RedirectResponse("/modules/sales", status_code=303)
 
 
+FINANCE_CATEGORIES = {
+    "sale": "仔犬販売", "deposit": "予約金・前受金", "stud": "交配料", "grooming": "トリミング",
+    "food": "フード・消耗品", "medical": "医療・検査", "show": "ドッグショー", "transport": "交通・配送",
+    "facility": "設備・修繕", "utilities": "水道光熱", "registration": "登録・行政", "other": "その他",
+}
+
+
+@app.get("/modules/finance", response_class=HTMLResponse)
+def finance_page(month: str = "", entry_type: str = "", finance_category: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        first_day = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+    if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1):
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+    if entry_type not in {"", "income", "expense"} or finance_category not in {"", *FINANCE_CATEGORIES}:
+        raise HTTPException(status_code=400, detail="検索条件を確認してください")
+    month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    all_entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
+    entries = [item for item in all_entries if (not entry_type or item.entry_type == entry_type) and (not finance_category or item.category == finance_category)]
+    income_total = sum(item.amount for item in all_entries if item.entry_type == "income")
+    expense_total = sum(item.amount for item in all_entries if item.entry_type == "expense")
+    balance = income_total - expense_total
+    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.status.notin_(["cancelled", "handed_over"]))).all()
+    unpaid_total = sum(max((item.price or 0) - (item.paid_amount or 0), 0) for item in sales)
+    category_totals: dict[str, int] = {}
+    for item in all_entries:
+        if item.entry_type == "expense": category_totals[item.category] = category_totals.get(item.category, 0) + item.amount
+    cost_rows = "".join(f'<tr><td>{html.escape(FINANCE_CATEGORIES.get(key, key))}</td><td>¥{amount:,}</td></tr>' for key, amount in sorted(category_totals.items(), key=lambda pair: pair[1], reverse=True))
+    rows = "".join(f'<tr><td>{item.occurred_on}</td><td>{"入金" if item.entry_type == "income" else "経費"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in entries)
+    mobile_cards = "".join(f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>{item.occurred_on}　<span class="badge">{"入金" if item.entry_type == "income" else "経費"}</span></p><p>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}／<strong>¥{item.amount:,}</strong></p><p>{html.escape(item.notes or "")}</p></article>''' for item in entries)
+    type_options = "".join(f'<option value="{value}" {"selected" if entry_type == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("income", "入金"), ("expense", "経費")))
+    category_options = "".join(f'<option value="{value}" {"selected" if finance_category == value else ""}>{label}</option>' for value, label in (("", "すべて"), *FINANCE_CATEGORIES.items()))
+    entry_categories = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>
+    <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
+    <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
+    <h2>入金・経費を登録</h2><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
+    <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
+    return layout("収支・経費台帳", body, user)
+
+
+@app.post("/modules/finance")
+def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), category: str = Form(...), amount: int = Form(...), description: str = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        entry_day = date.fromisoformat(occurred_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日付を確認してください")
+    clean_description = description.strip()
+    if entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount <= 0 or not clean_description or len(clean_description) > 200 or len(notes) > 2000:
+        raise HTTPException(status_code=400, detail="収支情報を確認してください")
+    session.add(FinancialEntry(tenant_id=tenant.id, occurred_on=entry_day, entry_type=entry_type, category=category, amount=amount, description=clean_description, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse(f"/modules/finance?month={entry_day:%Y-%m}", status_code=303)
+
+
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales", "finance"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]

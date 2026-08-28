@@ -190,6 +190,44 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn(".priority-list{{display:grid", layout_source)
         self.assertIn(".priority-item{{align-items:flex-start;flex-direction:column}}", layout_source)
 
+    def test_finance_module_has_tenant_scoped_ledger_model_and_routes(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinancialEntry")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "occurred_on", "entry_type", "category", "description", "amount"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_page", "finance_create"):
+            self.assertTrue(any(isinstance(node, ast.FunctionDef) and node.name == route_name for node in TREE.body))
+        self.assertIn('"finance": ("収支・経費台帳"', SOURCE)
+
+    def test_finance_page_calculates_monthly_totals_and_sales_receivables(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "income_total", "expense_total", "balance", "unpaid_total", "PuppySale.tenant_id == tenant.id", "category_totals"):
+            self.assertIn(marker, segment)
+        for label in ("当月入金", "当月経費", "当月収支", "販売未入金", "当月の経費内訳"):
+            self.assertIn(label, segment)
+
+    def test_finance_filters_and_create_validation_are_bounded(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for field in ("month", "entry_type", "finance_category"):
+            self.assertIn(f'name="{field}"', page_source)
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create")
+        create_source = ast.get_source_segment(SOURCE, create)
+        for marker in ('entry_type not in {"income", "expense"}', "category not in FINANCE_CATEGORIES", "amount <= 0", "len(clean_description) > 200", "tenant_id=tenant.id"):
+            self.assertIn(marker, create_source)
+
+    def test_finance_navigation_guide_and_mobile_cards_exist(self):
+        self.assertIn('href="/modules/finance"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("収支", "経費", "税務申告用の会計帳簿"):
+            self.assertIn(marker, guide_source)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        self.assertIn("calendar-mobile-card", page_source)
+        self.assertIn("calendar-mobile-only", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()
