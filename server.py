@@ -37,6 +37,7 @@ import pytesseract
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -57,6 +58,7 @@ MODULES = {
     "genetics": ("遺伝子検査", "遺伝病検査結果と交配リスク"),
     "sales": ("仔犬販売管理", "問い合わせ、契約、説明、引渡し"),
     "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
+    "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
 }
 PREFECTURES = [
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
@@ -404,6 +406,22 @@ class FinancialEntry(Base):
     description: Mapped[str] = mapped_column(String(200))
     amount: Mapped[int] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Invoice(Base):
+    __tablename__ = "invoices"
+    __table_args__ = (UniqueConstraint("tenant_id", "invoice_no", name="uq_invoice_tenant_no"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    puppy_sale_id: Mapped[int] = mapped_column(ForeignKey("puppy_sales.id", ondelete="CASCADE"), index=True)
+    invoice_no: Mapped[str] = mapped_column(String(80), index=True)
+    issued_on: Mapped[date] = mapped_column(Date, index=True)
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1311,6 +1329,7 @@ def page_usage_guide(title: str) -> str:
         (("健康", "体重", "ワクチン", "健診", "投薬", "病歴", "フード"), ["愛犬の健康記録、予定、共有データを確認・登録できます。", "検索、実施済み管理、カレンダー表示、帳票出力ができます。"], ["対象犬と健康カテゴリーを確認します。", "日付と内容を入力して記録します。", "必要な記録だけブリーダーまたはオーナーへ共有します。"], "健康記録は診断書ではありません。緊急時や判断に迷う場合は獣医師へ相談してください。"),
         (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
+        (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
         (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
         (("犬・血統書", "犬一覧", "在籍犬", "親犬", "販売犬", "譲渡済", "外部犬"), ["犬の基本情報、在籍区分、写真、血統書を管理できます。", "親犬・仔犬・販売犬・譲渡済犬などの状態を確認できます。"], ["対象犬を検索または一覧から選びます。", "登録・編集画面で必要項目を入力します。", "保存後に名前、性別、生年月日、在籍状態を確認します。"], "販売・譲渡・死亡などの状態変更は、一覧表示や帳票に影響します。対象犬を確認して操作してください。"),
         (("販売", "顧客", "商談", "契約", "引渡"), ["顧客、商談、契約、販売・引渡し状況を管理できます。", "進捗確認と必要書類の作成・出力に利用できます。"], ["顧客と対象犬を確認します。", "商談や契約の進捗を入力します。", "引渡し前に契約内容と必要書類を確認します。"], "個人情報を含むため、閲覧・出力したデータの取扱いに注意してください。"),
@@ -1356,7 +1375,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4237,7 +4256,7 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>
     <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
     <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
-    <h2>入金・経費を登録</h2><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>入金・経費を登録</h2><p><a class="button secondary" href="/modules/invoices">請求書管理を開く</a></p><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
     <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
     <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
     return layout("収支・経費台帳", body, user)
@@ -4258,9 +4277,119 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
     return RedirectResponse(f"/modules/finance?month={entry_day:%Y-%m}", status_code=303)
 
 
+INVOICE_STATUSES = {"draft": "下書き", "issued": "発行済み", "paid": "入金済み", "cancelled": "取消"}
+
+
+@app.get("/modules/invoices", response_class=HTMLResponse)
+def invoices_page(invoice_status: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if invoice_status not in {"", *INVOICE_STATUSES}:
+        raise HTTPException(status_code=400, detail="検索条件を確認してください")
+    sales = session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.status != "cancelled").order_by(PuppySale.id.desc())).all()
+    invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id).order_by(Invoice.issued_on.desc(), Invoice.id.desc())).all()
+    if invoice_status: invoices = [item for item in invoices if item.status == invoice_status]
+    sale_options = ""
+    for sale in sales:
+        dog = session.get(Dog, sale.dog_id); remaining = max((sale.price or 0) - (sale.paid_amount or 0), 0)
+        sale_options += f'<option value="{sale.id}">{html.escape(sale.customer_name)}／{html.escape(dog.call_name if dog else "対象犬")}／残額 ¥{remaining:,}</option>'
+    status_options = "".join(f'<option value="{value}" {"selected" if invoice_status == value else ""}>{label}</option>' for value, label in (("", "すべて"), *INVOICE_STATUSES.items()))
+    rows = ""; mobile_cards = ""
+    for invoice in invoices:
+        sale = session.scalar(select(PuppySale).where(PuppySale.id == invoice.puppy_sale_id, PuppySale.tenant_id == tenant.id))
+        customer_name = sale.customer_name if sale else "販売案件未登録"
+        update_options = "".join(f'<option value="{key}" {"selected" if invoice.status == key else ""}>{label}</option>' for key, label in INVOICE_STATUSES.items())
+        action = f'''<a class="button secondary" href="/modules/invoices/{invoice.id}.pdf">PDF</a><form method="post" action="/modules/invoices/{invoice.id}/status" style="display:inline"><select name="status" style="width:auto">{update_options}</select><button>更新</button></form>'''
+        rows += f'<tr><td>{html.escape(invoice.invoice_no)}</td><td>{invoice.issued_on}</td><td>{html.escape(customer_name)}</td><td>¥{invoice.amount:,}</td><td>{invoice.due_on or "－"}</td><td>{INVOICE_STATUSES[invoice.status]}</td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>{invoice.issued_on}　<span class="badge">{INVOICE_STATUSES[invoice.status]}</span></p><p><strong>¥{invoice.amount:,}</strong>／期限 {invoice.due_on or "未設定"}</p><div class="health-toolbar">{action}</div></article>'''
+    body = f'''<h1>請求書管理</h1><p>販売案件から請求書を作成し、PDF出力と入金状況を管理します。</p>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/sales">販売管理</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
+    <h2>請求書を作成</h2>{f'<form method="post" action="/modules/invoices"><div class="grid"><div><label>販売案件</label><select name="sale_id">{sale_options}</select></div><div><label>発行日</label><input type="date" name="issued_on" value="{date.today()}" required></div><div><label>支払期限</label><input type="date" name="due_on"></div><div><label>請求額（税込）</label><input type="number" name="amount" min="1" required></div></div><label>お支払い案内・備考</label><textarea name="notes" maxlength="2000" placeholder="振込先、支払方法、連絡事項など"></textarea><button>請求書を作成</button></form>' if sales else '<p class="error">請求書を作成するには販売案件を登録してください。</p>'}
+    <h2>請求書一覧</h2><form method="get" action="/modules/invoices"><label>状態</label><select name="invoice_status">{status_options}</select><button>絞り込む</button> <a class="button secondary" href="/modules/invoices">解除</a></form>
+    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>請求番号</th><th>発行日</th><th>お客様</th><th>請求額</th><th>期限</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="7">請求書はまだありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">請求書はまだありません。</div>'}</section>'''
+    return layout("請求書管理", body, user)
+
+
+@app.post("/modules/invoices")
+def invoice_create(sale_id: int = Form(...), issued_on: str = Form(...), due_on: str = Form(""), amount: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    sale = session.scalar(select(PuppySale).where(PuppySale.id == sale_id, PuppySale.tenant_id == tenant.id, PuppySale.status != "cancelled"))
+    try:
+        issue_day = date.fromisoformat(issued_on); due_day = date.fromisoformat(due_on) if due_on else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日付を確認してください")
+    if not sale or amount <= 0 or len(notes) > 2000 or (due_day and due_day < issue_day):
+        raise HTTPException(status_code=400, detail="請求情報を確認してください")
+    invoice_no = f"INV-{issue_day:%Y%m%d}-{sale.id}-{secrets.token_hex(2).upper()}"
+    session.add(Invoice(tenant_id=tenant.id, puppy_sale_id=sale.id, invoice_no=invoice_no, issued_on=issue_day, due_on=due_day, amount=amount, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/invoices", status_code=303)
+
+
+@app.post("/modules/invoices/{invoice_id}/status")
+def invoice_status_update(invoice_id: int, status_value: str = Form(..., alias="status"), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id))
+    if not invoice or status_value not in INVOICE_STATUSES or (invoice.status == "paid" and status_value != "paid"):
+        raise HTTPException(status_code=400, detail="請求書の状態を確認してください")
+    if status_value == "paid" and not invoice.ledger_entry_id:
+        entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type="income", category="sale", amount=invoice.amount, description=f"請求書 {invoice.invoice_no} 入金", notes="請求書管理から自動登録")
+        session.add(entry); session.flush(); invoice.ledger_entry_id = entry.id
+    invoice.status = status_value
+    session.commit()
+    return RedirectResponse("/modules/invoices", status_code=303)
+
+
+def invoice_pdf_font() -> str:
+    font_name = "NotoSansJP"
+    font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+    if os.path.exists(font_path):
+        if font_name not in pdfmetrics.getRegisteredFontNames(): pdfmetrics.registerFont(TTFont(font_name, font_path, subfontIndex=0))
+        return font_name
+    pdfmetrics.registerFont(UnicodeCIDFont("HeiseiKakuGo-W5"))
+    return "HeiseiKakuGo-W5"
+
+
+def build_invoice_pdf(invoice: Invoice, sale: PuppySale, customer: Customer | None, dog: Dog | None, tenant: Tenant) -> bytes:
+    output = io.BytesIO(); font_name = invoice_pdf_font(); pdf = canvas.Canvas(output, pagesize=A4); width, height = A4
+    pdf.setTitle(f"請求書 {invoice.invoice_no}"); pdf.setAuthor(tenant.name)
+    pdf.setFont(font_name, 22); pdf.drawCentredString(width / 2, height - 55, "請 求 書")
+    pdf.setFont(font_name, 9); pdf.drawRightString(width - 42, height - 82, f"請求番号：{invoice.invoice_no}"); pdf.drawRightString(width - 42, height - 98, f"発行日：{invoice.issued_on:%Y年%m月%d日}")
+    customer_name = customer.name if customer else sale.customer_name
+    pdf.setFont(font_name, 14); pdf.drawString(42, height - 130, f"{customer_name[:35]} 様")
+    pdf.setFont(font_name, 9)
+    if customer and customer.address: pdf.drawString(42, height - 148, customer.address[:55])
+    pdf.drawRightString(width - 42, height - 130, tenant.name[:35]); pdf.drawRightString(width - 42, height - 148, "発行者")
+    pdf.setLineWidth(1); pdf.line(42, height - 180, width - 42, height - 180)
+    pdf.setFont(font_name, 11); pdf.drawString(52, height - 210, "ご請求金額（税込）")
+    pdf.setFont(font_name, 20); pdf.drawRightString(width - 52, height - 210, f"¥{invoice.amount:,}")
+    pdf.line(42, height - 228, width - 42, height - 228)
+    pdf.setFont(font_name, 10); pdf.drawString(52, height - 260, "請求内容"); pdf.drawString(170, height - 260, f"{dog.call_name if dog else '対象犬'} 販売代金")
+    pdf.drawString(52, height - 286, "お支払期限"); pdf.drawString(170, height - 286, invoice.due_on.strftime("%Y年%m月%d日") if invoice.due_on else "別途ご案内")
+    pdf.setFillColorRGB(.96, .93, .94); pdf.rect(42, height - 470, width - 84, 140, fill=1, stroke=0); pdf.setFillColorRGB(.2, .15, .17)
+    pdf.setFont(font_name, 10); pdf.drawString(55, height - 352, "お支払い案内・備考")
+    notes = (invoice.notes or "お支払い方法については発行者へご確認ください。").replace("\r", " ").split("\n")
+    y = height - 374; pdf.setFont(font_name, 9)
+    for line in notes[:6]: pdf.drawString(55, y, line[:65]); y -= 17
+    pdf.setFillColorRGB(.35, .3, .32); pdf.setFont(font_name, 8); pdf.drawCentredString(width / 2, 35, f"{tenant.name} / {invoice.invoice_no}")
+    pdf.save(); return output.getvalue()
+
+
+@app.get("/modules/invoices/{invoice_id}.pdf")
+def invoice_pdf(invoice_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id))
+    if not invoice: raise HTTPException(status_code=404)
+    sale = session.scalar(select(PuppySale).where(PuppySale.id == invoice.puppy_sale_id, PuppySale.tenant_id == tenant.id))
+    if not sale: raise HTTPException(status_code=404)
+    customer = session.scalar(select(Customer).where(Customer.id == sale.customer_id, Customer.tenant_id == tenant.id)) if sale.customer_id else None
+    dog = session.scalar(select(Dog).where(Dog.id == sale.dog_id, Dog.tenant_id == tenant.id))
+    content = build_invoice_pdf(invoice, sale, customer, dog, tenant)
+    return Response(content=content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_no}.pdf"', "Cache-Control": "private, no-store"})
+
+
 @app.get("/modules/{module_key}", response_class=HTMLResponse)
 def module_page(module_key: str, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales", "finance"}:
+    if module_key not in MODULES or module_key in {"dogs", "todo", "calendar", "breeding", "births", "health", "genetics", "sales", "finance", "invoices"}:
         raise HTTPException(status_code=404)
     user, tenant = access
     title, description = MODULES[module_key]

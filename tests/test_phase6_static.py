@@ -228,6 +228,55 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
 
+    def test_invoice_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Invoice")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "puppy_sale_id", "invoice_no", "issued_on", "due_on", "amount", "status", "ledger_entry_id"):
+            self.assertIn(marker, model_source)
+        for route_name in ("invoices_page", "invoice_create", "invoice_status_update", "invoice_pdf"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+
+    def test_invoice_creation_is_linked_to_sales_and_validated(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("PuppySale.id == sale_id", "PuppySale.tenant_id == tenant.id", 'PuppySale.status != "cancelled"', "amount <= 0", "due_day < issue_day", "secrets.token_hex", "tenant_id=tenant.id"):
+            self.assertIn(marker, segment)
+        self.assertIn('"invoices": ("請求書管理"', SOURCE)
+
+    def test_paid_invoice_creates_one_ledger_income_entry(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_status_update")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('status_value == "paid"', "not invoice.ledger_entry_id", "FinancialEntry", 'entry_type="income"', 'category="sale"', "invoice.ledger_entry_id = entry.id"):
+            self.assertIn(marker, segment)
+        self.assertIn('invoice.status == "paid" and status_value != "paid"', segment)
+
+    def test_invoice_pdf_is_private_and_contains_business_fields(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "build_invoice_pdf")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("invoice_pdf_font", "請 求 書", "請求番号", "ご請求金額（税込）", "請求内容", "お支払期限", "お支払い案内・備考"):
+            self.assertIn(marker, segment)
+        font_helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_pdf_font")
+        font_source = ast.get_source_segment(SOURCE, font_helper)
+        for marker in ("NotoSansJP", "NotoSansCJK-Regular.ttc", "TTFont", "HeiseiKakuGo-W5"):
+            self.assertIn(marker, font_source)
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("fonts-noto-cjk", dockerfile)
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_pdf")
+        route_source = ast.get_source_segment(SOURCE, route)
+        self.assertIn('media_type="application/pdf"', route_source)
+        self.assertIn('"Cache-Control": "private, no-store"', route_source)
+
+    def test_invoice_page_has_guide_navigation_and_mobile_cards(self):
+        self.assertIn('href="/modules/invoices"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertLess(guide_source.index('(("請求書",)'), guide_source.index('(("収支", "経費", "原価", "請求")'))
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoices_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        self.assertIn("calendar-mobile-card", page_source)
+        self.assertIn("calendar-mobile-only", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()
