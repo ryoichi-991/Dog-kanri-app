@@ -60,6 +60,7 @@ MODULES = {
     "finance": ("収支・経費台帳", "入金、経費、月次収支、原価の記録"),
     "finance/reports": ("経営収益ダッシュボード", "月別収支、経費構成、未入金、証憑保管状況"),
     "finance/budgets": ("予算管理・予実比較", "月別の入金目標、経費予算、実績差異の管理"),
+    "finance/cashflow": ("資金繰り・90日予測", "入出金予定、未入金請求、将来残高の確認"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
@@ -425,6 +426,20 @@ class FinanceBudget(Base):
     category: Mapped[str] = mapped_column(String(50), index=True)
     amount: Mapped[int] = mapped_column(Integer)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceCashPlan(Base):
+    __tablename__ = "finance_cash_plans"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    due_on: Mapped[date] = mapped_column(Date, index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="planned", index=True)
+    ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Invoice(Base):
@@ -1376,6 +1391,7 @@ def page_usage_guide(title: str) -> str:
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
         (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
+        (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
@@ -1424,7 +1440,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4370,7 +4386,7 @@ def finance_reports_page(year: str = "", access=Depends(require_tenant_user), se
     body = f'''<h1>経営収益ダッシュボード</h1><p>登録済みの台帳・販売・請求書・証憑を集計し、犬舎経営の年間状況を確認します。</p>
     <form method="get" action="/modules/finance/reports"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{report_year}" required></div></div><button>集計を表示</button> <a class="button secondary" href="/modules/finance/reports">今年へ戻る</a></form>
     <div class="grid"><div class="module"><h3>年間入金</h3><p><strong style="font-size:25px">¥{annual_income:,}</strong></p></div><div class="module"><h3>年間経費</h3><p><strong style="font-size:25px">¥{annual_expense:,}</strong></p></div><div class="module"><h3>年間収支</h3><p><strong class="{'error' if annual_balance < 0 else ''}" style="font-size:25px">¥{annual_balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div><div class="module"><h3>期限超過請求</h3><p><strong class="{'error' if overdue_invoices else ''}" style="font-size:25px">{len(overdue_invoices)}件／¥{overdue_total:,}</strong></p></div><div class="module"><h3>経費証憑保管率</h3><p><strong class="{'error' if missing_documents else ''}" style="font-size:25px">{document_rate}%</strong></p><small>未保管 {missing_documents}件</small></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/budgets">予算・予実比較</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/budgets">予算・予実比較</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
     <h2>{report_year}年の月別推移</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金</th><th>経費</th><th>収支</th></tr>{month_rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
     <h2>年間の経費構成</h2><div style="overflow-x:auto"><table><tr><th>費目</th><th>金額</th><th>比較</th></tr>{category_rows or '<tr><td colspan="3">経費記録はありません。</td></tr>'}</table></div>'''
     return layout("経営収益ダッシュボード", body, user)
@@ -4425,6 +4441,67 @@ def finance_budget_save(year: int = Form(...), month: int = Form(...), entry_typ
         session.add(FinanceBudget(tenant_id=tenant.id, year=year, month=month, entry_type=entry_type, category=category, amount=amount))
     session.commit()
     return RedirectResponse(f"/modules/finance/budgets?year={year}", status_code=303)
+
+
+@app.get("/modules/finance/cashflow", response_class=HTMLResponse)
+def finance_cashflow_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    today = date.today(); horizon = today + timedelta(days=90)
+    past_entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on <= today)).all()
+    current_balance = sum(item.amount if item.entry_type == "income" else -item.amount for item in past_entries)
+    plans = session.scalars(select(FinanceCashPlan).where(FinanceCashPlan.tenant_id == tenant.id, FinanceCashPlan.status == "planned", FinanceCashPlan.due_on >= today, FinanceCashPlan.due_on <= horizon).order_by(FinanceCashPlan.due_on, FinanceCashPlan.id)).all()
+    invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.due_on.is_not(None), Invoice.due_on >= today, Invoice.due_on <= horizon).order_by(Invoice.due_on, Invoice.id)).all()
+    events = [(item.due_on, item.entry_type, item.description, item.amount, "予定", item.id) for item in plans]
+    events += [(item.due_on, "income", f"請求書 {item.invoice_no}", item.amount, "請求書", None) for item in invoices]
+    events.sort(key=lambda item: (item[0], 0 if item[1] == "expense" else 1, item[2]))
+    def projected(days: int) -> int:
+        cutoff = today + timedelta(days=days)
+        return current_balance + sum(amount if flow_type == "income" else -amount for due_on, flow_type, _, amount, _, _ in events if due_on <= cutoff)
+    balance_30, balance_60, balance_90 = projected(30), projected(60), projected(90)
+    expected_income = sum(amount for _, flow_type, _, amount, _, _ in events if flow_type == "income")
+    expected_expense = sum(amount for _, flow_type, _, amount, _, _ in events if flow_type == "expense")
+    rows = ""; mobile_cards = ""; running_balance = current_balance
+    for due_on, flow_type, description, amount, source, plan_id in events:
+        running_balance += amount if flow_type == "income" else -amount
+        action = f'<form method="post" action="/modules/finance/cashflow/{plan_id}/complete"><button class="success">実行済みにする</button></form>' if plan_id else '<a class="button secondary" href="/modules/invoices">請求書を確認</a>'
+        label = "入金予定" if flow_type == "income" else "支払予定"
+        rows += f'<tr><td>{due_on}</td><td>{label}</td><td>{html.escape(description)}</td><td>¥{amount:,}</td><td>{source}</td><td class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</td><td>{action}</td></tr>'
+        mobile_cards += f'<article class="calendar-mobile-card"><h3>{html.escape(description)}</h3><p>{due_on}　<span class="badge">{label}</span>／{source}</p><p>金額 <strong>¥{amount:,}</strong>／予定後残高 <strong class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</strong></p><div class="health-toolbar">{action}</div></article>'
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    body = f'''<h1>資金繰り・90日予測</h1><p>台帳上の現在残高に、入出金予定と支払期限付き請求書を反映して将来残高を確認します。</p>
+    <div class="grid"><div class="module"><h3>現在の台帳残高</h3><p><strong class="{'error' if current_balance < 0 else ''}" style="font-size:25px">¥{current_balance:,}</strong></p></div><div class="module"><h3>30日後</h3><p><strong class="{'error' if balance_30 < 0 else ''}" style="font-size:25px">¥{balance_30:,}</strong></p></div><div class="module"><h3>60日後</h3><p><strong class="{'error' if balance_60 < 0 else ''}" style="font-size:25px">¥{balance_60:,}</strong></p></div><div class="module"><h3>90日後</h3><p><strong class="{'error' if balance_90 < 0 else ''}" style="font-size:25px">¥{balance_90:,}</strong></p></div><div class="module"><h3>90日以内の入金予定</h3><p><strong style="font-size:25px">¥{expected_income:,}</strong></p></div><div class="module"><h3>90日以内の支払予定</h3><p><strong style="font-size:25px">¥{expected_expense:,}</strong></p></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a></div>
+    <h2>入出金予定を登録</h2><form method="post" action="/modules/finance/cashflow"><div class="grid"><div><label>予定日</label><input type="date" name="due_on" value="{today}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金予定</option><option value="expense">支払予定</option></select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><button>予定を登録</button></form>
+    <h2>今後90日間の予定</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>予定日</th><th>区分</th><th>内容</th><th>金額</th><th>情報源</th><th>予定後残高</th><th>操作</th></tr>{rows or '<tr><td colspan="7">90日以内の予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">90日以内の予定はありません。</div>'}</section>'''
+    return layout("資金繰り・90日予測", body, user)
+
+
+@app.post("/modules/finance/cashflow")
+def finance_cashflow_create(due_on: str = Form(...), entry_type: str = Form(...), category: str = Form(...), amount: int = Form(...), description: str = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    try:
+        due_day = date.fromisoformat(due_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="予定日を確認してください")
+    clean_description = description.strip()
+    if due_day < date.today() or due_day > date.today() + timedelta(days=730) or entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount <= 0 or amount > 999999999 or not clean_description or len(clean_description) > 200:
+        raise HTTPException(status_code=400, detail="入出金予定の内容を確認してください")
+    session.add(FinanceCashPlan(tenant_id=tenant.id, due_on=due_day, entry_type=entry_type, category=category, amount=amount, description=clean_description))
+    session.commit()
+    return RedirectResponse("/modules/finance/cashflow", status_code=303)
+
+
+@app.post("/modules/finance/cashflow/{plan_id}/complete")
+def finance_cashflow_complete(plan_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    plan = session.scalar(select(FinanceCashPlan).where(FinanceCashPlan.id == plan_id, FinanceCashPlan.tenant_id == tenant.id))
+    if not plan or plan.status != "planned" or plan.ledger_entry_id:
+        raise HTTPException(status_code=400, detail="入出金予定を確認してください")
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type=plan.entry_type, category=plan.category, description=plan.description, amount=plan.amount, notes=f"資金繰り予定 #{plan.id}から反映")
+    session.add(entry); session.flush()
+    plan.status = "completed"; plan.ledger_entry_id = entry.id
+    session.commit()
+    return RedirectResponse("/modules/finance/cashflow", status_code=303)
 
 
 def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:

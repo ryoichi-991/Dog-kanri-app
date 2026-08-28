@@ -437,6 +437,45 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("予実比較", guide_source)
         self.assertIn("経営判断用の目安", guide_source)
 
+    def test_cashflow_model_and_routes_are_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceCashPlan")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "due_on", "entry_type", "category", "description", "amount", "status", "ledger_entry_id"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_cashflow_page", "finance_cashflow_create", "finance_cashflow_complete"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("tenant.id", ast.get_source_segment(SOURCE, route))
+        self.assertIn('"finance/cashflow": ("資金繰り・90日予測"', SOURCE)
+
+    def test_cashflow_forecast_combines_plans_invoices_and_balance(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("current_balance", "FinanceCashPlan.status == \"planned\"", 'Invoice.status == "issued"', "events.sort", "projected(30)", "projected(60)", "projected(90)", "expected_income", "expected_expense", "running_balance"):
+            self.assertIn(marker, segment)
+        for label in ("現在の台帳残高", "30日後", "60日後", "90日後", "90日以内の入金予定", "90日以内の支払予定"):
+            self.assertIn(label, segment)
+
+    def test_cashflow_create_is_bounded_and_complete_is_idempotent(self):
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_create")
+        create_source = ast.get_source_segment(SOURCE, create)
+        for marker in ("due_day < date.today()", "timedelta(days=730)", 'entry_type not in {"income", "expense"}', "category not in FINANCE_CATEGORIES", "amount <= 0", "amount > 999999999", "len(clean_description) > 200"):
+            self.assertIn(marker, create_source)
+        complete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_complete")
+        complete_source = ast.get_source_segment(SOURCE, complete)
+        for marker in ("FinanceCashPlan.tenant_id == tenant.id", 'plan.status != "planned"', "plan.ledger_entry_id", "FinancialEntry", 'plan.status = "completed"', "plan.ledger_entry_id = entry.id"):
+            self.assertIn(marker, complete_source)
+
+    def test_cashflow_has_guide_navigation_and_mobile_cards(self):
+        self.assertIn('href="/modules/finance/cashflow"', SOURCE)
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("calendar-mobile-card", segment)
+        self.assertIn("calendar-mobile-only", segment)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("資金繰り", guide_source)
+        self.assertIn("二重計上", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
