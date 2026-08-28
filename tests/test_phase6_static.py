@@ -544,6 +544,38 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("口座・現金", guide_source)
         self.assertIn("収益・経費へ計上されません", guide_source)
 
+    def test_finance_period_close_model_and_admin_routes(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinancePeriodClose")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_period_close", "tenant_id", "year", "month", "income_total", "expense_total", "closed_by_id", "closed_at"):
+            self.assertIn(marker, model_source)
+        for route_name in ("finance_close_period", "finance_reopen_period"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("require_tenant_admin", ast.get_source_segment(SOURCE, route))
+
+    def test_finance_closing_dashboard_checks_unfinished_items(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinanceAccountEntry", "FinanceDocument", "unassigned_count", "missing_document_count", "口座未割当", "経費証憑未保管", "この月を締める"):
+            self.assertIn(marker, segment)
+
+    def test_closed_finance_period_blocks_new_postings_and_account_changes(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "ensure_finance_period_open")
+        self.assertIn("status_code=409", ast.get_source_segment(SOURCE, helper))
+        for route_name in ("finance_create", "finance_cashflow_complete", "finance_account_assign", "finance_account_transfer", "invoice_status_update", "cost_allocate"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("ensure_finance_period_open", ast.get_source_segment(SOURCE, route))
+        recurring = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "generate_due_finance_recurring")
+        self.assertIn("finance_period_close", ast.get_source_segment(SOURCE, recurring))
+
+    def test_finance_closing_has_guide_and_navigation(self):
+        self.assertIn('href="/modules/finance/closing', SOURCE)
+        self.assertIn('"finance/closing": ("月次締め・会計期間ロック"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("会計期間ロック", guide_source)
+        self.assertIn("締めた月", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

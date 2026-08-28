@@ -63,6 +63,7 @@ MODULES = {
     "finance/cashflow": ("資金繰り・90日予測", "入出金予定、未入金請求、将来残高の確認"),
     "finance/recurring": ("定期収支・自動登録", "毎月の入金・経費を重複なく台帳へ自動登録"),
     "finance/accounts": ("口座・現金残高管理", "銀行口座、現金、決済口座ごとの残高と振替"),
+    "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
@@ -496,6 +497,21 @@ class FinanceAccountTransfer(Base):
     from_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
     to_account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="CASCADE"), index=True)
     amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FinancePeriodClose(Base):
+    __tablename__ = "finance_period_closes"
+    __table_args__ = (UniqueConstraint("tenant_id", "year", "month", name="uq_finance_period_close"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    month: Mapped[int] = mapped_column(Integer, index=True)
+    income_total: Mapped[int] = mapped_column(Integer, default=0)
+    expense_total: Mapped[int] = mapped_column(Integer, default=0)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    closed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
@@ -1451,6 +1467,7 @@ def page_usage_guide(title: str) -> str:
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
         (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。"], "口座間振替は収益・経費へ計上されません。台帳記録を誤った口座へ割り当てないよう、日付・内容・金額を確認してください。"),
+        (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
         (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
@@ -1499,7 +1516,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4350,6 +4367,79 @@ FINANCE_CATEGORIES = {
 }
 
 
+def finance_period_close(session: Session, tenant_id: int, target_day: date) -> FinancePeriodClose | None:
+    return session.scalar(select(FinancePeriodClose).where(
+        FinancePeriodClose.tenant_id == tenant_id,
+        FinancePeriodClose.year == target_day.year,
+        FinancePeriodClose.month == target_day.month,
+    ))
+
+
+def ensure_finance_period_open(session: Session, tenant_id: int, target_day: date) -> None:
+    if finance_period_close(session, tenant_id, target_day):
+        raise HTTPException(status_code=409, detail=f"{target_day:%Y年%m月}は月次締め済みです。管理者が締めを解除してから登録してください")
+
+
+@app.get("/modules/finance/closing", response_class=HTMLResponse)
+def finance_closing_page(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        first_day = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="対象月を確認してください")
+    if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1):
+        raise HTTPException(status_code=400, detail="対象月を確認してください")
+    month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end)).all()
+    entry_ids = [item.id for item in entries]
+    assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
+    expense_ids = [item.id for item in entries if item.entry_type == "expense"]
+    documented_ids = set(session.scalars(select(FinanceDocument.financial_entry_id).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(expense_ids))).all()) if expense_ids else set()
+    income_total = sum(item.amount for item in entries if item.entry_type == "income")
+    expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
+    unassigned_count = len(set(entry_ids) - assigned_ids)
+    missing_document_count = len(set(expense_ids) - documented_ids)
+    closed = finance_period_close(session, tenant.id, first_day)
+    role_is_admin = tenant_role(user, tenant, session) == Role.admin
+    status_card = (f'<div class="tenant"><h2>締め済み</h2><p><strong>{closed.closed_at.strftime("%Y-%m-%d %H:%M")}に確定</strong></p><p>確定時：入金 ¥{closed.income_total:,}／経費 ¥{closed.expense_total:,}／{closed.entry_count}件</p><p>{html.escape(closed.notes or "")}</p></div>' if closed else '<div class="tenant"><h2>未締め</h2><p>点検後、管理者がこの月を確定してください。</p></div>')
+    action = ""
+    if role_is_admin and closed:
+        action = f'''<form method="post" action="/modules/finance/closing/reopen"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 修正のため締めを解除する</label><button class="secondary">締めを解除</button></form>'''
+    elif role_is_admin:
+        action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
+    body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
+    <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    return layout("月次締め・会計期間ロック", body, user)
+
+
+@app.post("/modules/finance/closing")
+def finance_close_period(year: int = Form(...), month: int = Form(...), notes: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if year < 2000 or year > 2100 or month < 1 or month > 12 or not confirmed or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="月次締めの内容を確認してください")
+    first_day = date(year, month, 1); month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    if finance_period_close(session, tenant.id, first_day):
+        raise HTTPException(status_code=409, detail="この月は締め済みです")
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end)).all()
+    session.add(FinancePeriodClose(tenant_id=tenant.id, year=year, month=month, income_total=sum(x.amount for x in entries if x.entry_type == "income"), expense_total=sum(x.amount for x in entries if x.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse(f"/modules/finance/closing?month={year:04d}-{month:02d}", status_code=303)
+
+
+@app.post("/modules/finance/closing/reopen")
+def finance_reopen_period(year: int = Form(...), month: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    if year < 2000 or year > 2100 or month < 1 or month > 12 or not confirmed:
+        raise HTTPException(status_code=400, detail="締め解除の内容を確認してください")
+    closed = finance_period_close(session, tenant.id, date(year, month, 1))
+    if not closed:
+        raise HTTPException(status_code=404, detail="締め済みの月が見つかりません")
+    session.delete(closed); session.commit()
+    return RedirectResponse(f"/modules/finance/closing?month={year:04d}-{month:02d}", status_code=303)
+
+
 @app.get("/modules/finance", response_class=HTMLResponse)
 def finance_page(month: str = "", entry_type: str = "", finance_category: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4362,6 +4452,7 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     if entry_type not in {"", "income", "expense"} or finance_category not in {"", *FINANCE_CATEGORIES}:
         raise HTTPException(status_code=400, detail="検索条件を確認してください")
     month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    closed_period = finance_period_close(session, tenant.id, first_day)
     all_entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
     entries = [item for item in all_entries if (not entry_type or item.entry_type == entry_type) and (not finance_category or item.category == finance_category)]
     income_total = sum(item.amount for item in all_entries if item.entry_type == "income")
@@ -4378,10 +4469,10 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     type_options = "".join(f'<option value="{value}" {"selected" if entry_type == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("income", "入金"), ("expense", "経費")))
     category_options = "".join(f'<option value="{value}" {"selected" if finance_category == value else ""}>{label}</option>' for value, label in (("", "すべて"), *FINANCE_CATEGORIES.items()))
     entry_categories = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
-    body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>
+    body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>{'<p class="tenant"><strong>この月は締め済みです。</strong> 過去日付で追加する場合は管理者が月次締めを解除してください。</p>' if closed_period else ''}
     <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
     <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
-    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
     <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
     <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
     return layout("収支・経費台帳", body, user)
@@ -4394,6 +4485,7 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
         entry_day = date.fromisoformat(occurred_on)
     except ValueError:
         raise HTTPException(status_code=400, detail="日付を確認してください")
+    ensure_finance_period_open(session, tenant.id, entry_day)
     clean_description = description.strip()
     if entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount <= 0 or not clean_description or len(clean_description) > 200 or len(notes) > 2000:
         raise HTTPException(status_code=400, detail="収支情報を確認してください")
@@ -4557,6 +4649,7 @@ def finance_cashflow_complete(plan_id: int, access=Depends(require_tenant_user),
     plan = session.scalar(select(FinanceCashPlan).where(FinanceCashPlan.id == plan_id, FinanceCashPlan.tenant_id == tenant.id))
     if not plan or plan.status != "planned" or plan.ledger_entry_id:
         raise HTTPException(status_code=400, detail="入出金予定を確認してください")
+    ensure_finance_period_open(session, tenant.id, date.today())
     entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type=plan.entry_type, category=plan.category, description=plan.description, amount=plan.amount, notes=f"資金繰り予定 #{plan.id}から反映")
     session.add(entry); session.flush()
     plan.status = "completed"; plan.ledger_entry_id = entry.id
@@ -4574,6 +4667,8 @@ def generate_due_finance_recurring(session: Session, target_day: date) -> int:
             continue
         exists = session.scalar(select(FinanceRecurringPosting.id).where(FinanceRecurringPosting.tenant_id == rule.tenant_id, FinanceRecurringPosting.rule_id == rule.id, FinanceRecurringPosting.period == period))
         if exists:
+            continue
+        if finance_period_close(session, rule.tenant_id, posting_day):
             continue
         entry = FinancialEntry(tenant_id=rule.tenant_id, occurred_on=posting_day, entry_type=rule.entry_type, category=rule.category, description=rule.description, amount=rule.amount, notes=f"定期収支ルール #{rule.id}から自動登録")
         session.add(entry); session.flush()
@@ -4596,7 +4691,7 @@ def finance_recurring_page(access=Depends(require_tenant_user), session: Session
     history_rows = "".join(f'<tr><td>{posting.period}</td><td>{entry.occurred_on}</td><td>{html.escape(rule.description)}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>¥{entry.amount:,}</td></tr>' for posting, rule, entry in postings)
     categories = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
     body = f'''<h1>定期収支・自動登録</h1><p>毎月発生する入金・経費を指定日に収支台帳へ自動登録します。</p>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
     <h2>定期ルールを登録</h2><form method="post" action="/modules/finance/recurring"><div class="grid"><div><label>毎月の登録日</label><input type="number" name="day_of_month" min="1" max="31" value="1" required></div><div><label>区分</label><select name="entry_type"><option value="expense">経費</option><option value="income">入金</option></select></div><div><label>費目</label><select name="category">{categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div><div><label>開始日</label><input type="date" name="start_on" value="{date.today()}" required></div><div><label>終了日（任意）</label><input type="date" name="end_on"></div></div><label>内容</label><input name="description" maxlength="200" required><button>定期ルールを登録</button></form>
     <h2>登録済みルール</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>登録日</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>期間</th><th>操作</th></tr>{rule_rows or '<tr><td colspan="7">定期ルールはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">定期ルールはありません。</div>'}</section>
     <h2>直近の自動登録履歴</h2><div style="overflow-x:auto"><table><tr><th>対象月</th><th>台帳日付</th><th>内容</th><th>区分</th><th>金額</th></tr>{history_rows or '<tr><td colspan="5">自動登録履歴はありません。</td></tr>'}</table></div>'''
@@ -4680,6 +4775,7 @@ def finance_account_assign(financial_entry_id: int = Form(...), account_id: int 
     exists = session.scalar(select(FinanceAccountEntry.id).where(FinanceAccountEntry.financial_entry_id == financial_entry_id))
     if not entry or not account or exists:
         raise HTTPException(status_code=400, detail="台帳記録または口座を確認してください")
+    ensure_finance_period_open(session, tenant.id, entry.occurred_on)
     session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id)); session.commit()
     return RedirectResponse("/modules/finance/accounts", status_code=303)
 
@@ -4689,6 +4785,7 @@ def finance_account_transfer(transferred_on: str = Form(...), from_account_id: i
     _, tenant = access
     try: transfer_day = date.fromisoformat(transferred_on)
     except ValueError: raise HTTPException(status_code=400, detail="振替日を確認してください")
+    ensure_finance_period_open(session, tenant.id, transfer_day)
     source = session.scalar(select(FinanceAccount).where(FinanceAccount.id == from_account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
     destination = session.scalar(select(FinanceAccount).where(FinanceAccount.id == to_account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
     if not source or not destination or source.id == destination.id or amount <= 0 or amount > 999999999 or len(notes) > 500:
@@ -4810,6 +4907,7 @@ def invoice_status_update(invoice_id: int, status_value: str = Form(..., alias="
     if not invoice or status_value not in INVOICE_STATUSES or (invoice.status == "paid" and status_value != "paid"):
         raise HTTPException(status_code=400, detail="請求書の状態を確認してください")
     if status_value == "paid" and not invoice.ledger_entry_id:
+        ensure_finance_period_open(session, tenant.id, date.today())
         entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type="income", category="sale", amount=invoice.amount, description=f"請求書 {invoice.invoice_no} 入金", notes="請求書管理から自動登録")
         session.add(entry); session.flush(); invoice.ledger_entry_id = entry.id
     invoice.status = status_value
@@ -4925,6 +5023,7 @@ def cost_allocate(financial_entry_id: int = Form(...), amount: int = Form(...), 
     allocated = session.scalar(select(func.coalesce(func.sum(CostAllocation.amount), 0)).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id == financial_entry_id)) or 0
     if not expense or bool(dog) == bool(litter) or amount <= 0 or allocated + amount > (expense.amount if expense else 0) or len(notes) > 500:
         raise HTTPException(status_code=400, detail="原価配賦の内容を確認してください")
+    ensure_finance_period_open(session, tenant.id, expense.occurred_on)
     session.add(CostAllocation(tenant_id=tenant.id, financial_entry_id=expense.id, dog_id=dog.id if dog else None, litter_id=litter.id if litter else None, amount=amount, notes=notes.strip() or None))
     session.commit()
     return RedirectResponse("/modules/costs", status_code=303)
