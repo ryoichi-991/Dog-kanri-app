@@ -8152,7 +8152,7 @@ def email_deliveries_manage(access=Depends(require_tenant_admin), session: Sessi
 
 
 @app.get("/admin/notification-deliveries", response_class=HTMLResponse)
-def notification_deliveries_manage(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def notification_deliveries_manage(retry: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     actor, tenant = access
     related_ids = set(session.scalars(select(DogOwnership.user_id).where(
         DogOwnership.tenant_id == tenant.id, DogOwnership.active.is_(True))).all())
@@ -8163,7 +8163,8 @@ def notification_deliveries_manage(access=Depends(require_tenant_admin), session
         LineDelivery.tenant_id == tenant.id, LineDelivery.category.in_(line_categories)
     ).order_by(LineDelivery.created_at.desc()).limit(200)).all()
     for delivery in line_records:
-        action = f'<a href="/family/line/manage">LINE配信履歴・再送</a>' if delivery.status != "sent" else "－"
+        action = (f'''<form method="post" action="/admin/notification-deliveries/line/{delivery.id}/retry"><label style="font-weight:400;white-space:nowrap"><input type="checkbox" name="confirm_retry" value="true" style="width:auto" required> 再送確認</label><button class="secondary" style="margin:4px 0 0">LINE再送</button></form>'''
+                  if delivery.status != "sent" and delivery.message and delivery.target_url else "－")
         items.append((delivery.created_at, owners.get(delivery.user_id, "－") or "－", "LINE（主通知）", delivery.category,
                       delivery.status, delivery.attempts or 0, delivery.sent_at, delivery.error or "－", action))
     if related_ids:
@@ -8171,7 +8172,8 @@ def notification_deliveries_manage(access=Depends(require_tenant_admin), session
             EmailDelivery.user_id.in_(related_ids), EmailDelivery.purpose.in_(["health_reminder", "anniversary"])
         ).order_by(EmailDelivery.created_at.desc()).limit(200)).all()
         for delivery in email_records:
-            action = '<a href="/admin/email-deliveries">メール履歴・再送</a>' if delivery.status != "sent" else "－"
+            action = (f'''<form method="post" action="/admin/notification-deliveries/email/{delivery.id}/retry"><label style="font-weight:400;white-space:nowrap"><input type="checkbox" name="confirm_retry" value="true" style="width:auto" required> 再送確認</label><button class="secondary" style="margin:4px 0 0">メール再送</button></form>'''
+                      if delivery.status != "sent" and delivery.purpose != "password_reset" else "－")
             items.append((delivery.created_at, owners.get(delivery.user_id, "－") or "－", "メール（予備）", delivery.purpose,
                           delivery.status, delivery.attempts or 0, delivery.sent_at, delivery.error or "－", action))
         push_records = session.scalars(select(FamilyPushReceipt).where(
@@ -8194,7 +8196,8 @@ def notification_deliveries_manage(access=Depends(require_tenant_admin), session
         <td>{html.escape(labels.get(category, category))}</td><td><span class="badge">{html.escape(status)}</span></td><td>{attempts}</td>
         <td>{sent_at.strftime("%Y-%m-%d %H:%M") if sent_at else "－"}</td><td>{html.escape(error)}</td><td>{action}</td></tr>'''
         for created, owner, channel, category, status, attempts, sent_at, error, action in items)
-    body = f'''<h1>健康・記念日通知の配信履歴</h1><p>LINEを主通知、メールとブラウザ通知を予備経路としてまとめて確認します。</p>
+    retry_notice = {"sent": '<p class="tenant"><strong>再送に成功しました。</strong></p>', "failed": '<p class="error">再送に失敗しました。失敗理由と配信設定を確認してください。</p>'}.get(retry, "")
+    body = f'''<h1>健康・記念日通知の配信履歴</h1>{retry_notice}<p>LINEを主通知、メールとブラウザ通知を予備経路としてまとめて確認します。</p>
     <div class="grid"><div class="tenant"><strong>24時間の成功</strong><h2>{success_count}件</h2></div>
     <div class="tenant"><strong>24時間の失敗</strong><h2 class="{'error' if failed_count else ''}">{failed_count}件</h2></div>
     <div class="tenant"><strong>最終配信日時</strong><h2>{last_sent.strftime("%Y-%m-%d %H:%M") if last_sent else "配信なし"}</h2></div>
@@ -8203,6 +8206,37 @@ def notification_deliveries_manage(access=Depends(require_tenant_admin), session
     <div style="overflow-x:auto"><table><tr><th>作成日時</th><th>オーナー</th><th>経路</th><th>種類</th><th>結果</th><th>試行</th><th>最終配信</th><th>失敗理由</th><th>操作</th></tr>
     {rows or '<tr><td colspan="9">健康・記念日通知の配信履歴はありません。</td></tr>'}</table></div>'''
     return layout("通知配信履歴", body, actor)
+
+
+@app.post("/admin/notification-deliveries/line/{delivery_id}/retry")
+def notification_line_delivery_retry(delivery_id: int, confirm_retry: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    if not confirm_retry:
+        raise HTTPException(status_code=400, detail="再送の確認が必要です")
+    delivery = session.get(LineDelivery, delivery_id)
+    if not delivery or delivery.tenant_id != tenant.id or delivery.status == "sent" or not delivery.message or not delivery.target_url:
+        raise HTTPException(status_code=404)
+    sent = send_line_push(delivery.user_id, delivery.tenant_id, delivery.category, delivery.message, delivery.target_url, delivery.dedupe_key, session)
+    session.commit()
+    return RedirectResponse(f"/admin/notification-deliveries?retry={'sent' if sent else 'failed'}", status_code=303)
+
+
+@app.post("/admin/notification-deliveries/email/{delivery_id}/retry")
+def notification_email_delivery_retry(delivery_id: int, confirm_retry: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    if not confirm_retry:
+        raise HTTPException(status_code=400, detail="再送の確認が必要です")
+    delivery = session.get(EmailDelivery, delivery_id)
+    if not delivery or delivery.status == "sent" or delivery.purpose == "password_reset":
+        raise HTTPException(status_code=404)
+    related = delivery.tenant_id == tenant.id or (delivery.user_id and session.scalar(select(DogOwnership.id).where(
+        DogOwnership.tenant_id == tenant.id, DogOwnership.user_id == delivery.user_id, DogOwnership.active.is_(True)
+    )))
+    if not related:
+        raise HTTPException(status_code=404)
+    sent = deliver_email(delivery, session)
+    session.commit()
+    return RedirectResponse(f"/admin/notification-deliveries?retry={'sent' if sent else 'failed'}", status_code=303)
 
 
 @app.post("/admin/email-deliveries/{delivery_id}/retry")

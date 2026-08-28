@@ -903,6 +903,32 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("EmailDelivery.user_id.in_(related_ids)", segment)
         self.assertIn("FamilyPushReceipt.user_id.in_(related_ids)", segment)
 
+    def test_notification_delivery_dashboard_retries_failed_channels_directly(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_deliveries_manage")
+        segment = ast.get_source_segment(TEXT, page)
+        for marker in ("LINE再送", "メール再送", 'name="confirm_retry"', "再送に成功しました", "再送に失敗しました"):
+            self.assertIn(marker, segment)
+        self.assertIn("/admin/notification-deliveries/line/", segment)
+        self.assertIn("/admin/notification-deliveries/email/", segment)
+
+    def test_unified_line_retry_is_confirmed_and_tenant_scoped(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_line_delivery_retry")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("confirm_retry: bool = Form(False)", segment)
+        self.assertIn("delivery.tenant_id != tenant.id", segment)
+        self.assertIn('delivery.status == "sent"', segment)
+        self.assertIn("send_line_push", segment)
+        self.assertIn("retry={'sent' if sent else 'failed'}", segment)
+
+    def test_unified_email_retry_is_confirmed_scoped_and_excludes_password_reset(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "notification_email_delivery_retry")
+        segment = ast.get_source_segment(TEXT, route)
+        self.assertIn("confirm_retry: bool = Form(False)", segment)
+        self.assertIn('delivery.purpose == "password_reset"', segment)
+        self.assertIn("DogOwnership.tenant_id == tenant.id", segment)
+        self.assertIn("deliver_email", segment)
+        self.assertIn("retry={'sent' if sent else 'failed'}", segment)
+
     def test_admin_navigation_links_notification_delivery_dashboard(self):
         layout_source = TEXT[TEXT.index("def layout"):TEXT.index("def family_layout")]
         self.assertIn('href="/admin/notification-deliveries"', layout_source)
