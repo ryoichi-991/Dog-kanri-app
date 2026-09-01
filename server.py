@@ -65,6 +65,7 @@ MODULES = {
     "finance/accounts": ("口座・現金残高管理", "銀行口座、現金、決済口座ごとの残高と振替"),
     "finance/reconciliation": ("口座残高照合・差額チェック", "帳簿残高と銀行・現金の実残高を照合"),
     "finance/statements": ("銀行明細CSV取込・自動照合", "銀行・決済明細の取込、台帳照合、未処理確認"),
+    "finance/rules": ("摘要ルール・自動仕訳候補", "摘要キーワードから費目候補を判定し確認後に登録"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -545,6 +546,20 @@ class FinanceStatementLine(Base):
     amount: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(20), default="unmatched", index=True)
     financial_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+class FinanceCategorizationRule(Base):
+    __tablename__ = "finance_categorization_rules"
+    __table_args__ = (UniqueConstraint("tenant_id", "keyword", "entry_type", name="uq_finance_categorization_rule"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    keyword: Mapped[str] = mapped_column(String(100), index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), default="any", index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1516,6 +1531,7 @@ def page_usage_guide(title: str) -> str:
         (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。"], "口座間振替は収益・経費へ計上されません。台帳記録を誤った口座へ割り当てないよう、日付・内容・金額を確認してください。"),
         (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を修正してください。"),
         (("銀行明細CSV", "明細取込", "自動照合"), ["銀行や決済サービスから出力したCSVを口座へ取り込めます。", "日付・区分・金額が一致する台帳記録を自動照合し、未処理明細を抽出できます。"], ["取込先口座とCSVファイルを選びます。", "自動照合結果と未処理件数を確認します。", "未処理明細だけ費目を選んで台帳へ登録します。"], "同じCSVは重複取込できません。取込前に口座と明細期間を確認してください。"),
+        (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1565,7 +1581,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4904,6 +4920,60 @@ def parse_statement_amount(value: str) -> int:
     return abs(int(clean))
 
 
+def finance_rule_suggestion(line: FinanceStatementLine, rules: list[FinanceCategorizationRule]) -> FinanceCategorizationRule | None:
+    description = line.description.casefold()
+    candidates = [rule for rule in rules if rule.active and rule.keyword.casefold() in description and rule.entry_type in {"any", line.entry_type}]
+    return sorted(candidates, key=lambda rule: (-rule.priority, -len(rule.keyword), rule.id))[0] if candidates else None
+
+
+@app.get("/modules/finance/rules", response_class=HTMLResponse)
+def finance_rules_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    rules = session.scalars(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id).order_by(FinanceCategorizationRule.active.desc(), FinanceCategorizationRule.priority.desc(), FinanceCategorizationRule.keyword, FinanceCategorizationRule.id)).all()
+    active_count = sum(1 for rule in rules if rule.active)
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in (("any", "入出金どちらも"), ("income", "入金"), ("expense", "出金")))
+    rows = ""; mobile_cards = ""
+    for rule in rules:
+        type_label = {"any": "入出金どちらも", "income": "入金", "expense": "出金"}.get(rule.entry_type, rule.entry_type)
+        state = "有効" if rule.active else "停止中"
+        action = f'<form method="post" action="/modules/finance/rules/{rule.id}/stop"><button class="danger">停止</button></form>' if rule.active else "再登録で有効化"
+        rows += f'<tr><td>{html.escape(rule.keyword)}</td><td>{type_label}</td><td>{FINANCE_CATEGORIES.get(rule.category, rule.category)}</td><td>{rule.priority}</td><td><span class="badge">{state}</span></td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(rule.keyword)}</h3><p>{type_label}／{FINANCE_CATEGORIES.get(rule.category, rule.category)}／優先度 {rule.priority}</p><p><span class="badge">{state}</span></p>{action if rule.active else '<small>同じキーワードと区分で再登録すると有効になります。</small>'}</article>'''
+    body = f'''<h1>摘要ルール・自動仕訳候補</h1><p>銀行明細の摘要に含まれるキーワードから費目候補を表示します。候補は確認後にだけ台帳へ登録されます。</p>
+    <div class="grid"><div class="module"><h3>有効なルール</h3><strong>{active_count}件</strong></div><div class="module"><h3>登録済み</h3><strong>{len(rules)}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a></div>
+    <h2>ルールを登録</h2><form method="post" action="/modules/finance/rules"><div class="grid"><div><label>摘要キーワード</label><input name="keyword" maxlength="100" placeholder="例：動物病院" required></div><div><label>入出金区分</label><select name="entry_type">{type_options}</select></div><div><label>費目候補</label><select name="category">{category_options}</select></div><div><label>優先度（高いほど優先）</label><input type="number" name="priority" value="100" min="0" max="999" required></div></div><button>ルールを登録</button></form>
+    <p><small>同じキーワードと区分を再登録すると、費目・優先度を更新して有効化します。優先度が同じ場合は長いキーワードを優先します。</small></p>
+    <h2>登録ルール</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>キーワード</th><th>区分</th><th>費目</th><th>優先度</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="6">ルールはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">ルールはありません。</div>'}</section>'''
+    return layout("摘要ルール・自動仕訳候補", body, user)
+
+
+@app.post("/modules/finance/rules")
+def finance_rule_save(keyword: str = Form(...), entry_type: str = Form(...), category: str = Form(...), priority: int = Form(100), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    clean_keyword = keyword.strip().casefold()
+    if not clean_keyword or len(clean_keyword) > 100 or entry_type not in {"any", "income", "expense"} or category not in FINANCE_CATEGORIES or priority < 0 or priority > 999:
+        raise HTTPException(status_code=400, detail="摘要ルールを確認してください")
+    rule = session.scalar(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.keyword == clean_keyword, FinanceCategorizationRule.entry_type == entry_type))
+    if rule:
+        rule.category = category; rule.priority = priority; rule.active = True
+    else:
+        session.add(FinanceCategorizationRule(tenant_id=tenant.id, keyword=clean_keyword, entry_type=entry_type, category=category, priority=priority, created_by_id=user.id))
+    session.commit()
+    return RedirectResponse("/modules/finance/rules", status_code=303)
+
+
+@app.post("/modules/finance/rules/{rule_id}/stop")
+def finance_rule_stop(rule_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    rule = session.scalar(select(FinanceCategorizationRule).where(FinanceCategorizationRule.id == rule_id, FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.active.is_(True)))
+    if not rule:
+        raise HTTPException(status_code=404, detail="摘要ルールが見つかりません")
+    rule.active = False; session.commit()
+    return RedirectResponse("/modules/finance/rules", status_code=303)
+
+
 @app.get("/modules/finance/statements", response_class=HTMLResponse)
 def finance_statements_page(statement_status: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4919,22 +4989,28 @@ def finance_statements_page(statement_status: str = "", access=Depends(require_t
     lines = session.scalars(lines_query.order_by(FinanceStatementLine.transacted_on.desc(), FinanceStatementLine.id.desc()).limit(200)).all()
     unmatched_total = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched")) or 0
     matched_total = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "matched")) or 0
+    rules = session.scalars(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.active.is_(True))).all()
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_accounts)
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
-    rows = ""; mobile_cards = ""
+    rows = ""; mobile_cards = ""; suggestion_count = 0
     for item in lines:
         state = "照合済み" if item.status == "matched" else "未処理"
-        action = "" if item.status == "matched" else f'''<form method="post" action="/modules/finance/statements/lines/{item.id}/post"><select name="category" style="width:auto">{category_options}</select><button>台帳へ登録</button></form>'''
-        rows += f'<tr><td>{item.transacted_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>{"入金" if item.entry_type == "income" else "出金"}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td><span class="badge">{state}</span></td><td>{action or "－"}</td></tr>'
-        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>{item.transacted_on}／{html.escape(account_names.get(item.account_id, "口座未登録"))}／<span class="badge">{state}</span></p><p>{"入金" if item.entry_type == "income" else "出金"} <strong>¥{item.amount:,}</strong></p>{action}</article>'''
+        suggestion = finance_rule_suggestion(item, rules) if item.status == "unmatched" else None
+        suggestion_count += int(bool(suggestion))
+        suggestion_label = f'{FINANCE_CATEGORIES.get(suggestion.category, suggestion.category)}（{html.escape(suggestion.keyword)}）' if suggestion else "候補なし"
+        suggested_action = f'''<label><input type="checkbox" name="line_ids" value="{item.id}" form="suggestion-batch">一括対象</label><form method="post" action="/modules/finance/statements/lines/{item.id}/post"><input type="hidden" name="category" value="{suggestion.category}"><button class="success">候補で登録</button></form>''' if suggestion else ""
+        manual_action = "" if item.status == "matched" else f'''<form method="post" action="/modules/finance/statements/lines/{item.id}/post"><select name="category" style="width:auto">{category_options}</select><button>費目を選んで登録</button></form>'''
+        action = suggested_action + manual_action
+        rows += f'<tr><td>{item.transacted_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>{"入金" if item.entry_type == "income" else "出金"}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{suggestion_label}</td><td><span class="badge">{state}</span></td><td>{action or "－"}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>{item.transacted_on}／{html.escape(account_names.get(item.account_id, "口座未登録"))}／<span class="badge">{state}</span></p><p>{"入金" if item.entry_type == "income" else "出金"} <strong>¥{item.amount:,}</strong></p><p>仕訳候補：<strong>{suggestion_label}</strong></p>{action}</article>'''
     import_rows = "".join(f'<tr><td>{item.imported_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>{html.escape(item.filename)}</td><td>{item.row_count}件</td><td>{item.matched_count}件</td></tr>' for item in imports[:50])
     status_options = "".join(f'<option value="{value}" {"selected" if statement_status == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("unmatched", "未処理"), ("matched", "照合済み")))
     upload_form = f'''<form method="post" action="/modules/finance/statements/import" enctype="multipart/form-data"><div class="grid"><div><label>取込先口座</label><select name="account_id">{account_options}</select></div><div><label>銀行・決済明細CSV（2MB・1,000行まで）</label><input type="file" name="statement_file" accept=".csv,text/csv" required></div></div><button>CSVを取り込んで照合</button></form>''' if active_accounts else '<p class="tenant">先に口座・現金を登録してください。</p>'
     body = f'''<h1>銀行明細CSV取込・自動照合</h1><p>日付・摘要・入金額・出金額を含むCSVを取り込み、既存の台帳記録と自動照合します。UTF-8と一般的な日本語Windows形式に対応します。</p>
-    <div class="grid"><div class="module"><h3>照合済み</h3><strong>{matched_total}件</strong></div><div class="module"><h3>未処理</h3><strong class="{'error' if unmatched_total else ''}">{unmatched_total}件</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/reconciliation">残高照合</a></div><h2>CSVを取り込む</h2>{upload_form}
+    <div class="grid"><div class="module"><h3>照合済み</h3><strong>{matched_total}件</strong></div><div class="module"><h3>未処理</h3><strong class="{'error' if unmatched_total else ''}">{unmatched_total}件</strong></div><div class="module"><h3>表示中の仕訳候補</h3><strong>{suggestion_count}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/rules">摘要ルール管理</a><a class="button secondary" href="/modules/finance/reconciliation">残高照合</a></div><h2>CSVを取り込む</h2>{upload_form}
     <p><small>列名例：日付／摘要／入金額／出金額。元ファイルそのものは保存せず、照合に必要な項目だけを保管します。</small></p>
-    <h2>取込明細</h2><form method="get"><label>状態</label><select name="statement_status">{status_options}</select><button>表示</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>口座</th><th>区分</th><th>摘要</th><th>金額</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="7">明細はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">明細はありません。</div>'}</section>
+    <h2>取込明細</h2><form method="get"><label>状態</label><select name="statement_status">{status_options}</select><button>表示</button></form><form id="suggestion-batch" method="post" action="/modules/finance/statements/apply-suggestions"><label><input type="checkbox" name="confirmed" value="true" required> 一括対象に選んだ仕訳候補を確認しました</label><button class="success">選択した仕訳候補を一括登録（最大500件）</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>口座</th><th>区分</th><th>摘要</th><th>金額</th><th>仕訳候補</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="8">明細はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">明細はありません。</div>'}</section>
     <h2>取込履歴</h2><div style="overflow-x:auto"><table><tr><th>取込日時</th><th>口座</th><th>ファイル</th><th>明細数</th><th>自動照合</th></tr>{import_rows or '<tr><td colspan="5">取込履歴はありません。</td></tr>'}</table></div>'''
     return layout("銀行明細CSV取込・自動照合", body, user)
 
@@ -5008,6 +5084,28 @@ async def finance_statement_import(account_id: int = Form(...), statement_file: 
         matched_count += int(bool(matched_entry))
         session.add(FinanceStatementLine(tenant_id=tenant.id, import_id=imported.id, account_id=account.id, row_no=row_no, transacted_on=transaction_day, entry_type=entry_type, description=description, amount=amount, status=status_value, financial_entry_id=matched_entry.id if matched_entry else None))
     imported.matched_count = matched_count; session.commit()
+    return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
+
+
+@app.post("/modules/finance/statements/apply-suggestions")
+def finance_statement_apply_suggestions(confirmed: bool = Form(False), line_ids: list[int] = Form(default=[]), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    selected_ids = set(line_ids)
+    if not confirmed or not selected_ids or len(selected_ids) > 500:
+        raise HTTPException(status_code=400, detail="一括登録する仕訳候補と確認欄を確認してください")
+    rules = session.scalars(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.active.is_(True))).all()
+    lines = session.scalars(select(FinanceStatementLine).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.id.in_(selected_ids), FinanceStatementLine.status == "unmatched").order_by(FinanceStatementLine.transacted_on, FinanceStatementLine.id).limit(500)).all()
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
+    active_accounts = {account.id: account for account in accounts}
+    for line in lines:
+        rule = finance_rule_suggestion(line, rules)
+        if not rule or line.account_id not in active_accounts or finance_period_close(session, tenant.id, line.transacted_on):
+            continue
+        entry = FinancialEntry(tenant_id=tenant.id, occurred_on=line.transacted_on, entry_type=line.entry_type, category=rule.category, amount=line.amount, description=line.description, notes=f"摘要ルール #{rule.id}・銀行明細 #{line.import_id}・{line.row_no}行目から確認登録")
+        session.add(entry); session.flush()
+        session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=line.account_id, financial_entry_id=entry.id))
+        line.status = "matched"; line.financial_entry_id = entry.id
+    session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
 

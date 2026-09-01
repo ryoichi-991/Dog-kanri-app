@@ -660,6 +660,49 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinanceStatementLine", 'FinanceStatementLine.status == "unmatched"', "statement_unmatched_count", "銀行明細未処理", "銀行明細の未処理"):
             self.assertIn(marker, segment)
 
+    def test_finance_categorization_rule_is_tenant_scoped_and_unique(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceCategorizationRule")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_categorization_rule", "tenant_id", "keyword", "entry_type", "category", "priority", "active", "created_by_id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_rule_matching_prefers_priority_then_specific_keyword(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_rule_suggestion")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("line.description.casefold()", "rule.keyword.casefold()", 'rule.entry_type in {"any", line.entry_type}', "-rule.priority", "-len(rule.keyword)"):
+            self.assertIn(marker, segment)
+
+    def test_finance_rule_routes_validate_upsert_and_stop_per_tenant(self):
+        save = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_rule_save")
+        save_source = ast.get_source_segment(SOURCE, save)
+        for marker in ('entry_type not in {"any", "income", "expense"}', "category not in FINANCE_CATEGORIES", "priority < 0", "priority > 999", "FinanceCategorizationRule.tenant_id == tenant.id", "rule.active = True"):
+            self.assertIn(marker, save_source)
+        stop = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_rule_stop")
+        stop_source = ast.get_source_segment(SOURCE, stop)
+        for marker in ("FinanceCategorizationRule.tenant_id == tenant.id", "FinanceCategorizationRule.active.is_(True)", "rule.active = False"):
+            self.assertIn(marker, stop_source)
+
+    def test_statement_suggestions_require_confirmation_and_respect_locks(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_apply_suggestions")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("if not confirmed", "len(selected_ids) > 500", "FinanceStatementLine.tenant_id == tenant.id", "FinanceStatementLine.id.in_(selected_ids)", 'FinanceStatementLine.status == "unmatched"', ".limit(500)", "FinanceAccount.tenant_id == tenant.id", "finance_period_close", "finance_rule_suggestion", "FinancialEntry(", "FinanceAccountEntry(", 'line.status = "matched"'):
+            self.assertIn(marker, segment)
+
+    def test_finance_rules_have_management_ui_guide_and_candidate_actions(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_rules_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ("摘要ルール・自動仕訳候補", "摘要キーワード", "優先度", "calendar-mobile-card", "再登録すると有効"):
+            self.assertIn(marker, page_source)
+        statements = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statements_page")
+        statement_source = ast.get_source_segment(SOURCE, statements)
+        for marker in ("候補で登録", "費目を選んで登録", "仕訳候補を一括登録", 'name="confirmed"', 'name="line_ids"', 'form="suggestion-batch"'):
+            self.assertIn(marker, statement_source)
+        self.assertIn('href="/modules/finance/rules"', SOURCE)
+        self.assertIn('"finance/rules": ("摘要ルール・自動仕訳候補"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        self.assertIn("確認なしに自動計上されません", guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
