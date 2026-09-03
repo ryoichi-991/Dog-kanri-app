@@ -741,6 +741,69 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("消費税区分", "インボイス確認", "自動照会しません", "税理士と原資料"):
             self.assertIn(marker, guide_source)
 
+    def test_finance_vendor_and_payable_models_are_tenant_scoped(self):
+        vendor = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceVendor")
+        vendor_source = ast.get_source_segment(SOURCE, vendor)
+        for marker in ("uq_finance_vendor_name", "tenant_id", "invoice_registration_no", "notes", "active", "created_at"):
+            self.assertIn(marker, vendor_source)
+        payable = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinancePayable")
+        payable_source = ast.get_source_segment(SOURCE, payable)
+        for marker in ("tenant_id", "vendor_id", "received_on", "due_on", "category", "invoice_no", "status", "paid_on", "account_id", "financial_entry_id", "unique=True", "created_by_id"):
+            self.assertIn(marker, payable_source)
+
+    def test_finance_payables_page_has_status_totals_actions_and_mobile_ui(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payables_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ('payable_status not in {"", "unpaid", "paid", "cancelled"}', "FinanceVendor.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "FinancePayable.tenant_id == tenant.id", "unpaid_total", "overdue_total", "due_soon", 'name="confirmed"', "calendar-desktop-only", "calendar-mobile-card"):
+            self.assertIn(marker, segment)
+        for label in ("未払総額", "期限超過", "30日以内の支払", "支払済みにする", "取引先を登録"):
+            self.assertIn(label, segment)
+
+    def test_finance_vendor_routes_validate_upsert_and_stop_per_tenant(self):
+        save = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_vendor_save")
+        save_source = ast.get_source_segment(SOURCE, save)
+        for marker in ('re.fullmatch(r"T\\d{13}"', "FinanceVendor.tenant_id == tenant.id", "FinanceVendor.name == clean_name", "vendor.active = True", "session.commit()"):
+            self.assertIn(marker, save_source)
+        stop = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_vendor_stop")
+        stop_source = ast.get_source_segment(SOURCE, stop)
+        for marker in ("FinanceVendor.tenant_id == tenant.id", "FinanceVendor.active.is_(True)", "vendor.active = False"):
+            self.assertIn(marker, stop_source)
+
+    def test_finance_payable_create_validates_vendor_dates_and_amount(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceVendor.tenant_id == tenant.id", "FinanceVendor.active.is_(True)", "received_day > date.today()", "due_day < received_day", "timedelta(days=730)", "category not in FINANCE_CATEGORIES", "amount <= 0", "amount > 999999999", "FinancePayable(", 'status="unpaid"', "created_by_id=user.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_payable_payment_is_confirmed_locked_and_posted_once(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_pay")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancePayable.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "not confirmed", 'payable.status != "unpaid"', "payable.financial_entry_id", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', "FinanceAccountEntry(", 'payable.status = "paid"', "payable.financial_entry_id = entry.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_payable_cancel_is_confirmed_and_non_destructive(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_cancel")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancePayable.tenant_id == tenant.id", "not confirmed", 'payable.status != "unpaid"', "payable.financial_entry_id", 'payable.status = "cancelled"', "session.commit()"):
+            self.assertIn(marker, segment)
+        self.assertNotIn("session.delete", segment)
+
+    def test_unpaid_payables_feed_cashflow_closing_navigation_and_guide(self):
+        cashflow = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_page")
+        cashflow_source = ast.get_source_segment(SOURCE, cashflow)
+        for marker in ("FinancePayable.tenant_id == tenant.id", 'FinancePayable.status == "unpaid"', "FinancePayable.due_on <= horizon", "FinanceVendor.tenant_id == tenant.id", '"買掛金", -item.id', "plan_id < 0", "買掛金を確認", "期限超過・今後90日間"):
+            self.assertIn(marker, cashflow_source)
+        closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        closing_source = ast.get_source_segment(SOURCE, closing)
+        for marker in ("FinancePayable.tenant_id == tenant.id", 'FinancePayable.status == "unpaid"', "due_payable_count", "期限到来未払", "買掛・未払確認"):
+            self.assertIn(marker, closing_source)
+        self.assertIn('href="/modules/finance/payables', SOURCE)
+        self.assertIn('"finance/payables": ("取引先・買掛金・支払管理"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("買掛金", "支払期限", "口座と収支台帳へ一度だけ", "重複登録しない"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

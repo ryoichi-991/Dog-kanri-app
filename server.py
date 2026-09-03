@@ -67,6 +67,7 @@ MODULES = {
     "finance/statements": ("銀行明細CSV取込・自動照合", "銀行・決済明細の取込、台帳照合、未処理確認"),
     "finance/rules": ("摘要ルール・自動仕訳候補", "摘要キーワードから費目候補を判定し確認後に登録"),
     "finance/tax": ("消費税区分・インボイス確認", "取引ごとの税区分、税率、適格請求書の確認"),
+    "finance/payables": ("取引先・買掛金・支払管理", "支払先、請求額、期限、未払・支払済みの管理"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -575,6 +576,38 @@ class FinanceTaxClassification(Base):
     invoice_registration_no: Mapped[str | None] = mapped_column(String(14), nullable=True)
     checked_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceVendor(Base):
+    __tablename__ = "finance_vendors"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_finance_vendor_name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(150), index=True)
+    invoice_registration_no: Mapped[str | None] = mapped_column(String(14), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinancePayable(Base):
+    __tablename__ = "finance_payables"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    vendor_id: Mapped[int] = mapped_column(ForeignKey("finance_vendors.id", ondelete="RESTRICT"), index=True)
+    received_on: Mapped[date] = mapped_column(Date, index=True)
+    due_on: Mapped[date] = mapped_column(Date, index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    invoice_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="unpaid", index=True)
+    paid_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("finance_accounts.id", ondelete="SET NULL"), nullable=True)
+    financial_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True, unique=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1548,6 +1581,7 @@ def page_usage_guide(title: str) -> str:
         (("銀行明細CSV", "明細取込", "自動照合"), ["銀行や決済サービスから出力したCSVを口座へ取り込めます。", "日付・区分・金額が一致する台帳記録を自動照合し、未処理明細を抽出できます。"], ["取込先口座とCSVファイルを選びます。", "自動照合結果と未処理件数を確認します。", "未処理明細だけ費目を選んで台帳へ登録します。"], "同じCSVは重複取込できません。取込前に口座と明細期間を確認してください。"),
         (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
         (("消費税区分", "インボイス確認"), ["台帳記録ごとに課税・非課税等の区分と税率を記録できます。", "経費の適格請求書確認状況と登録番号を月別に点検できます。"], ["対象月を選び、未分類の取引を確認します。", "税区分・税率・適格請求書の状態を原資料と照合して登録します。", "月次締め前に未分類件数と未確認件数をゼロに近づけます。"], "税額は税込金額から求めた管理上の概算です。登録番号は形式だけを確認し、実在・有効性は自動照会しません。申告区分・仕入税額控除・経過措置は税理士と原資料を確認してください。"),
+        (("買掛金", "支払管理", "取引先"), ["仕入先・病院・会場・配送会社などの取引先と未払請求を管理できます。", "支払期限、期限超過、支払済みを確認し、支払時に口座と収支台帳へ一度だけ反映できます。"], ["取引先を登録します。", "請求日・支払期限・費目・請求額を未払として登録します。", "実際の支払日と口座を確認して支払済みにします。"], "支払済み操作は収支台帳へ実際の経費を作成します。二重計上を防ぐため、同じ支払を銀行明細や手入力から重複登録しないでください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1597,7 +1631,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4510,6 +4544,7 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     invoice_unconfirmed_count = sum(1 for item in entries if item.entry_type == "expense" and item.id in tax_by_entry and tax_by_entry[item.id].tax_category == "taxable" and tax_by_entry[item.id].invoice_status == "unconfirmed")
     active_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
     reconciliation_day = min(month_end, date.today())
+    due_payable_count = session.scalar(select(func.count(FinancePayable.id)).where(FinancePayable.tenant_id == tenant.id, FinancePayable.status == "unpaid", FinancePayable.due_on <= reconciliation_day)) or 0
     reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
     reconciled_by_account = {item.account_id: item for item in reconciliations}
     unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or reconciled_by_account[account.id].difference != 0)
@@ -4523,8 +4558,8 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
 
 
@@ -4696,6 +4731,129 @@ def finance_tax_save(financial_entry_id: int = Form(...), tax_category: str = Fo
     return RedirectResponse(f"/modules/finance/tax?month={entry.occurred_on:%Y-%m}", status_code=303)
 
 
+@app.get("/modules/finance/payables", response_class=HTMLResponse)
+def finance_payables_page(payable_status: str = "unpaid", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if payable_status not in {"", "unpaid", "paid", "cancelled"}:
+        raise HTTPException(status_code=400, detail="表示条件を確認してください")
+    vendors = session.scalars(select(FinanceVendor).where(FinanceVendor.tenant_id == tenant.id).order_by(FinanceVendor.active.desc(), FinanceVendor.name, FinanceVendor.id)).all()
+    vendor_names = {item.id: item.name for item in vendors}
+    active_vendors = [item for item in vendors if item.active]
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)).order_by(FinanceAccount.id)).all()
+    all_payables = session.scalars(select(FinancePayable).where(FinancePayable.tenant_id == tenant.id).order_by(FinancePayable.due_on.desc(), FinancePayable.id.desc())).all()
+    payables = [item for item in all_payables if not payable_status or item.status == payable_status]
+    unpaid = [item for item in all_payables if item.status == "unpaid"]
+    overdue = [item for item in unpaid if item.due_on < date.today()]
+    due_soon = [item for item in unpaid if date.today() <= item.due_on <= date.today() + timedelta(days=30)]
+    unpaid_total = sum(item.amount for item in unpaid)
+    overdue_total = sum(item.amount for item in overdue)
+    vendor_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_vendors)
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in accounts)
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    status_options = "".join(f'<option value="{value}" {"selected" if value == payable_status else ""}>{label}</option>' for value, label in (("", "すべて"), ("unpaid", "未払"), ("paid", "支払済み"), ("cancelled", "取消")))
+    rows = ""; mobile_cards = ""
+    for item in payables[:500]:
+        state = {"unpaid": "未払", "paid": "支払済み", "cancelled": "取消"}.get(item.status, item.status)
+        overdue_label = '<span class="error">期限超過</span>' if item.status == "unpaid" and item.due_on < date.today() else ""
+        if item.status == "unpaid" and accounts:
+            action = f'''<form method="post" action="/modules/finance/payables/{item.id}/pay"><div class="grid"><input type="date" name="paid_on" value="{date.today()}" max="{date.today()}" required><select name="account_id">{account_options}</select></div><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 支払内容と口座を確認しました</label><button class="success">支払済みにする</button></form><form method="post" action="/modules/finance/payables/{item.id}/cancel"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 未払請求の取消を確認</label><button class="danger">取消</button></form>'''
+        elif item.status == "unpaid":
+            action = '<a class="button secondary" href="/modules/finance/accounts">先に支払口座を登録</a>'
+        else:
+            action = f'支払日：{item.paid_on}' if item.status == "paid" else "－"
+        vendor_name = html.escape(vendor_names.get(item.vendor_id, "取引先不明"))
+        invoice_label = html.escape(item.invoice_no or "－")
+        rows += f'<tr><td>{item.due_on}<br>{overdue_label}</td><td>{vendor_name}</td><td>{html.escape(item.description)}</td><td>{invoice_label}</td><td>¥{item.amount:,}</td><td><span class="badge">{state}</span></td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{vendor_name}／{html.escape(item.description)}</h3><p>支払期限 {item.due_on} {overdue_label}／<span class="badge">{state}</span></p><p>請求番号 {invoice_label}／<strong>¥{item.amount:,}</strong></p>{action}</article>'''
+    vendor_rows = ""; vendor_cards = ""
+    for vendor in vendors:
+        state = "有効" if vendor.active else "停止中"
+        action = f'<form method="post" action="/modules/finance/payables/vendors/{vendor.id}/stop"><button class="danger">停止</button></form>' if vendor.active else "再登録で有効化"
+        vendor_rows += f'<tr><td>{html.escape(vendor.name)}</td><td>{html.escape(vendor.invoice_registration_no or "－")}</td><td>{html.escape(vendor.notes or "－")}</td><td><span class="badge">{state}</span></td><td>{action}</td></tr>'
+        vendor_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(vendor.name)}</h3><p>登録番号 {html.escape(vendor.invoice_registration_no or "－")}／<span class="badge">{state}</span></p><p>{html.escape(vendor.notes or "")}</p>{action if vendor.active else ''}</article>'''
+    payable_form = f'''<form method="post" action="/modules/finance/payables"><div class="grid"><div><label>取引先</label><select name="vendor_id">{vendor_options}</select></div><div><label>請求日</label><input type="date" name="received_on" value="{date.today()}" max="{date.today()}" required></div><div><label>支払期限</label><input type="date" name="due_on" value="{date.today()}" required></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>請求額</label><input type="number" name="amount" min="1" max="999999999" required></div><div><label>請求書番号</label><input name="invoice_no" maxlength="100"></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><input name="notes" maxlength="500"><button>未払請求を登録</button></form>''' if active_vendors else '<p class="tenant">先に有効な取引先を登録してください。</p>'
+    body = f'''<h1>取引先・買掛金・支払管理</h1><p>取引先から受けた請求と支払期限を管理し、実際の支払時に口座残高と収支台帳へ一度だけ反映します。</p>
+    <div class="grid"><div class="module"><h3>未払総額</h3><strong>¥{unpaid_total:,}</strong><p>{len(unpaid)}件</p></div><div class="module"><h3>期限超過</h3><strong class="{'error' if overdue else ''}">¥{overdue_total:,}</strong><p>{len(overdue)}件</p></div><div class="module"><h3>30日以内の支払</h3><strong>¥{sum(item.amount for item in due_soon):,}</strong><p>{len(due_soon)}件</p></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/tax">消費税・インボイス確認</a></div>
+    <h2>未払請求を登録</h2>{payable_form}
+    <h2>支払一覧</h2><form method="get"><label>状態</label><select name="payable_status">{status_options}</select><button>表示</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>支払期限</th><th>取引先</th><th>内容</th><th>請求書番号</th><th>金額</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="7">条件に一致する請求はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する請求はありません。</div>'}</section>
+    <h2>取引先を登録</h2><form method="post" action="/modules/finance/payables/vendors"><div class="grid"><div><label>取引先名</label><input name="name" maxlength="150" required></div><div><label>適格請求書発行事業者の登録番号</label><input name="invoice_registration_no" maxlength="14" placeholder="T＋13桁"></div></div><label>メモ</label><input name="notes" maxlength="500"><button>取引先を登録</button></form>
+    <h2>取引先一覧</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>取引先</th><th>登録番号</th><th>メモ</th><th>状態</th><th>操作</th></tr>{vendor_rows or '<tr><td colspan="5">取引先はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{vendor_cards or '<div class="tenant">取引先はありません。</div>'}</section>'''
+    return layout("取引先・買掛金・支払管理", body, user)
+
+
+@app.post("/modules/finance/payables/vendors")
+def finance_vendor_save(name: str = Form(...), invoice_registration_no: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    clean_name = name.strip(); registration_no = invoice_registration_no.strip().upper()
+    if not clean_name or len(clean_name) > 150 or len(notes) > 500 or (registration_no and not re.fullmatch(r"T\d{13}", registration_no)):
+        raise HTTPException(status_code=400, detail="取引先情報を確認してください")
+    vendor = session.scalar(select(FinanceVendor).where(FinanceVendor.tenant_id == tenant.id, FinanceVendor.name == clean_name))
+    if vendor:
+        vendor.invoice_registration_no = registration_no or None; vendor.notes = notes.strip() or None; vendor.active = True
+    else:
+        session.add(FinanceVendor(tenant_id=tenant.id, name=clean_name, invoice_registration_no=registration_no or None, notes=notes.strip() or None))
+    session.commit()
+    return RedirectResponse("/modules/finance/payables", status_code=303)
+
+
+@app.post("/modules/finance/payables/vendors/{vendor_id}/stop")
+def finance_vendor_stop(vendor_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    vendor = session.scalar(select(FinanceVendor).where(FinanceVendor.id == vendor_id, FinanceVendor.tenant_id == tenant.id, FinanceVendor.active.is_(True)))
+    if not vendor:
+        raise HTTPException(status_code=404, detail="取引先が見つかりません")
+    vendor.active = False; session.commit()
+    return RedirectResponse("/modules/finance/payables", status_code=303)
+
+
+@app.post("/modules/finance/payables")
+def finance_payable_create(vendor_id: int = Form(...), received_on: str = Form(...), due_on: str = Form(...), category: str = Form(...), amount: int = Form(...), description: str = Form(...), invoice_no: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    vendor = session.scalar(select(FinanceVendor).where(FinanceVendor.id == vendor_id, FinanceVendor.tenant_id == tenant.id, FinanceVendor.active.is_(True)))
+    try:
+        received_day = date.fromisoformat(received_on); due_day = date.fromisoformat(due_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="請求日と支払期限を確認してください")
+    clean_description = description.strip()
+    if not vendor or received_day < date(2000, 1, 1) or received_day > date.today() or due_day < received_day or due_day > received_day + timedelta(days=730) or category not in FINANCE_CATEGORIES or amount <= 0 or amount > 999999999 or not clean_description or len(clean_description) > 200 or len(invoice_no) > 100 or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="未払請求の内容を確認してください")
+    session.add(FinancePayable(tenant_id=tenant.id, vendor_id=vendor.id, received_on=received_day, due_on=due_day, category=category, description=clean_description, invoice_no=invoice_no.strip() or None, amount=amount, status="unpaid", notes=notes.strip() or None, created_by_id=user.id))
+    session.commit()
+    return RedirectResponse("/modules/finance/payables", status_code=303)
+
+
+@app.post("/modules/finance/payables/{payable_id}/pay")
+def finance_payable_pay(payable_id: int, paid_on: str = Form(...), account_id: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    payable = session.scalar(select(FinancePayable).where(FinancePayable.id == payable_id, FinancePayable.tenant_id == tenant.id))
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    try:
+        payment_day = date.fromisoformat(paid_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="支払日を確認してください")
+    if not confirmed or not payable or payable.status != "unpaid" or payable.financial_entry_id or not account or payment_day < payable.received_on or payment_day > date.today():
+        raise HTTPException(status_code=400, detail="支払内容と口座を確認してください")
+    ensure_finance_period_open(session, tenant.id, payment_day)
+    vendor = session.scalar(select(FinanceVendor).where(FinanceVendor.id == payable.vendor_id, FinanceVendor.tenant_id == tenant.id))
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=payment_day, entry_type="expense", category=payable.category, amount=payable.amount, description=f"{vendor.name if vendor else '取引先'}：{payable.description}"[:200], notes=f"買掛金 #{payable.id}・請求書 {payable.invoice_no or '番号なし'}から支払登録")
+    session.add(entry); session.flush()
+    session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
+    payable.status = "paid"; payable.paid_on = payment_day; payable.account_id = account.id; payable.financial_entry_id = entry.id
+    session.commit()
+    return RedirectResponse("/modules/finance/payables", status_code=303)
+
+
+@app.post("/modules/finance/payables/{payable_id}/cancel")
+def finance_payable_cancel(payable_id: int, confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    payable = session.scalar(select(FinancePayable).where(FinancePayable.id == payable_id, FinancePayable.tenant_id == tenant.id))
+    if not confirmed or not payable or payable.status != "unpaid" or payable.financial_entry_id:
+        raise HTTPException(status_code=400, detail="取消対象を確認してください")
+    payable.status = "cancelled"; session.commit()
+    return RedirectResponse("/modules/finance/payables", status_code=303)
+
+
 @app.get("/modules/finance/reports", response_class=HTMLResponse)
 def finance_reports_page(year: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4805,8 +4963,12 @@ def finance_cashflow_page(access=Depends(require_tenant_user), session: Session 
     current_balance = sum(item.amount if item.entry_type == "income" else -item.amount for item in past_entries)
     plans = session.scalars(select(FinanceCashPlan).where(FinanceCashPlan.tenant_id == tenant.id, FinanceCashPlan.status == "planned", FinanceCashPlan.due_on >= today, FinanceCashPlan.due_on <= horizon).order_by(FinanceCashPlan.due_on, FinanceCashPlan.id)).all()
     invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.due_on.is_not(None), Invoice.due_on >= today, Invoice.due_on <= horizon).order_by(Invoice.due_on, Invoice.id)).all()
+    payables = session.scalars(select(FinancePayable).where(FinancePayable.tenant_id == tenant.id, FinancePayable.status == "unpaid", FinancePayable.due_on <= horizon).order_by(FinancePayable.due_on, FinancePayable.id)).all()
+    payable_vendor_ids = {item.vendor_id for item in payables}
+    payable_vendors = {item.id: item.name for item in session.scalars(select(FinanceVendor).where(FinanceVendor.tenant_id == tenant.id, FinanceVendor.id.in_(payable_vendor_ids))).all()} if payable_vendor_ids else {}
     events = [(item.due_on, item.entry_type, item.description, item.amount, "予定", item.id) for item in plans]
     events += [(item.due_on, "income", f"請求書 {item.invoice_no}", item.amount, "請求書", None) for item in invoices]
+    events += [(item.due_on, "expense", f"{payable_vendors.get(item.vendor_id, '取引先')}：{item.description}", item.amount, "買掛金", -item.id) for item in payables]
     events.sort(key=lambda item: (item[0], 0 if item[1] == "expense" else 1, item[2]))
     def projected(days: int) -> int:
         cutoff = today + timedelta(days=days)
@@ -4817,16 +4979,21 @@ def finance_cashflow_page(access=Depends(require_tenant_user), session: Session 
     rows = ""; mobile_cards = ""; running_balance = current_balance
     for due_on, flow_type, description, amount, source, plan_id in events:
         running_balance += amount if flow_type == "income" else -amount
-        action = f'<form method="post" action="/modules/finance/cashflow/{plan_id}/complete"><button class="success">実行済みにする</button></form>' if plan_id else '<a class="button secondary" href="/modules/invoices">請求書を確認</a>'
+        if plan_id and plan_id > 0:
+            action = f'<form method="post" action="/modules/finance/cashflow/{plan_id}/complete"><button class="success">実行済みにする</button></form>'
+        elif plan_id and plan_id < 0:
+            action = '<a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛金を確認</a>'
+        else:
+            action = '<a class="button secondary" href="/modules/invoices">請求書を確認</a>'
         label = "入金予定" if flow_type == "income" else "支払予定"
         rows += f'<tr><td>{due_on}</td><td>{label}</td><td>{html.escape(description)}</td><td>¥{amount:,}</td><td>{source}</td><td class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</td><td>{action}</td></tr>'
         mobile_cards += f'<article class="calendar-mobile-card"><h3>{html.escape(description)}</h3><p>{due_on}　<span class="badge">{label}</span>／{source}</p><p>金額 <strong>¥{amount:,}</strong>／予定後残高 <strong class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</strong></p><div class="health-toolbar">{action}</div></article>'
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
-    body = f'''<h1>資金繰り・90日予測</h1><p>台帳上の現在残高に、入出金予定と支払期限付き請求書を反映して将来残高を確認します。</p>
+    body = f'''<h1>資金繰り・90日予測</h1><p>台帳上の現在残高に、入出金予定、入金予定の請求書、未払買掛金を反映して将来残高を確認します。</p>
     <div class="grid"><div class="module"><h3>現在の台帳残高</h3><p><strong class="{'error' if current_balance < 0 else ''}" style="font-size:25px">¥{current_balance:,}</strong></p></div><div class="module"><h3>30日後</h3><p><strong class="{'error' if balance_30 < 0 else ''}" style="font-size:25px">¥{balance_30:,}</strong></p></div><div class="module"><h3>60日後</h3><p><strong class="{'error' if balance_60 < 0 else ''}" style="font-size:25px">¥{balance_60:,}</strong></p></div><div class="module"><h3>90日後</h3><p><strong class="{'error' if balance_90 < 0 else ''}" style="font-size:25px">¥{balance_90:,}</strong></p></div><div class="module"><h3>90日以内の入金予定</h3><p><strong style="font-size:25px">¥{expected_income:,}</strong></p></div><div class="module"><h3>90日以内の支払予定</h3><p><strong style="font-size:25px">¥{expected_expense:,}</strong></p></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/payables">買掛・支払管理</a></div>
     <h2>入出金予定を登録</h2><form method="post" action="/modules/finance/cashflow"><div class="grid"><div><label>予定日</label><input type="date" name="due_on" value="{today}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金予定</option><option value="expense">支払予定</option></select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><button>予定を登録</button></form>
-    <h2>今後90日間の予定</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>予定日</th><th>区分</th><th>内容</th><th>金額</th><th>情報源</th><th>予定後残高</th><th>操作</th></tr>{rows or '<tr><td colspan="7">90日以内の予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">90日以内の予定はありません。</div>'}</section>'''
+    <h2>期限超過・今後90日間の予定</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>予定日</th><th>区分</th><th>内容</th><th>金額</th><th>情報源</th><th>予定後残高</th><th>操作</th></tr>{rows or '<tr><td colspan="7">期限超過または90日以内の予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">期限超過または90日以内の予定はありません。</div>'}</section>'''
     return layout("資金繰り・90日予測", body, user)
 
 
