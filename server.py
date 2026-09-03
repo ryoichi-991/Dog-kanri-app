@@ -68,6 +68,7 @@ MODULES = {
     "finance/rules": ("摘要ルール・自動仕訳候補", "摘要キーワードから費目候補を判定し確認後に登録"),
     "finance/tax": ("消費税区分・インボイス確認", "取引ごとの税区分、税率、適格請求書の確認"),
     "finance/payables": ("取引先・買掛金・支払管理", "支払先、請求額、期限、未払・支払済みの管理"),
+    "finance/receivables": ("売掛金・請求書入金消込", "未入金請求、期限超過、口座入金、銀行明細との消込"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -638,6 +639,20 @@ class Invoice(Base):
     status: Mapped[str] = mapped_column(String(20), default="draft", index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     ledger_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceReceivableSettlement(Base):
+    __tablename__ = "finance_receivable_settlements"
+    __table_args__ = (UniqueConstraint("invoice_id", name="uq_finance_receivable_invoice"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"), index=True)
+    received_on: Mapped[date] = mapped_column(Date, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("finance_accounts.id", ondelete="RESTRICT"), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="RESTRICT"), unique=True)
+    statement_line_id: Mapped[int | None] = mapped_column(ForeignKey("finance_statement_lines.id", ondelete="SET NULL"), nullable=True, unique=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1582,6 +1597,7 @@ def page_usage_guide(title: str) -> str:
         (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
         (("消費税区分", "インボイス確認"), ["台帳記録ごとに課税・非課税等の区分と税率を記録できます。", "経費の適格請求書確認状況と登録番号を月別に点検できます。"], ["対象月を選び、未分類の取引を確認します。", "税区分・税率・適格請求書の状態を原資料と照合して登録します。", "月次締め前に未分類件数と未確認件数をゼロに近づけます。"], "税額は税込金額から求めた管理上の概算です。登録番号は形式だけを確認し、実在・有効性は自動照会しません。申告区分・仕入税額控除・経過措置は税理士と原資料を確認してください。"),
         (("買掛金", "支払管理", "取引先"), ["仕入先・病院・会場・配送会社などの取引先と未払請求を管理できます。", "支払期限、期限超過、支払済みを確認し、支払時に口座と収支台帳へ一度だけ反映できます。"], ["取引先を登録します。", "請求日・支払期限・費目・請求額を未払として登録します。", "実際の支払日と口座を確認して支払済みにします。"], "支払済み操作は収支台帳へ実際の経費を作成します。二重計上を防ぐため、同じ支払を銀行明細や手入力から重複登録しないでください。"),
+        (("売掛金", "入金消込"), ["発行済み請求書の未入金額、期限超過、入金履歴を確認できます。", "口座への直接入金または銀行明細の入金を、請求書と収支台帳へ一度だけ結び付けられます。"], ["請求書を発行済みにします。", "入金日・入金口座を確認するか、銀行明細の一致候補を選びます。", "確認欄を入れて請求書を入金済みにします。"], "同じ入金を手入力と銀行明細の両方から登録しないでください。金額が同じ請求書が複数ある場合は、請求番号とお客様名を必ず確認してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1631,7 +1647,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4545,6 +4561,7 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     active_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
     reconciliation_day = min(month_end, date.today())
     due_payable_count = session.scalar(select(func.count(FinancePayable.id)).where(FinancePayable.tenant_id == tenant.id, FinancePayable.status == "unpaid", FinancePayable.due_on <= reconciliation_day)) or 0
+    due_receivable_count = session.scalar(select(func.count(Invoice.id)).where(Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.ledger_entry_id.is_(None), Invoice.due_on.is_not(None), Invoice.due_on <= reconciliation_day)) or 0
     reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
     reconciled_by_account = {item.account_id: item for item in reconciliations}
     unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or reconciled_by_account[account.id].difference != 0)
@@ -4558,8 +4575,8 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未入金</h3><strong class="{'error' if due_receivable_count else ''}">{due_receivable_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/receivables">売掛・未入金確認</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
 
 
@@ -4621,7 +4638,7 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>{'<p class="tenant"><strong>この月は締め済みです。</strong> 過去日付で追加する場合は管理者が月次締めを解除してください。</p>' if closed_period else ''}
     <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
     <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
-    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
     <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
     <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
     return layout("収支・経費台帳", body, user)
@@ -4854,6 +4871,84 @@ def finance_payable_cancel(payable_id: int, confirmed: bool = Form(False), acces
     return RedirectResponse("/modules/finance/payables", status_code=303)
 
 
+def settle_invoice_receivable(session: Session, tenant_id: int, user_id: int, invoice: Invoice, account: FinanceAccount, received_on: date, statement_line: FinanceStatementLine | None = None) -> FinanceReceivableSettlement:
+    entry = FinancialEntry(tenant_id=tenant_id, occurred_on=received_on, entry_type="income", category="sale", amount=invoice.amount, description=f"請求書 {invoice.invoice_no} 入金", notes=f"売掛金消込・請求書 #{invoice.id}" + (f"・銀行明細 #{statement_line.import_id}／{statement_line.row_no}行目" if statement_line else "・口座入金確認"))
+    session.add(entry); session.flush()
+    session.add(FinanceAccountEntry(tenant_id=tenant_id, account_id=account.id, financial_entry_id=entry.id))
+    settlement = FinanceReceivableSettlement(tenant_id=tenant_id, invoice_id=invoice.id, received_on=received_on, account_id=account.id, financial_entry_id=entry.id, statement_line_id=statement_line.id if statement_line else None, created_by_id=user_id)
+    session.add(settlement)
+    invoice.status = "paid"; invoice.ledger_entry_id = entry.id
+    if statement_line:
+        statement_line.status = "matched"; statement_line.financial_entry_id = entry.id
+    sale = session.scalar(select(PuppySale).where(PuppySale.id == invoice.puppy_sale_id, PuppySale.tenant_id == tenant_id))
+    if sale:
+        other_paid = session.scalar(select(func.coalesce(func.sum(Invoice.amount), 0)).where(Invoice.tenant_id == tenant_id, Invoice.puppy_sale_id == sale.id, Invoice.status == "paid", Invoice.id != invoice.id)) or 0
+        invoiced_paid = other_paid + invoice.amount
+        sale.paid_amount = max(sale.paid_amount or 0, min(invoiced_paid, sale.price) if sale.price else invoiced_paid)
+        if sale.price and sale.paid_amount >= sale.price and sale.status not in {"handed_over", "cancelled"}:
+            sale.status = "paid"
+    return settlement
+
+
+@app.get("/modules/finance/receivables", response_class=HTMLResponse)
+def finance_receivables_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    all_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id).order_by(FinanceAccount.id)).all()
+    accounts = [item for item in all_accounts if item.active]
+    invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id).order_by(Invoice.due_on, Invoice.issued_on, Invoice.id)).all()
+    open_invoices = [item for item in invoices if item.status == "issued" and not item.ledger_entry_id]
+    settlements = session.scalars(select(FinanceReceivableSettlement).where(FinanceReceivableSettlement.tenant_id == tenant.id).order_by(FinanceReceivableSettlement.received_on.desc(), FinanceReceivableSettlement.id.desc()).limit(200)).all()
+    sale_ids = {item.puppy_sale_id for item in invoices}
+    sales = {item.id: item for item in session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.id.in_(sale_ids))).all()} if sale_ids else {}
+    invoice_map = {item.id: item for item in invoices}
+    account_names = {item.id: item.name for item in all_accounts}
+    overdue = [item for item in open_invoices if item.due_on and item.due_on < date.today()]
+    due_soon = [item for item in open_invoices if item.due_on and date.today() <= item.due_on <= date.today() + timedelta(days=30)]
+    month_start = date.today().replace(day=1)
+    received_this_month = session.scalar(select(func.coalesce(func.sum(Invoice.amount), 0)).join(FinanceReceivableSettlement, FinanceReceivableSettlement.invoice_id == Invoice.id).where(Invoice.tenant_id == tenant.id, FinanceReceivableSettlement.tenant_id == tenant.id, FinanceReceivableSettlement.received_on >= month_start)) or 0
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in accounts)
+    rows = ""; mobile_cards = ""
+    for invoice in open_invoices[:500]:
+        sale = sales.get(invoice.puppy_sale_id); customer_name = sale.customer_name if sale else "販売案件未登録"
+        overdue_label = '<span class="error">期限超過</span>' if invoice in overdue else ""
+        action = f'''<form method="post" action="/modules/finance/receivables/{invoice.id}/settle"><div class="grid"><input type="date" name="received_on" value="{date.today()}" min="{invoice.issued_on}" max="{date.today()}" required><select name="account_id">{account_options}</select></div><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 請求番号・金額・入金口座を確認しました</label><button class="success">入金消込する</button></form>''' if accounts else '<a class="button secondary" href="/modules/finance/accounts">先に入金口座を登録</a>'
+        rows += f'<tr><td>{html.escape(invoice.invoice_no)}</td><td>{html.escape(customer_name)}</td><td>{invoice.issued_on}</td><td>{invoice.due_on or "未設定"}<br>{overdue_label}</td><td>¥{invoice.amount:,}</td><td><a class="button secondary" href="/modules/invoices/{invoice.id}.pdf">PDF</a>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>発行 {invoice.issued_on}／期限 {invoice.due_on or "未設定"} {overdue_label}</p><p><strong>¥{invoice.amount:,}</strong></p><div class="health-toolbar"><a class="button secondary" href="/modules/invoices/{invoice.id}.pdf">PDF</a></div>{action}</article>'''
+    history_rows = ""; history_cards = ""
+    for item in settlements:
+        invoice = invoice_map.get(item.invoice_id)
+        if not invoice:
+            continue
+        sale = sales.get(invoice.puppy_sale_id); customer_name = sale.customer_name if sale else "販売案件未登録"
+        source = "銀行明細" if item.statement_line_id else "口座入金確認"
+        history_rows += f'<tr><td>{item.received_on}</td><td>{html.escape(invoice.invoice_no)}</td><td>{html.escape(customer_name)}</td><td>¥{invoice.amount:,}</td><td>{html.escape(account_names.get(item.account_id, "停止済み口座"))}</td><td>{source}</td></tr>'
+        history_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>{item.received_on}／{html.escape(account_names.get(item.account_id, "停止済み口座"))}／{source}</p><p><strong>¥{invoice.amount:,}</strong></p></article>'''
+    body = f'''<h1>売掛金・請求書入金消込</h1><p>発行済み請求書の未入金と期限を管理し、実際の入金を口座・収支台帳・販売案件へ一度だけ反映します。</p>
+    <div class="grid"><div class="module"><h3>未入金総額</h3><strong>¥{sum(item.amount for item in open_invoices):,}</strong><p>{len(open_invoices)}件</p></div><div class="module"><h3>期限超過</h3><strong class="{'error' if overdue else ''}">¥{sum(item.amount for item in overdue):,}</strong><p>{len(overdue)}件</p></div><div class="module"><h3>30日以内の入金期限</h3><strong>¥{sum(item.amount for item in due_soon):,}</strong><p>{len(due_soon)}件</p></div><div class="module"><h3>当月入金消込</h3><strong>¥{received_this_month:,}</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a></div>
+    <h2>未入金請求書</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>請求番号</th><th>お客様</th><th>発行日</th><th>期限</th><th>金額</th><th>入金消込</th></tr>{rows or '<tr><td colspan="6">未入金の発行済み請求書はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">未入金の発行済み請求書はありません。</div>'}</section>
+    <h2>最近の入金履歴</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>入金日</th><th>請求番号</th><th>お客様</th><th>金額</th><th>口座</th><th>消込方法</th></tr>{history_rows or '<tr><td colspan="6">入金消込履歴はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{history_cards or '<div class="tenant">入金消込履歴はありません。</div>'}</section>'''
+    return layout("売掛金・請求書入金消込", body, user)
+
+
+@app.post("/modules/finance/receivables/{invoice_id}/settle")
+def finance_receivable_settle(invoice_id: int, received_on: str = Form(...), account_id: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id))
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    existing = session.scalar(select(FinanceReceivableSettlement.id).where(FinanceReceivableSettlement.tenant_id == tenant.id, FinanceReceivableSettlement.invoice_id == invoice_id))
+    try:
+        received_day = date.fromisoformat(received_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="入金日を確認してください")
+    if not confirmed or not invoice or invoice.status != "issued" or invoice.ledger_entry_id or existing or not account or received_day < invoice.issued_on or received_day > date.today():
+        raise HTTPException(status_code=400, detail="請求書・入金日・入金口座を確認してください")
+    ensure_finance_period_open(session, tenant.id, received_day)
+    settle_invoice_receivable(session, tenant.id, user.id, invoice, account, received_day)
+    session.commit()
+    return RedirectResponse("/modules/finance/receivables", status_code=303)
+
+
 @app.get("/modules/finance/reports", response_class=HTMLResponse)
 def finance_reports_page(year: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4984,14 +5079,14 @@ def finance_cashflow_page(access=Depends(require_tenant_user), session: Session 
         elif plan_id and plan_id < 0:
             action = '<a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛金を確認</a>'
         else:
-            action = '<a class="button secondary" href="/modules/invoices">請求書を確認</a>'
+            action = '<a class="button secondary" href="/modules/finance/receivables">未入金請求を確認</a>'
         label = "入金予定" if flow_type == "income" else "支払予定"
         rows += f'<tr><td>{due_on}</td><td>{label}</td><td>{html.escape(description)}</td><td>¥{amount:,}</td><td>{source}</td><td class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</td><td>{action}</td></tr>'
         mobile_cards += f'<article class="calendar-mobile-card"><h3>{html.escape(description)}</h3><p>{due_on}　<span class="badge">{label}</span>／{source}</p><p>金額 <strong>¥{amount:,}</strong>／予定後残高 <strong class="{"error" if running_balance < 0 else ""}">¥{running_balance:,}</strong></p><div class="health-toolbar">{action}</div></article>'
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
     body = f'''<h1>資金繰り・90日予測</h1><p>台帳上の現在残高に、入出金予定、入金予定の請求書、未払買掛金を反映して将来残高を確認します。</p>
     <div class="grid"><div class="module"><h3>現在の台帳残高</h3><p><strong class="{'error' if current_balance < 0 else ''}" style="font-size:25px">¥{current_balance:,}</strong></p></div><div class="module"><h3>30日後</h3><p><strong class="{'error' if balance_30 < 0 else ''}" style="font-size:25px">¥{balance_30:,}</strong></p></div><div class="module"><h3>60日後</h3><p><strong class="{'error' if balance_60 < 0 else ''}" style="font-size:25px">¥{balance_60:,}</strong></p></div><div class="module"><h3>90日後</h3><p><strong class="{'error' if balance_90 < 0 else ''}" style="font-size:25px">¥{balance_90:,}</strong></p></div><div class="module"><h3>90日以内の入金予定</h3><p><strong style="font-size:25px">¥{expected_income:,}</strong></p></div><div class="module"><h3>90日以内の支払予定</h3><p><strong style="font-size:25px">¥{expected_expense:,}</strong></p></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/payables">買掛・支払管理</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/payables">買掛・支払管理</a></div>
     <h2>入出金予定を登録</h2><form method="post" action="/modules/finance/cashflow"><div class="grid"><div><label>予定日</label><input type="date" name="due_on" value="{today}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金予定</option><option value="expense">支払予定</option></select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><button>予定を登録</button></form>
     <h2>期限超過・今後90日間の予定</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>予定日</th><th>区分</th><th>内容</th><th>金額</th><th>情報源</th><th>予定後残高</th><th>操作</th></tr>{rows or '<tr><td colspan="7">期限超過または90日以内の予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">期限超過または90日以内の予定はありません。</div>'}</section>'''
     return layout("資金繰り・90日予測", body, user)
@@ -5275,6 +5370,9 @@ def finance_statements_page(statement_status: str = "", access=Depends(require_t
     unmatched_total = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched")) or 0
     matched_total = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "matched")) or 0
     rules = session.scalars(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.active.is_(True))).all()
+    open_invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.ledger_entry_id.is_(None)).order_by(Invoice.due_on, Invoice.issued_on, Invoice.id)).all()
+    invoice_sale_ids = {item.puppy_sale_id for item in open_invoices}
+    invoice_sales = {item.id: item for item in session.scalars(select(PuppySale).where(PuppySale.tenant_id == tenant.id, PuppySale.id.in_(invoice_sale_ids))).all()} if invoice_sale_ids else {}
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_accounts)
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
     rows = ""; mobile_cards = ""; suggestion_count = 0
@@ -5285,7 +5383,10 @@ def finance_statements_page(statement_status: str = "", access=Depends(require_t
         suggestion_label = f'{FINANCE_CATEGORIES.get(suggestion.category, suggestion.category)}（{html.escape(suggestion.keyword)}）' if suggestion else "候補なし"
         suggested_action = f'''<label><input type="checkbox" name="line_ids" value="{item.id}" form="suggestion-batch">一括対象</label><form method="post" action="/modules/finance/statements/lines/{item.id}/post"><input type="hidden" name="category" value="{suggestion.category}"><button class="success">候補で登録</button></form>''' if suggestion else ""
         manual_action = "" if item.status == "matched" else f'''<form method="post" action="/modules/finance/statements/lines/{item.id}/post"><select name="category" style="width:auto">{category_options}</select><button>費目を選んで登録</button></form>'''
-        action = suggested_action + manual_action
+        invoice_candidates = [invoice for invoice in open_invoices if item.status == "unmatched" and item.entry_type == "income" and invoice.amount == item.amount and invoice.issued_on <= item.transacted_on][:20]
+        invoice_options = "".join(f'<option value="{invoice.id}">{html.escape(invoice.invoice_no)}／{html.escape(invoice_sales[invoice.puppy_sale_id].customer_name if invoice.puppy_sale_id in invoice_sales else "お客様未登録")}／¥{invoice.amount:,}</option>' for invoice in invoice_candidates)
+        invoice_action = f'''<form method="post" action="/modules/finance/statements/lines/{item.id}/settle-invoice"><label>請求書の一致候補</label><select name="invoice_id" style="width:auto">{invoice_options}</select><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 請求番号と入金を確認</label><button class="success">請求書へ入金消込</button></form>''' if invoice_candidates else ""
+        action = invoice_action + suggested_action + manual_action
         rows += f'<tr><td>{item.transacted_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>{"入金" if item.entry_type == "income" else "出金"}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{suggestion_label}</td><td><span class="badge">{state}</span></td><td>{action or "－"}</td></tr>'
         mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>{item.transacted_on}／{html.escape(account_names.get(item.account_id, "口座未登録"))}／<span class="badge">{state}</span></p><p>{"入金" if item.entry_type == "income" else "出金"} <strong>¥{item.amount:,}</strong></p><p>仕訳候補：<strong>{suggestion_label}</strong></p>{action}</article>'''
     import_rows = "".join(f'<tr><td>{item.imported_at.strftime("%Y-%m-%d %H:%M")}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>{html.escape(item.filename)}</td><td>{item.row_count}件</td><td>{item.matched_count}件</td></tr>' for item in imports[:50])
@@ -5293,7 +5394,7 @@ def finance_statements_page(statement_status: str = "", access=Depends(require_t
     upload_form = f'''<form method="post" action="/modules/finance/statements/import" enctype="multipart/form-data"><div class="grid"><div><label>取込先口座</label><select name="account_id">{account_options}</select></div><div><label>銀行・決済明細CSV（2MB・1,000行まで）</label><input type="file" name="statement_file" accept=".csv,text/csv" required></div></div><button>CSVを取り込んで照合</button></form>''' if active_accounts else '<p class="tenant">先に口座・現金を登録してください。</p>'
     body = f'''<h1>銀行明細CSV取込・自動照合</h1><p>日付・摘要・入金額・出金額を含むCSVを取り込み、既存の台帳記録と自動照合します。UTF-8と一般的な日本語Windows形式に対応します。</p>
     <div class="grid"><div class="module"><h3>照合済み</h3><strong>{matched_total}件</strong></div><div class="module"><h3>未処理</h3><strong class="{'error' if unmatched_total else ''}">{unmatched_total}件</strong></div><div class="module"><h3>表示中の仕訳候補</h3><strong>{suggestion_count}件</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/rules">摘要ルール管理</a><a class="button secondary" href="/modules/finance/reconciliation">残高照合</a></div><h2>CSVを取り込む</h2>{upload_form}
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/rules">摘要ルール管理</a><a class="button secondary" href="/modules/finance/reconciliation">残高照合</a></div><h2>CSVを取り込む</h2>{upload_form}
     <p><small>列名例：日付／摘要／入金額／出金額。元ファイルそのものは保存せず、照合に必要な項目だけを保管します。</small></p>
     <h2>取込明細</h2><form method="get"><label>状態</label><select name="statement_status">{status_options}</select><button>表示</button></form><form id="suggestion-batch" method="post" action="/modules/finance/statements/apply-suggestions"><label><input type="checkbox" name="confirmed" value="true" required> 一括対象に選んだ仕訳候補を確認しました</label><button class="success">選択した仕訳候補を一括登録（最大500件）</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>口座</th><th>区分</th><th>摘要</th><th>金額</th><th>仕訳候補</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="8">明細はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">明細はありません。</div>'}</section>
     <h2>取込履歴</h2><div style="overflow-x:auto"><table><tr><th>取込日時</th><th>口座</th><th>ファイル</th><th>明細数</th><th>自動照合</th></tr>{import_rows or '<tr><td colspan="5">取込履歴はありません。</td></tr>'}</table></div>'''
@@ -5367,7 +5468,12 @@ async def finance_statement_import(account_id: int = Form(...), statement_file: 
             matched_entry = None
         status_value = "matched" if matched_entry else "unmatched"
         matched_count += int(bool(matched_entry))
-        session.add(FinanceStatementLine(tenant_id=tenant.id, import_id=imported.id, account_id=account.id, row_no=row_no, transacted_on=transaction_day, entry_type=entry_type, description=description, amount=amount, status=status_value, financial_entry_id=matched_entry.id if matched_entry else None))
+        statement_line = FinanceStatementLine(tenant_id=tenant.id, import_id=imported.id, account_id=account.id, row_no=row_no, transacted_on=transaction_day, entry_type=entry_type, description=description, amount=amount, status=status_value, financial_entry_id=matched_entry.id if matched_entry else None)
+        session.add(statement_line); session.flush()
+        if matched_entry:
+            settlement = session.scalar(select(FinanceReceivableSettlement).where(FinanceReceivableSettlement.tenant_id == tenant.id, FinanceReceivableSettlement.financial_entry_id == matched_entry.id, FinanceReceivableSettlement.statement_line_id.is_(None)))
+            if settlement:
+                settlement.statement_line_id = statement_line.id
     imported.matched_count = matched_count; session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
@@ -5405,6 +5511,21 @@ def finance_statement_line_post(line_id: int, category: str = Form(...), access=
     entry = FinancialEntry(tenant_id=tenant.id, occurred_on=line.transacted_on, entry_type=line.entry_type, category=category, amount=line.amount, description=line.description, notes=f"銀行明細取込 #{line.import_id}・{line.row_no}行目から登録")
     session.add(entry); session.flush(); session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
     line.status = "matched"; line.financial_entry_id = entry.id; session.commit()
+    return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
+
+
+@app.post("/modules/finance/statements/lines/{line_id}/settle-invoice")
+def finance_statement_settle_invoice(line_id: int, invoice_id: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    line = session.scalar(select(FinanceStatementLine).where(FinanceStatementLine.id == line_id, FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched"))
+    invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id))
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == line.account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))) if line else None
+    existing = session.scalar(select(FinanceReceivableSettlement.id).where(FinanceReceivableSettlement.tenant_id == tenant.id, FinanceReceivableSettlement.invoice_id == invoice_id))
+    if not confirmed or not line or line.entry_type != "income" or not invoice or invoice.status != "issued" or invoice.ledger_entry_id or existing or not account or invoice.amount != line.amount or line.transacted_on < invoice.issued_on:
+        raise HTTPException(status_code=400, detail="銀行明細と請求書の一致内容を確認してください")
+    ensure_finance_period_open(session, tenant.id, line.transacted_on)
+    settle_invoice_receivable(session, tenant.id, user.id, invoice, account, line.transacted_on, line)
+    session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
 
@@ -5522,12 +5643,13 @@ def invoices_page(invoice_status: str = "", access=Depends(require_tenant_user),
     for invoice in invoices:
         sale = session.scalar(select(PuppySale).where(PuppySale.id == invoice.puppy_sale_id, PuppySale.tenant_id == tenant.id))
         customer_name = sale.customer_name if sale else "販売案件未登録"
-        update_options = "".join(f'<option value="{key}" {"selected" if invoice.status == key else ""}>{label}</option>' for key, label in INVOICE_STATUSES.items())
+        editable_statuses = INVOICE_STATUSES.items() if invoice.status == "paid" else ((key, label) for key, label in INVOICE_STATUSES.items() if key != "paid")
+        update_options = "".join(f'<option value="{key}" {"selected" if invoice.status == key else ""}>{label}</option>' for key, label in editable_statuses)
         action = f'''<a class="button secondary" href="/modules/invoices/{invoice.id}.pdf">PDF</a><form method="post" action="/modules/invoices/{invoice.id}/status" style="display:inline"><select name="status" style="width:auto">{update_options}</select><button>更新</button></form>'''
         rows += f'<tr><td>{html.escape(invoice.invoice_no)}</td><td>{invoice.issued_on}</td><td>{html.escape(customer_name)}</td><td>¥{invoice.amount:,}</td><td>{invoice.due_on or "－"}</td><td>{INVOICE_STATUSES[invoice.status]}</td><td>{action}</td></tr>'
         mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>{invoice.issued_on}　<span class="badge">{INVOICE_STATUSES[invoice.status]}</span></p><p><strong>¥{invoice.amount:,}</strong>／期限 {invoice.due_on or "未設定"}</p><div class="health-toolbar">{action}</div></article>'''
     body = f'''<h1>請求書管理</h1><p>販売案件から請求書を作成し、PDF出力と入金状況を管理します。</p>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/sales">販売管理</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/sales">販売管理</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
     <h2>請求書を作成</h2>{f'<form method="post" action="/modules/invoices"><div class="grid"><div><label>販売案件</label><select name="sale_id">{sale_options}</select></div><div><label>発行日</label><input type="date" name="issued_on" value="{date.today()}" required></div><div><label>支払期限</label><input type="date" name="due_on"></div><div><label>請求額（税込）</label><input type="number" name="amount" min="1" required></div></div><label>お支払い案内・備考</label><textarea name="notes" maxlength="2000" placeholder="振込先、支払方法、連絡事項など"></textarea><button>請求書を作成</button></form>' if sales else '<p class="error">請求書を作成するには販売案件を登録してください。</p>'}
     <h2>請求書一覧</h2><form method="get" action="/modules/invoices"><label>状態</label><select name="invoice_status">{status_options}</select><button>絞り込む</button> <a class="button secondary" href="/modules/invoices">解除</a></form>
     <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>請求番号</th><th>発行日</th><th>お客様</th><th>請求額</th><th>期限</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="7">請求書はまだありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">請求書はまだありません。</div>'}</section>'''
@@ -5552,14 +5674,12 @@ def invoice_create(sale_id: int = Form(...), issued_on: str = Form(...), due_on:
 
 @app.post("/modules/invoices/{invoice_id}/status")
 def invoice_status_update(invoice_id: int, status_value: str = Form(..., alias="status"), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    user, tenant = access
+    _, tenant = access
     invoice = session.scalar(select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant.id))
     if not invoice or status_value not in INVOICE_STATUSES or (invoice.status == "paid" and status_value != "paid"):
         raise HTTPException(status_code=400, detail="請求書の状態を確認してください")
     if status_value == "paid" and not invoice.ledger_entry_id:
-        ensure_finance_period_open(session, tenant.id, date.today())
-        entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type="income", category="sale", amount=invoice.amount, description=f"請求書 {invoice.invoice_no} 入金", notes="請求書管理から自動登録")
-        session.add(entry); session.flush(); invoice.ledger_entry_id = entry.id
+        raise HTTPException(status_code=400, detail="入金済みへの変更は売掛金・請求書入金消込から実行してください")
     invoice.status = status_value
     session.commit()
     return RedirectResponse("/modules/invoices", status_code=303)

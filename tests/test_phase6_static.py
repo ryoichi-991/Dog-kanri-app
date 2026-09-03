@@ -244,12 +244,13 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertIn('"invoices": ("請求書管理"', SOURCE)
 
-    def test_paid_invoice_creates_one_ledger_income_entry(self):
+    def test_paid_invoice_requires_receivable_settlement(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_status_update")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ('status_value == "paid"', "not invoice.ledger_entry_id", "FinancialEntry", 'entry_type="income"', 'category="sale"', "invoice.ledger_entry_id = entry.id"):
+        for marker in ('status_value == "paid"', "not invoice.ledger_entry_id", "売掛金・請求書入金消込から実行してください"):
             self.assertIn(marker, segment)
         self.assertIn('invoice.status == "paid" and status_value != "paid"', segment)
+        self.assertNotIn("FinancialEntry(", segment)
 
     def test_invoice_pdf_is_private_and_contains_business_fields(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "build_invoice_pdf")
@@ -562,7 +563,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_closed_finance_period_blocks_new_postings_and_account_changes(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "ensure_finance_period_open")
         self.assertIn("status_code=409", ast.get_source_segment(SOURCE, helper))
-        for route_name in ("finance_create", "finance_cashflow_complete", "finance_account_assign", "finance_account_transfer", "invoice_status_update", "cost_allocate"):
+        for route_name in ("finance_create", "finance_cashflow_complete", "finance_account_assign", "finance_account_transfer", "finance_receivable_settle", "finance_statement_settle_invoice", "cost_allocate"):
             route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
             self.assertIn("ensure_finance_period_open", ast.get_source_segment(SOURCE, route))
         recurring = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "generate_due_finance_recurring")
@@ -802,6 +803,64 @@ class Phase6StaticTests(unittest.TestCase):
         guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
         guide_source = ast.get_source_segment(SOURCE, guide)
         for marker in ("買掛金", "支払期限", "口座と収支台帳へ一度だけ", "重複登録しない"):
+            self.assertIn(marker, guide_source)
+
+    def test_finance_receivable_settlement_model_is_one_to_one_and_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceReceivableSettlement")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_receivable_invoice", "tenant_id", "invoice_id", "received_on", "account_id", "financial_entry_id", "statement_line_id", "unique=True", "created_by_id", "created_at"):
+            self.assertIn(marker, segment)
+
+    def test_finance_receivables_page_summarizes_open_overdue_and_history(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_receivables_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinanceAccount.tenant_id == tenant.id", "Invoice.tenant_id == tenant.id", "FinanceReceivableSettlement.tenant_id == tenant.id", 'item.status == "issued"', "not item.ledger_entry_id", "overdue", "due_soon", "received_this_month", 'name="confirmed"', "calendar-mobile-card", "calendar-mobile-only"):
+            self.assertIn(marker, segment)
+        for label in ("未入金総額", "期限超過", "30日以内の入金期限", "当月入金消込", "最近の入金履歴"):
+            self.assertIn(label, segment)
+
+    def test_receivable_helper_posts_once_and_updates_invoice_sale_and_statement(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "settle_invoice_receivable")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("FinancialEntry(", 'entry_type="income"', 'category="sale"', "FinanceAccountEntry(", "FinanceReceivableSettlement(", 'invoice.status = "paid"', "invoice.ledger_entry_id = entry.id", 'statement_line.status = "matched"', "PuppySale.tenant_id == tenant_id", "sale.paid_amount = max", 'sale.status = "paid"'):
+            self.assertIn(marker, segment)
+
+    def test_manual_receivable_settlement_is_confirmed_tenant_scoped_and_locked(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_receivable_settle")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("Invoice.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "FinanceReceivableSettlement.tenant_id == tenant.id", "not confirmed", 'invoice.status != "issued"', "invoice.ledger_entry_id", "existing", "received_day < invoice.issued_on", "received_day > date.today()", "ensure_finance_period_open", "settle_invoice_receivable", "session.commit()"):
+            self.assertIn(marker, segment)
+
+    def test_statement_invoice_settlement_checks_exact_income_and_amount(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_settle_invoice")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceStatementLine.tenant_id == tenant.id", "Invoice.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "FinanceReceivableSettlement.tenant_id == tenant.id", "not confirmed", 'line.entry_type != "income"', 'invoice.status != "issued"', "invoice.ledger_entry_id", "invoice.amount != line.amount", "line.transacted_on < invoice.issued_on", "ensure_finance_period_open", "settle_invoice_receivable", "session.commit()"):
+            self.assertIn(marker, segment)
+
+    def test_statements_offer_receivable_candidates_and_link_auto_matches(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statements_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ("Invoice.tenant_id == tenant.id", 'Invoice.status == "issued"', "Invoice.ledger_entry_id.is_(None)", 'item.entry_type == "income"', "invoice.amount == item.amount", "invoice.issued_on <= item.transacted_on", "settle-invoice", "請求書へ入金消込"):
+            self.assertIn(marker, page_source)
+        imported = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "finance_statement_import")
+        import_source = ast.get_source_segment(SOURCE, imported)
+        for marker in ("FinanceReceivableSettlement.tenant_id == tenant.id", "FinanceReceivableSettlement.financial_entry_id == matched_entry.id", "settlement.statement_line_id = statement_line.id"):
+            self.assertIn(marker, import_source)
+
+    def test_receivables_are_in_closing_navigation_invoices_and_guide(self):
+        closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        closing_source = ast.get_source_segment(SOURCE, closing)
+        for marker in ("Invoice.tenant_id == tenant.id", 'Invoice.status == "issued"', "Invoice.ledger_entry_id.is_(None)", "due_receivable_count", "期限到来未入金", "売掛・未入金確認"):
+            self.assertIn(marker, closing_source)
+        invoices = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoices_page")
+        invoice_source = ast.get_source_segment(SOURCE, invoices)
+        for marker in ('key != "paid"', "/modules/finance/receivables", "売掛・入金消込"):
+            self.assertIn(marker, invoice_source)
+        self.assertIn('"finance/receivables": ("売掛金・請求書入金消込"', SOURCE)
+        self.assertIn('href="/modules/finance/receivables', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("売掛金", "入金消込", "銀行明細", "一度だけ", "請求番号とお客様名"):
             self.assertIn(marker, guide_source)
 
 
