@@ -66,6 +66,7 @@ MODULES = {
     "finance/reconciliation": ("口座残高照合・差額チェック", "帳簿残高と銀行・現金の実残高を照合"),
     "finance/statements": ("銀行明細CSV取込・自動照合", "銀行・決済明細の取込、台帳照合、未処理確認"),
     "finance/rules": ("摘要ルール・自動仕訳候補", "摘要キーワードから費目候補を判定し確認後に登録"),
+    "finance/tax": ("消費税区分・インボイス確認", "取引ごとの税区分、税率、適格請求書の確認"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -560,6 +561,20 @@ class FinanceCategorizationRule(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceTaxClassification(Base):
+    __tablename__ = "finance_tax_classifications"
+    __table_args__ = (UniqueConstraint("financial_entry_id", name="uq_finance_tax_classification_entry"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="CASCADE"), index=True)
+    tax_category: Mapped[str] = mapped_column(String(30), index=True)
+    tax_rate: Mapped[int] = mapped_column(Integer, default=0)
+    invoice_status: Mapped[str] = mapped_column(String(30), default="unconfirmed", index=True)
+    invoice_registration_no: Mapped[str | None] = mapped_column(String(14), nullable=True)
+    checked_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1532,6 +1547,7 @@ def page_usage_guide(title: str) -> str:
         (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を修正してください。"),
         (("銀行明細CSV", "明細取込", "自動照合"), ["銀行や決済サービスから出力したCSVを口座へ取り込めます。", "日付・区分・金額が一致する台帳記録を自動照合し、未処理明細を抽出できます。"], ["取込先口座とCSVファイルを選びます。", "自動照合結果と未処理件数を確認します。", "未処理明細だけ費目を選んで台帳へ登録します。"], "同じCSVは重複取込できません。取込前に口座と明細期間を確認してください。"),
         (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
+        (("消費税区分", "インボイス確認"), ["台帳記録ごとに課税・非課税等の区分と税率を記録できます。", "経費の適格請求書確認状況と登録番号を月別に点検できます。"], ["対象月を選び、未分類の取引を確認します。", "税区分・税率・適格請求書の状態を原資料と照合して登録します。", "月次締め前に未分類件数と未確認件数をゼロに近づけます。"], "税額は税込金額から求めた管理上の概算です。登録番号は形式だけを確認し、実在・有効性は自動照会しません。申告区分・仕入税額控除・経過措置は税理士と原資料を確認してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1581,7 +1597,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4430,6 +4446,16 @@ FINANCE_CATEGORIES = {
     "food": "フード・消耗品", "medical": "医療・検査", "show": "ドッグショー", "transport": "交通・配送",
     "facility": "設備・修繕", "utilities": "水道光熱", "registration": "登録・行政", "other": "その他",
 }
+FINANCE_TAX_CATEGORIES = {
+    "taxable": "課税取引", "exempt": "非課税取引", "non_taxable": "不課税取引", "out_of_scope": "対象外",
+}
+FINANCE_INVOICE_STATUSES = {
+    "unconfirmed": "未確認", "qualified": "適格請求書確認済み", "nonqualified": "適格請求書なし", "not_required": "確認対象外",
+}
+
+
+def estimated_included_tax(amount: int, tax_rate: int) -> int:
+    return amount * tax_rate // (100 + tax_rate) if tax_rate else 0
 
 
 def finance_period_close(session: Session, tenant_id: int, target_day: date) -> FinancePeriodClose | None:
@@ -4478,6 +4504,10 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     unassigned_count = len(set(entry_ids) - assigned_ids)
     missing_document_count = len(set(expense_ids) - documented_ids)
     statement_unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.transacted_on >= first_day, FinanceStatementLine.transacted_on <= month_end, FinanceStatementLine.status == "unmatched")) or 0
+    tax_classifications = session.scalars(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant.id, FinanceTaxClassification.financial_entry_id.in_(entry_ids))).all() if entry_ids else []
+    tax_by_entry = {item.financial_entry_id: item for item in tax_classifications}
+    tax_unclassified_count = len(entries) - len(tax_by_entry)
+    invoice_unconfirmed_count = sum(1 for item in entries if item.entry_type == "expense" and item.id in tax_by_entry and tax_by_entry[item.id].tax_category == "taxable" and tax_by_entry[item.id].invoice_status == "unconfirmed")
     active_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
     reconciliation_day = min(month_end, date.today())
     reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
@@ -4493,8 +4523,8 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
 
 
@@ -4556,7 +4586,7 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>{'<p class="tenant"><strong>この月は締め済みです。</strong> 過去日付で追加する場合は管理者が月次締めを解除してください。</p>' if closed_period else ''}
     <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
     <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
-    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
     <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
     <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
     return layout("収支・経費台帳", body, user)
@@ -4576,6 +4606,94 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
     session.add(FinancialEntry(tenant_id=tenant.id, occurred_on=entry_day, entry_type=entry_type, category=category, amount=amount, description=clean_description, notes=notes.strip() or None))
     session.commit()
     return RedirectResponse(f"/modules/finance?month={entry_day:%Y-%m}", status_code=303)
+
+
+@app.get("/modules/finance/tax", response_class=HTMLResponse)
+def finance_tax_page(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        first_day = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="対象月を確認してください")
+    if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1):
+        raise HTTPException(status_code=400, detail="対象月を確認してください")
+    month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
+    entry_ids = [item.id for item in entries]
+    classifications = session.scalars(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant.id, FinanceTaxClassification.financial_entry_id.in_(entry_ids))).all() if entry_ids else []
+    tax_by_entry = {item.financial_entry_id: item for item in classifications}
+    taxable_sales = taxable_expenses = output_tax = input_tax = qualified_input_tax = 0
+    invoice_unconfirmed_count = 0
+    for entry in entries:
+        detail = tax_by_entry.get(entry.id)
+        if not detail or detail.tax_category != "taxable":
+            continue
+        tax_amount = estimated_included_tax(entry.amount, detail.tax_rate)
+        if entry.entry_type == "income":
+            taxable_sales += entry.amount; output_tax += tax_amount
+        else:
+            taxable_expenses += entry.amount; input_tax += tax_amount
+            if detail.invoice_status == "qualified":
+                qualified_input_tax += tax_amount
+            elif detail.invoice_status == "unconfirmed":
+                invoice_unconfirmed_count += 1
+    unclassified_count = len(entries) - len(tax_by_entry)
+    closed = finance_period_close(session, tenant.id, first_day)
+
+    def select_options(values: dict, selected: str) -> str:
+        return "".join(f'<option value="{value}" {"selected" if value == selected else ""}>{label}</option>' for value, label in values.items())
+
+    rows = ""; mobile_cards = ""
+    for entry in entries:
+        detail = tax_by_entry.get(entry.id)
+        tax_category = detail.tax_category if detail else "taxable"
+        tax_rate = detail.tax_rate if detail else 10
+        invoice_status = detail.invoice_status if detail else ("unconfirmed" if entry.entry_type == "expense" else "not_required")
+        registration_no = detail.invoice_registration_no if detail else ""
+        tax_amount = estimated_included_tax(entry.amount, tax_rate) if detail and detail.tax_category == "taxable" else 0
+        category_options = select_options(FINANCE_TAX_CATEGORIES, tax_category)
+        rate_options = "".join(f'<option value="{value}" {"selected" if value == tax_rate else ""}>{value}%</option>' for value in (0, 8, 10))
+        invoice_field = f'<select name="invoice_status">{select_options(FINANCE_INVOICE_STATUSES, invoice_status)}</select><input name="invoice_registration_no" value="{html.escape(registration_no or "")}" maxlength="14" placeholder="T＋13桁">' if entry.entry_type == "expense" else '<input type="hidden" name="invoice_status" value="not_required"><span>確認対象外</span>'
+        form = f'''<form method="post" action="/modules/finance/tax"><input type="hidden" name="financial_entry_id" value="{entry.id}"><div class="grid"><select name="tax_category" aria-label="税区分">{category_options}</select><select name="tax_rate" aria-label="税率">{rate_options}</select><div>{invoice_field}</div></div><button>税区分を保存</button></form>''' if not closed else '<span class="badge">締め済み・変更不可</span>'
+        state = "分類済み" if detail else "未分類"
+        rows += f'<tr><td>{entry.occurred_on}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>{html.escape(entry.description)}</td><td>¥{entry.amount:,}</td><td>¥{tax_amount:,}</td><td><span class="badge">{state}</span></td><td>{form}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(entry.description)}</h3><p>{entry.occurred_on}／{"入金" if entry.entry_type == "income" else "経費"}／¥{entry.amount:,}</p><p>消費税概算 ¥{tax_amount:,}／<span class="badge">{state}</span></p>{form}</article>'''
+    body = f'''<h1>消費税区分・インボイス確認</h1><p>収支台帳の税込金額へ税区分・税率・適格請求書の確認状況を記録し、月次締め前の確認漏れを見つけます。</p>
+    <form method="get" action="/modules/finance/tax"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{'<p class="tenant"><strong>この月は締め済みです。</strong>変更する場合は管理者が月次締めを解除してください。</p>' if closed else ''}
+    <div class="grid"><div class="module"><h3>課税売上（税込）</h3><strong>¥{taxable_sales:,}</strong><p>消費税概算 ¥{output_tax:,}</p></div><div class="module"><h3>課税仕入（税込）</h3><strong>¥{taxable_expenses:,}</strong><p>消費税概算 ¥{input_tax:,}</p></div><div class="module"><h3>適格請求書確認済み</h3><strong>¥{qualified_input_tax:,}</strong><p>仕入税額の概算</p></div><div class="module"><h3>税区分未分類</h3><strong class="{'error' if unclassified_count else ''}">{unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締め</a></div>
+    <p class="tenant">税額は税込金額から単純計算した管理上の概算です。登録番号は形式だけを確認し、国税庁公表サイトへの実在・有効性照会は自動では行いません。申告区分、端数処理、仕入税額控除、経過措置は税理士と原資料を確認してください。</p>
+    <h2>{first_day:%Y年%m月}の取引</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>内容</th><th>税込金額</th><th>税額概算</th><th>状態</th><th>税区分・インボイス</th></tr>{rows or '<tr><td colspan="7">取引はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">取引はありません。</div>'}</section>'''
+    return layout("消費税区分・インボイス確認", body, user)
+
+
+@app.post("/modules/finance/tax")
+def finance_tax_save(financial_entry_id: int = Form(...), tax_category: str = Form(...), tax_rate: int = Form(...), invoice_status: str = Form(...), invoice_registration_no: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == financial_entry_id, FinancialEntry.tenant_id == tenant.id))
+    registration_no = invoice_registration_no.strip().upper()
+    if not entry or tax_category not in FINANCE_TAX_CATEGORIES or invoice_status not in FINANCE_INVOICE_STATUSES:
+        raise HTTPException(status_code=400, detail="消費税区分を確認してください")
+    ensure_finance_period_open(session, tenant.id, entry.occurred_on)
+    if (tax_category == "taxable" and tax_rate not in {8, 10}) or (tax_category != "taxable" and tax_rate != 0):
+        raise HTTPException(status_code=400, detail="税区分と税率の組み合わせを確認してください")
+    if entry.entry_type == "income":
+        invoice_status = "not_required"; registration_no = ""
+    elif tax_category != "taxable" and invoice_status != "not_required":
+        raise HTTPException(status_code=400, detail="課税対象外の取引はインボイス確認対象外を選択してください")
+    if registration_no and not re.fullmatch(r"T\d{13}", registration_no):
+        raise HTTPException(status_code=400, detail="登録番号はTに続く13桁で入力してください")
+    if invoice_status == "qualified" and not registration_no:
+        raise HTTPException(status_code=400, detail="適格請求書の登録番号を入力してください")
+    if invoice_status != "qualified":
+        registration_no = ""
+    item = session.scalar(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant.id, FinanceTaxClassification.financial_entry_id == entry.id))
+    if item:
+        item.tax_category = tax_category; item.tax_rate = tax_rate; item.invoice_status = invoice_status; item.invoice_registration_no = registration_no or None; item.checked_by_id = user.id; item.checked_at = datetime.now(timezone.utc)
+    else:
+        session.add(FinanceTaxClassification(tenant_id=tenant.id, financial_entry_id=entry.id, tax_category=tax_category, tax_rate=tax_rate, invoice_status=invoice_status, invoice_registration_no=registration_no or None, checked_by_id=user.id))
+    session.commit()
+    return RedirectResponse(f"/modules/finance/tax?month={entry.occurred_on:%Y-%m}", status_code=303)
 
 
 @app.get("/modules/finance/reports", response_class=HTMLResponse)

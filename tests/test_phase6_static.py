@@ -703,6 +703,44 @@ class Phase6StaticTests(unittest.TestCase):
         guide_source = ast.get_source_segment(SOURCE, guide)
         self.assertIn("確認なしに自動計上されません", guide_source)
 
+    def test_finance_tax_classification_model_is_tenant_scoped_and_unique(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceTaxClassification")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_tax_classification_entry", "tenant_id", "financial_entry_id", "tax_category", "tax_rate", "invoice_status", "invoice_registration_no", "checked_by_id", "checked_at"):
+            self.assertIn(marker, segment)
+
+    def test_estimated_included_tax_uses_tax_inclusive_formula(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "estimated_included_tax")
+        segment = ast.get_source_segment(SOURCE, helper)
+        self.assertIn("amount * tax_rate // (100 + tax_rate)", segment)
+        self.assertIn("if tax_rate else 0", segment)
+
+    def test_finance_tax_page_is_monthly_tenant_scoped_and_mobile(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceTaxClassification.tenant_id == tenant.id", "taxable_sales", "taxable_expenses", "output_tax", "input_tax", "qualified_input_tax", "unclassified_count", "invoice_unconfirmed_count", "calendar-mobile-card", "calendar-mobile-only"):
+            self.assertIn(marker, segment)
+        for label in ("課税売上（税込）", "課税仕入（税込）", "適格請求書確認済み", "税区分未分類", "インボイス未確認"):
+            self.assertIn(label, segment)
+
+    def test_finance_tax_save_validates_invoice_and_period_lock(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_save")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "ensure_finance_period_open", 'tax_rate not in {8, 10}', 'tax_rate != 0', 're.fullmatch(r"T\\d{13}"', 'invoice_status == "qualified" and not registration_no', "FinanceTaxClassification.tenant_id == tenant.id", "item.checked_at", "session.commit()"):
+            self.assertIn(marker, segment)
+
+    def test_finance_tax_is_in_close_checks_navigation_and_guide(self):
+        closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        closing_source = ast.get_source_segment(SOURCE, closing)
+        for marker in ("FinanceTaxClassification", "tax_unclassified_count", "invoice_unconfirmed_count", "消費税区分未分類", "インボイス未確認"):
+            self.assertIn(marker, closing_source)
+        self.assertIn('href="/modules/finance/tax', SOURCE)
+        self.assertIn('"finance/tax": ("消費税区分・インボイス確認"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("消費税区分", "インボイス確認", "自動照会しません", "税理士と原資料"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
