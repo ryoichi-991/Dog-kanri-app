@@ -863,6 +863,57 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("売掛金", "入金消込", "銀行明細", "一度だけ", "請求番号とお客様名"):
             self.assertIn(marker, guide_source)
 
+    def test_finance_entry_correction_model_is_audited_and_tenant_scoped(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceEntryCorrection")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ("uq_finance_correction_original", "tenant_id", "original_entry_id", "reversal_entry_id", "replacement_entry_id", "correction_type", "reason", "corrected_by_id", "corrected_at", "unique=True"):
+            self.assertIn(marker, segment)
+
+    def test_finance_correction_source_guard_covers_linked_workflows(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("FinanceCashPlan", "FinanceRecurringPosting", "FinancePayable", "Invoice", "FinanceReceivableSettlement", "model.tenant_id == tenant_id", "column.is_not(None)"):
+            self.assertIn(marker, segment)
+
+    def test_finance_corrections_page_filters_entries_and_has_admin_mobile_ui(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_corrections_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceEntryCorrection.tenant_id == tenant.id", "corrected_ids", "reversal_ids", "blocked_source_ids", "role_is_admin", 'name="confirmed"', "calendar-desktop-only", "calendar-mobile-card"):
+            self.assertIn(marker, segment)
+        for label in ("仕訳訂正・取消履歴", "元記録を残し", "反対仕訳", "訂正理由", "管理者のみ"):
+            self.assertIn(label, segment)
+
+    def test_finance_correction_create_is_confirmed_scoped_and_period_locked(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_correction_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinancialEntry.tenant_id == tenant.id", "FinanceEntryCorrection.tenant_id == tenant.id", "finance_source_entry_ids", "not confirmed", "existing", "original_entry_id in reversal_ids", 'correction_type not in {"cancel", "replace"}', "correction_day < original.occurred_on", "correction_day > date.today()", "ensure_finance_period_open"):
+            self.assertIn(marker, segment)
+        for marker in ('replacement_type not in {"income", "expense"}', "replacement_category not in FINANCE_CATEGORIES", "replacement_amount <= 0", "replacement_amount > 999999999", "len(clean_description) > 200", "len(clean_reason) > 500"):
+            self.assertIn(marker, segment)
+
+    def test_finance_correction_posts_opposite_and_optional_replacement_without_delete(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_correction_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('"expense" if original.entry_type == "income" else "income"', "amount=original.amount", "FinanceAccountEntry.tenant_id == tenant.id", "account_id=assignment.account_id", 'if correction_type == "replace"', "FinanceEntryCorrection(", "replacement_entry_id=replacement.id if replacement else None", "corrected_by_id=user.id"):
+            self.assertIn(marker, segment)
+        self.assertNotIn("session.delete", segment)
+
+    def test_finance_corrections_feed_close_export_navigation_and_guide(self):
+        closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        closing_source = ast.get_source_segment(SOURCE, closing)
+        for marker in ("FinanceEntryCorrection.tenant_id == tenant.id", "correction_count", "当月訂正・取消", "/modules/finance/corrections"):
+            self.assertIn(marker, closing_source)
+        export = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        export_source = ast.get_source_segment(SOURCE, export)
+        for marker in ("FinanceEntryCorrection.tenant_id == tenant.id", "FinanceEntryCorrection.original_entry_id.in_(entry_ids)", "entry-corrections.csv", '"corrections": len(corrections)'):
+            self.assertIn(marker, export_source)
+        self.assertIn('"finance/corrections": ("仕訳訂正・取消履歴"', SOURCE)
+        self.assertIn('href="/modules/finance/corrections"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("仕訳訂正", "元記録は削除されません", "訂正理由", "実行者", "他機能から作られた記録"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
