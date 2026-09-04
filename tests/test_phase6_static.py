@@ -1279,6 +1279,69 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("勘定科目", "補助科目", "科目マスター", "借方", "貸方", "標準科目", "税理士"):
             self.assertIn(marker, guide_source)
 
+    def test_journal_models_are_tenant_scoped_voucher_source_and_line_unique(self):
+        entry = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceJournalEntry")
+        entry_source = ast.get_source_segment(SOURCE, entry)
+        for marker in ('__tablename__ = "finance_journal_entries"', 'UniqueConstraint("tenant_id", "voucher_no"', 'UniqueConstraint("source_entry_id"', "entry_date", "reversal_of_id", "status", "created_by_id"):
+            self.assertIn(marker, entry_source)
+        line = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceJournalLine")
+        line_source = ast.get_source_segment(SOURCE, line)
+        for marker in ('__tablename__ = "finance_journal_lines"', 'UniqueConstraint("journal_entry_id", "line_no"', "tenant_id", "side", "account_id", "subaccount_id", "amount"):
+            self.assertIn(marker, line_source)
+
+    def test_journal_helper_requires_balance_and_valid_tenant_accounts_and_subaccounts(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_journal")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("debit_total", "credit_total", "debit_total != credit_total", "len(lines) > 20", 'side not in {"debit", "credit"}', "FinanceChartAccount.tenant_id == tenant_id", "FinanceSubaccount.tenant_id == tenant_id", "subaccounts[sub_id].account_id != account_id", "FinanceJournalEntry(", "FinanceJournalLine(", "enumerate(lines, 1)"):
+            self.assertIn(marker, segment)
+
+    def test_journal_page_is_admin_scoped_bounded_mobile_and_shows_unlinked(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journals_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("require_tenant_admin", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceJournalLine.tenant_id == tenant.id", "FinanceChartAccount.tenant_id == tenant.id", "FinanceSubaccount.tenant_id == tenant.id", ".limit(1000)", ".limit(20000)", "unlinked_count", "calendar-desktop-only", "calendar-mobile-card", "取消仕訳", "/modules/finance/journals.csv"):
+            self.assertIn(marker, segment)
+
+    def test_manual_journal_is_confirmed_validated_period_locked_and_audited(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journal_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "not confirmed", "entry_day > date.today()", "amount > 999999999", "ensure_finance_period_open", "finance_journal_voucher", "finance_create_journal", '"debit"', '"credit"', '"journal_create"'):
+            self.assertIn(marker, segment)
+
+    def test_legacy_sync_is_confirmed_idempotent_mapped_bounded_and_locked(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journals_sync")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "not confirmed", 'FinanceChartAccount.system_key == "cash"', "FinanceCategoryAccountMap.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id", "FinancialEntry.tenant_id == tenant.id", ".limit(100)", "mapping_by_key", "ensure_finance_period_open", 'f"LG-{item.id}"', "source_entry_id=item.id", '"journal_sync"'):
+            self.assertIn(marker, segment)
+
+    def test_journal_reversal_swaps_sides_is_idempotent_locked_and_audited(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journal_reverse")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceJournalEntry.tenant_id == tenant.id", ".with_for_update()", "reversal_of_id == journal_id", 'original.status != "posted"', "original.reversal_of_id is not None", "existing", "ensure_finance_period_open", '"credit" if item.side == "debit" else "debit"', "reversal_of_id=original.id", 'original.status = "reversed"', '"journal_reverse"'):
+            self.assertIn(marker, segment)
+
+    def test_journal_csv_is_private_bounded_and_formula_safe(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journals_csv")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "first_day < date(2000, 1, 1)", "first_day > date(2100, 12, 1)", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceJournalLine.tenant_id == tenant.id", ".limit(1000)", ".limit(20000)", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, segment)
+
+    def test_journal_usage_blocks_account_stop_and_source_correction(self):
+        stop = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_account_stop"))
+        source = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids"))
+        self.assertIn("FinanceJournalLine.tenant_id == tenant.id", stop)
+        self.assertIn("journal_line", stop)
+        self.assertIn("FinanceJournalEntry.source_entry_id", source)
+
+    def test_journals_have_navigation_guide_and_audit_actions(self):
+        self.assertIn('"finance/journals": ("複式簿記仕訳"', SOURCE)
+        self.assertIn('href="/modules/finance/journals"', SOURCE)
+        for marker in ('"journal_create": "複式仕訳登録"', '"journal_sync": "収支複式仕訳連携"', '"journal_reverse": "複式仕訳取消"'):
+            self.assertIn(marker, SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("複式簿記", "仕訳伝票", "借方", "貸方", "貸借不一致", "取消仕訳", "締め済み期間"):
+            self.assertIn(marker, guide_source)
+
     def test_fixed_asset_models_are_tenant_scoped_and_depreciation_is_unique(self):
         asset = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFixedAsset")
         asset_source = ast.get_source_segment(SOURCE, asset)
