@@ -1856,7 +1856,7 @@ def page_usage_guide(title: str) -> str:
         (("複式簿記", "仕訳伝票", "借方", "貸方"), ["借方と貸方が一致する仕訳伝票を登録し、勘定科目・補助科目別に記録できます。", "既存の収支台帳を科目対応に従って複式仕訳へ重複なく変換できます。"], ["標準科目と費目対応を先に設定します。", "未連携の収支を複式仕訳へ変換するか、手動仕訳を登録します。", "誤りは元伝票を削除せず取消仕訳で訂正します。"], "貸借不一致の仕訳は登録できません。締め済み期間は変更できず、取消も新しい伝票として履歴を保持します。"),
         (("期首残高", "年度繰越", "残高繰越"), ["初年度の資産・負債残高を貸借一致の期首仕訳として登録できます。", "締め済み年度の資産・負債・純資産残高と当期損益を翌年度へ一度だけ繰り越せます。"], ["初年度は科目ごとの期首残高を登録します。", "12か月を締めて年度締めを完了します。", "繰越内容を確認し、翌年度の初日に期首仕訳を作成します。"], "年度繰越後は元年度の締めを解除できません。訂正が必要な場合は繰越前に行い、期首残高と税務上の扱いは税理士へ確認してください。"),
         (("総勘定元帳", "複式試算表"), ["登録済みの借方・貸方仕訳から勘定科目別の総勘定元帳を作成します。", "科目ごとの借方合計、貸方合計、期末残高と全体の貸借一致を確認できます。"], ["事業年度を選びます。", "複式試算表で貸借差額がゼロであることを確認します。", "勘定科目を選び、相手科目と残高推移を総勘定元帳で照合します。"], "期首残高、年度繰越、取消仕訳を含む複式仕訳が集計対象です。税理士共有にはCSVを出力してください。"),
-        (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
+        (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく計上し、減価償却費／減価償却累計額の複式仕訳を自動作成できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて複式仕訳へ計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
         (("決算前チェックリスト", "決算準備"), ["年度締め前に棚卸、売掛・買掛、固定資産、消費税、証憑、税理士確認の完了状況を記録できます。", "自動点検項目と担当者が確認する項目を一画面で照合できます。"], ["対象事業年度を選び、自動点検の未処理を解消します。", "原資料と残高を照合し、各項目を完了にします。", "全項目完了後に年度締めを実行します。"], "チェックだけで正式な決算・税務判断が完了するものではありません。根拠資料を保存し、必要な項目は税理士へ確認してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
@@ -4823,7 +4823,7 @@ FINANCE_AUDIT_ACTIONS = {
     "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
     "statement_import": "銀行明細取込", "account_transfer": "口座振替", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
-    "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上",
+    "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上", "depreciation_journal_sync": "減価償却仕訳連携",
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
     "journal_create": "複式仕訳登録", "journal_sync": "収支複式仕訳連携", "journal_reverse": "複式仕訳取消",
     "opening_balance_create": "期首残高登録", "year_carryforward": "年度残高繰越",
@@ -4997,7 +4997,7 @@ def finance_trial_balance_data(session: Session, tenant_id: int, period_start: d
     journal_by_id = {item.id: item for item in journals}
     totals = {item.id: [0, 0, 0, 0] for item in accounts}
     for line in lines:
-        journal = journal_by_id.get(line.journal_id)
+        journal = journal_by_id.get(line.journal_entry_id)
         if not journal or line.account_id not in totals:
             continue
         is_opening = journal.entry_date == period_start and (journal.voucher_no.startswith("OB-") or journal.voucher_no.startswith("CF-"))
@@ -5146,7 +5146,7 @@ def finance_chart_accounts_initialize(confirmed: bool = Form(False), access=Depe
     user, tenant = access
     if not confirmed or session.scalar(select(FinanceChartAccount.id).where(FinanceChartAccount.tenant_id == tenant.id).limit(1)):
         raise HTTPException(status_code=400, detail="標準科目の作成条件を確認してください")
-    defaults = [("1000", "現金・預金", "asset", "debit", "cash"), ("1100", "売掛金", "asset", "debit", "receivable"), ("1500", "固定資産", "asset", "debit", "fixed_asset"), ("2000", "買掛金", "liability", "credit", "payable"), ("3000", "元入金・純資産", "equity", "credit", "equity"), ("4000", "売上高", "revenue", "credit", "sales")]
+    defaults = [("1000", "現金・預金", "asset", "debit", "cash"), ("1100", "売掛金", "asset", "debit", "receivable"), ("1500", "固定資産", "asset", "debit", "fixed_asset"), ("1590", "減価償却累計額", "asset", "credit", "accumulated_depreciation"), ("2000", "買掛金", "liability", "credit", "payable"), ("3000", "元入金・純資産", "equity", "credit", "equity"), ("4000", "売上高", "revenue", "credit", "sales"), ("5090", "減価償却費", "expense", "debit", "depreciation_expense")]
     expense_codes = {category: str(5100 + index * 10) for index, category in enumerate(FINANCE_CATEGORIES)}
     created: dict[str, FinanceChartAccount] = {}
     for code, name, account_type, normal_side, system_key in defaults:
@@ -5300,7 +5300,8 @@ def finance_journals_sync(confirmed: bool = Form(False), access=Depends(require_
     query = select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id)
     if linked_ids: query = query.where(FinancialEntry.id.not_in(linked_ids))
     entries = session.scalars(query.order_by(FinancialEntry.occurred_on, FinancialEntry.id).limit(100)).all()
-    eligible = [item for item in entries if (item.entry_type, item.category) in mapping_by_key]
+    non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, [item.id for item in entries])
+    eligible = [item for item in entries if item.id not in non_cash_ids and (item.entry_type, item.category) in mapping_by_key]
     if not cash or not eligible: raise HTTPException(status_code=400, detail="標準科目・費目対応または未連携収支を確認してください")
     for item in eligible:
         ensure_finance_period_open(session, tenant.id, item.occurred_on); mapped_id = mapping_by_key[(item.entry_type, item.category)]
@@ -5519,6 +5520,32 @@ def finance_depreciation_amount(asset: FinanceFixedAsset, period_start: date, pe
     return min(remaining, annual * max(0, months) // 12)
 
 
+def finance_depreciation_journal_accounts(session: Session, tenant_id: int, user_id: int) -> tuple[FinanceChartAccount, FinanceChartAccount]:
+    expense = session.scalar(select(FinanceChartAccount).where(FinanceChartAccount.tenant_id == tenant_id, FinanceChartAccount.system_key == "depreciation_expense", FinanceChartAccount.active.is_(True)))
+    accumulated = session.scalar(select(FinanceChartAccount).where(FinanceChartAccount.tenant_id == tenant_id, FinanceChartAccount.system_key == "accumulated_depreciation", FinanceChartAccount.active.is_(True)))
+    def available_code(base: str) -> str:
+        code = base; suffix = 1
+        while session.scalar(select(FinanceChartAccount.id).where(FinanceChartAccount.tenant_id == tenant_id, FinanceChartAccount.code == code)):
+            code = f"{base}-{suffix}"; suffix += 1
+        return code
+    if not expense:
+        expense = FinanceChartAccount(tenant_id=tenant_id, code=available_code("5090"), name="減価償却費", account_type="expense", normal_side="debit", system_key="depreciation_expense", created_by_id=user_id)
+        session.add(expense); session.flush()
+    if not accumulated:
+        accumulated = FinanceChartAccount(tenant_id=tenant_id, code=available_code("1590"), name="減価償却累計額", account_type="asset", normal_side="credit", system_key="accumulated_depreciation", created_by_id=user_id)
+        session.add(accumulated); session.flush()
+    return expense, accumulated
+
+
+def finance_create_depreciation_journal(session: Session, tenant_id: int, user_id: int, asset: FinanceFixedAsset, entry: FinancialEntry, amount: int) -> FinanceJournalEntry:
+    existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.source_entry_id == entry.id))
+    if existing:
+        return existing
+    expense, accumulated = finance_depreciation_journal_accounts(session, tenant_id, user_id)
+    memo = f"固定資産#{asset.id} {asset.name}"
+    return finance_create_journal(session, tenant_id, user_id, entry.occurred_on, entry.description, f"DP-{entry.id}", [("debit", expense.id, None, amount, memo), ("credit", accumulated.id, None, amount, memo)], source_entry_id=entry.id)
+
+
 @app.get("/modules/finance/fixed-assets", response_class=HTMLResponse)
 def finance_fixed_assets_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -5533,6 +5560,9 @@ def finance_fixed_assets_page(start_year: str = "", access=Depends(require_tenan
     period_start, period_end = finance_fiscal_period(selected_year, start_month)
     assets = session.scalars(select(FinanceFixedAsset).where(FinanceFixedAsset.tenant_id == tenant.id).order_by(FinanceFixedAsset.acquired_on.desc(), FinanceFixedAsset.id.desc()).limit(1000)).all()
     postings = session.scalars(select(FinanceDepreciationPosting).where(FinanceDepreciationPosting.tenant_id == tenant.id)).all()
+    posting_entry_ids = {item.financial_entry_id for item in postings}
+    linked_entry_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(posting_entry_ids))).all()) if posting_entry_ids else set()
+    unjournaled_count = len(posting_entry_ids - linked_entry_ids)
     posted_by_asset: dict[int, int] = {}
     current_postings = {item.asset_id: item for item in postings if item.start_year == selected_year}
     for item in postings:
@@ -5541,7 +5571,7 @@ def finance_fixed_assets_page(start_year: str = "", access=Depends(require_tenan
     for asset in assets:
         estimate = finance_depreciation_amount(asset, period_start, period_end, posted_by_asset.get(asset.id, 0))
         posted = current_postings.get(asset.id)
-        state = "計上済み" if posted else ("計上対象" if estimate else "対象外")
+        state = "複式仕訳済み" if posted and posted.financial_entry_id in linked_entry_ids else ("仕訳未連携" if posted else ("計上対象" if estimate else "対象外"))
         action = f'<form class="inline" method="post" action="/modules/finance/fixed-assets/{asset.id}/depreciate"><input type="hidden" name="start_year" value="{selected_year}"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 金額を確認</label><button>¥{estimate:,}を計上</button></form>' if estimate and not posted and period_end <= date.today() else ""
         dispose = f'<form class="inline" method="post" action="/modules/finance/fixed-assets/{asset.id}/dispose"><input type="date" name="disposed_on" min="{asset.acquired_on}" max="{date.today()}" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 除却を確認</label><button class="danger">除却</button></form>' if asset.status == "active" else ""
         label = html.escape(FINANCE_ASSET_TYPES.get(asset.asset_type, asset.asset_type))
@@ -5550,7 +5580,8 @@ def finance_fixed_assets_page(start_year: str = "", access=Depends(require_tenan
     options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ASSET_TYPES.items())
     body = f'''<h1>固定資産台帳・減価償却</h1><p>設備・機器・車両等の取得情報を登録し、事業年度ごとの定額法による管理用償却額を確認します。</p>
     <form method="get"><label>表示する事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button> <a class="button secondary" href="/modules/finance/fixed-assets.csv?start_year={selected_year}">CSV出力</a></form>
-    <p class="tenant">対象期間：{period_start}～{period_end}。耐用年数、少額資産、償却方法、事業使用割合は税理士へ確認してください。終了前の事業年度は経費計上できません。</p>
+    <p class="tenant">対象期間：{period_start}～{period_end}。減価償却の計上時に、借方「減価償却費」／貸方「減価償却累計額」の複式仕訳を自動作成します。耐用年数、少額資産、償却方法、事業使用割合は税理士へ確認してください。終了前の事業年度は経費計上できません。</p>
+    {f'<form method="post" action="/modules/finance/fixed-assets/sync-journals"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 過去の減価償却 {unjournaled_count}件を確認</label><button>未連携の減価償却を複式仕訳化</button></form>' if unjournaled_count else ''}
     <h2>固定資産を登録</h2><form method="post" action="/modules/finance/fixed-assets"><div class="grid"><div><label>資産名</label><input name="name" maxlength="150" required></div><div><label>種類</label><select name="asset_type">{options}</select></div><div><label>取得日</label><input type="date" name="acquired_on" max="{date.today()}" required></div><div><label>取得価額</label><input type="number" name="acquisition_cost" min="1" max="999999999" required></div><div><label>耐用年数</label><input type="number" name="useful_life_years" min="1" max="50" required></div><div><label>事業使用割合（%）</label><input type="number" name="business_use_percent" min="1" max="100" value="100" required></div></div><label>メモ</label><input name="notes" maxlength="500"><button>固定資産を登録</button></form>
     <h2>固定資産台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>資産名</th><th>種類</th><th>取得日</th><th>取得価額</th><th>耐用年数・事業使用</th><th>累計償却</th><th>状態・操作</th></tr>{rows or '<tr><td colspan="7">固定資産は登録されていません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">固定資産は登録されていません。</div>'}</section>'''
     return layout("固定資産台帳・減価償却", body, user)
@@ -5611,9 +5642,33 @@ def finance_fixed_asset_depreciate(asset_id: int, start_year: int = Form(...), c
     session.add(entry); session.flush()
     posting = FinanceDepreciationPosting(tenant_id=tenant.id, asset_id=asset.id, start_year=start_year, amount=amount, financial_entry_id=entry.id, posted_by_id=user.id)
     session.add(posting); session.flush()
-    record_finance_audit(session, tenant.id, user.id, "depreciation_post", "finance_depreciation_posting", posting.id, "減価償却費を台帳計上", f"asset={asset.id} ledger={entry.id} amount={amount}")
+    journal = finance_create_depreciation_journal(session, tenant.id, user.id, asset, entry, amount)
+    record_finance_audit(session, tenant.id, user.id, "depreciation_post", "finance_depreciation_posting", posting.id, "減価償却費を複式仕訳へ計上", f"asset={asset.id} ledger={entry.id} journal={journal.id} amount={amount}")
     session.commit()
     return RedirectResponse(f"/modules/finance/fixed-assets?start_year={start_year}", status_code=303)
+
+
+@app.post("/modules/finance/fixed-assets/sync-journals")
+def finance_fixed_asset_sync_journals(confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if not confirmed:
+        raise HTTPException(status_code=400, detail="減価償却の仕訳連携を確認してください")
+    postings = session.scalars(select(FinanceDepreciationPosting).where(FinanceDepreciationPosting.tenant_id == tenant.id).order_by(FinanceDepreciationPosting.start_year, FinanceDepreciationPosting.id).limit(100)).all()
+    linked_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_([item.financial_entry_id for item in postings]))).all()) if postings else set()
+    pending = [item for item in postings if item.financial_entry_id not in linked_ids]
+    if not pending:
+        raise HTTPException(status_code=400, detail="未連携の減価償却はありません")
+    assets = {item.id: item for item in session.scalars(select(FinanceFixedAsset).where(FinanceFixedAsset.tenant_id == tenant.id, FinanceFixedAsset.id.in_({item.asset_id for item in pending}))).all()}
+    entries = {item.id: item for item in session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.id.in_({item.financial_entry_id for item in pending}))).all()}
+    for posting in pending:
+        asset = assets.get(posting.asset_id); entry = entries.get(posting.financial_entry_id)
+        if not asset or not entry:
+            raise HTTPException(status_code=409, detail="減価償却の元データを確認してください")
+        ensure_finance_period_open(session, tenant.id, entry.occurred_on)
+        finance_create_depreciation_journal(session, tenant.id, user.id, asset, entry, posting.amount)
+    record_finance_audit(session, tenant.id, user.id, "depreciation_journal_sync", "finance_journal_entry", None, "過去の減価償却を複式仕訳へ連携", f"count={len(pending)}")
+    session.commit()
+    return RedirectResponse("/modules/finance/fixed-assets", status_code=303)
 
 
 @app.post("/modules/finance/fixed-assets/{asset_id}/dispose")

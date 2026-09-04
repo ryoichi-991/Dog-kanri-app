@@ -1225,7 +1225,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_trial_balance_data_is_tenant_scoped_and_calculates_account_balances(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_trial_balance_data")
         segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ("finance_double_entry_data", "journal_by_id", 'voucher_no.startswith("OB-")', 'voucher_no.startswith("CF-")', 'line.side == "debit"', "opening_debit", "period_debit", "max(0, signed)", "type_totals"):
+        for marker in ("finance_double_entry_data", "journal_by_id", "line.journal_entry_id", 'voucher_no.startswith("OB-")', 'voucher_no.startswith("CF-")', 'line.side == "debit"', "opening_debit", "period_debit", "max(0, signed)", "type_totals"):
             self.assertIn(marker, segment)
 
     def test_trial_balance_page_is_admin_only_mobile_and_has_management_warning(self):
@@ -1297,7 +1297,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_standard_chart_initialization_is_confirmed_idempotent_and_maps_legacy_categories(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_accounts_initialize")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "not confirmed", "FinanceChartAccount.tenant_id == tenant.id", '"cash"', '"receivable"', '"fixed_asset"', '"payable"', '"equity"', '"sales"', "for category in FINANCE_CATEGORIES", "FinanceCategoryAccountMap(", 'entry_type="income"', 'entry_type="expense"', '"chart_initialize"'):
+        for marker in ("require_tenant_admin", "not confirmed", "FinanceChartAccount.tenant_id == tenant.id", '"cash"', '"receivable"', '"fixed_asset"', '"accumulated_depreciation"', '"depreciation_expense"', '"payable"', '"equity"', '"sales"', "for category in FINANCE_CATEGORIES", "FinanceCategoryAccountMap(", 'entry_type="income"', 'entry_type="expense"', '"chart_initialize"'):
             self.assertIn(marker, segment)
 
     def test_chart_account_create_validates_code_type_normal_side_and_duplicate(self):
@@ -1367,7 +1367,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_legacy_sync_is_confirmed_idempotent_mapped_bounded_and_locked(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journals_sync")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "not confirmed", 'FinanceChartAccount.system_key == "cash"', "FinanceCategoryAccountMap.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id", "FinancialEntry.tenant_id == tenant.id", ".limit(100)", "mapping_by_key", "ensure_finance_period_open", 'f"LG-{item.id}"', "source_entry_id=item.id", '"journal_sync"'):
+        for marker in ("require_tenant_admin", "not confirmed", 'FinanceChartAccount.system_key == "cash"', "FinanceCategoryAccountMap.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id", "FinancialEntry.tenant_id == tenant.id", ".limit(100)", "mapping_by_key", "finance_non_cash_entry_ids", "item.id not in non_cash_ids", "ensure_finance_period_open", 'f"LG-{item.id}"', "source_entry_id=item.id", '"journal_sync"'):
             self.assertIn(marker, segment)
 
     def test_journal_reversal_swaps_sides_is_idempotent_locked_and_audited(self):
@@ -1484,10 +1484,22 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("business_use_percent", "remaining", "asset.useful_life_years", "calculation_start", "calculation_end", "months", "annual * max(0, months) // 12", "min(remaining"):
             self.assertIn(marker, segment)
 
+    def test_depreciation_journal_accounts_ensure_expense_and_contra_asset(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_depreciation_journal_accounts")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ('system_key == "depreciation_expense"', 'system_key == "accumulated_depreciation"', "available_code", 'name="減価償却費"', 'account_type="expense"', 'normal_side="debit"', 'name="減価償却累計額"', 'account_type="asset"', 'normal_side="credit"'):
+            self.assertIn(marker, segment)
+
+    def test_depreciation_journal_is_balanced_linked_and_idempotent(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_depreciation_journal")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("FinanceJournalEntry.tenant_id == tenant_id", "FinanceJournalEntry.source_entry_id == entry.id", "finance_depreciation_journal_accounts", 'f"DP-{entry.id}"', '("debit", expense.id', '("credit", accumulated.id', "source_entry_id=entry.id"):
+            self.assertIn(marker, segment)
+
     def test_fixed_asset_page_is_admin_tenant_scoped_mobile_and_warns_tax_review(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_assets_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", "FinanceDepreciationPosting.tenant_id == tenant.id", ".limit(1000)", "finance_depreciation_amount", "calendar-desktop-only", "calendar-mobile-card", "税理士", "終了前の事業年度は経費計上できません"):
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", "FinanceDepreciationPosting.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id", ".limit(1000)", "finance_depreciation_amount", "unjournaled_count", "複式仕訳済み", "仕訳未連携", "/modules/finance/fixed-assets/sync-journals", "calendar-desktop-only", "calendar-mobile-card", "税理士", "終了前の事業年度は経費計上できません"):
             self.assertIn(marker, segment)
 
     def test_fixed_asset_create_validates_fields_and_writes_audit(self):
@@ -1505,7 +1517,13 @@ class Phase6StaticTests(unittest.TestCase):
     def test_depreciation_post_is_locked_idempotent_and_links_ledger(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_asset_depreciate")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", ".with_for_update()", "FinanceDepreciationPosting.tenant_id == tenant.id", "existing", "period_end > date.today()", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', 'category="facility"', "FinanceDepreciationPosting(", "financial_entry_id=entry.id", '"depreciation_post"'):
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", ".with_for_update()", "FinanceDepreciationPosting.tenant_id == tenant.id", "existing", "period_end > date.today()", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', 'category="facility"', "FinanceDepreciationPosting(", "financial_entry_id=entry.id", "finance_create_depreciation_journal", '"depreciation_post"'):
+            self.assertIn(marker, segment)
+
+    def test_legacy_depreciation_sync_is_admin_scoped_bounded_and_audited(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_asset_sync_journals")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "not confirmed", "FinanceDepreciationPosting.tenant_id == tenant.id", ".limit(100)", "FinanceJournalEntry.source_entry_id", "FinanceFixedAsset.tenant_id == tenant.id", "FinancialEntry.tenant_id == tenant.id", "ensure_finance_period_open", "finance_create_depreciation_journal", '"depreciation_journal_sync"'):
             self.assertIn(marker, segment)
 
     def test_depreciation_is_non_cash_and_exempt_from_account_close_checks(self):
@@ -1533,11 +1551,11 @@ class Phase6StaticTests(unittest.TestCase):
     def test_fixed_assets_have_navigation_guide_and_audit_actions(self):
         self.assertIn('"finance/fixed-assets": ("固定資産台帳・減価償却"', SOURCE)
         self.assertIn('href="/modules/finance/fixed-assets"', SOURCE)
-        for marker in ('"fixed_asset_create": "固定資産登録"', '"fixed_asset_dispose": "固定資産除却"', '"depreciation_post": "減価償却計上"'):
+        for marker in ('"fixed_asset_create": "固定資産登録"', '"fixed_asset_dispose": "固定資産除却"', '"depreciation_post": "減価償却計上"', '"depreciation_journal_sync": "減価償却仕訳連携"'):
             self.assertIn(marker, SOURCE)
         guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
         guide_source = ast.get_source_segment(SOURCE, guide)
-        for marker in ("固定資産", "減価償却", "取得価額", "耐用年数", "税理士", "定額法"):
+        for marker in ("固定資産", "減価償却", "取得価額", "耐用年数", "減価償却累計額", "複式仕訳", "税理士", "定額法"):
             self.assertIn(marker, guide_source)
 
 
