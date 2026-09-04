@@ -1217,6 +1217,68 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("損益計算書", "簡易貸借対照表", "収益", "費用", "資産", "負債", "純資産", "複式簿記化"):
             self.assertIn(marker, guide_source)
 
+    def test_chart_account_models_are_tenant_scoped_unique_and_audited(self):
+        account = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceChartAccount")
+        account_source = ast.get_source_segment(SOURCE, account)
+        for marker in ('__tablename__ = "finance_chart_accounts"', 'UniqueConstraint("tenant_id", "code"', "account_type", "normal_side", "system_key", "active", "created_by_id"):
+            self.assertIn(marker, account_source)
+        sub = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceSubaccount")
+        sub_source = ast.get_source_segment(SOURCE, sub)
+        for marker in ('__tablename__ = "finance_subaccounts"', 'UniqueConstraint("account_id", "code"', "tenant_id", "account_id", "active", "created_by_id"):
+            self.assertIn(marker, sub_source)
+        mapping = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceCategoryAccountMap")
+        mapping_source = ast.get_source_segment(SOURCE, mapping)
+        for marker in ('__tablename__ = "finance_category_account_maps"', 'UniqueConstraint("tenant_id", "entry_type", "category"', "account_id", "updated_by_id", "updated_at"):
+            self.assertIn(marker, mapping_source)
+
+    def test_chart_accounts_page_is_admin_scoped_bounded_mobile_and_maps_categories(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_accounts_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("require_tenant_admin", "FinanceChartAccount.tenant_id == tenant.id", "FinanceSubaccount.tenant_id == tenant.id", "FinanceCategoryAccountMap.tenant_id == tenant.id", ".limit(1000)", ".limit(2000)", "calendar-desktop-only", "calendar-mobile-card", "既存費目との対応", "標準科目を一括作成"):
+            self.assertIn(marker, segment)
+
+    def test_standard_chart_initialization_is_confirmed_idempotent_and_maps_legacy_categories(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_accounts_initialize")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "not confirmed", "FinanceChartAccount.tenant_id == tenant.id", '"cash"', '"receivable"', '"fixed_asset"', '"payable"', '"equity"', '"sales"', "for category in FINANCE_CATEGORIES", "FinanceCategoryAccountMap(", 'entry_type="income"', 'entry_type="expense"', '"chart_initialize"'):
+            self.assertIn(marker, segment)
+
+    def test_chart_account_create_validates_code_type_normal_side_and_duplicate(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_account_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", 're.fullmatch(r"[A-Z0-9-]{1,20}"', "FinanceChartAccount.tenant_id == tenant.id", "account_type not in FINANCE_ACCOUNT_TYPES", "normal_side not in FINANCE_NORMAL_SIDES", "normal_side != expected_side", "duplicate", '"chart_account_create"'):
+            self.assertIn(marker, segment)
+
+    def test_subaccount_create_and_stop_are_confirmed_and_tenant_scoped(self):
+        create = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_subaccount_create"))
+        stop = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_subaccount_stop"))
+        for marker in ("require_tenant_admin", "FinanceChartAccount.tenant_id == tenant.id", "FinanceSubaccount.tenant_id == tenant.id", "duplicate", '"subaccount_create"'):
+            self.assertIn(marker, create)
+        for marker in ("require_tenant_admin", "FinanceSubaccount.tenant_id == tenant.id", ".with_for_update()", "not confirmed", 'item.active = False', '"subaccount_stop"'):
+            self.assertIn(marker, stop)
+
+    def test_category_map_upserts_only_matching_revenue_or_expense_accounts(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_category_account_map")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceChartAccount.tenant_id == tenant.id", 'expected_type = "revenue" if entry_type == "income" else "expense"', "category not in FINANCE_CATEGORIES", "account.account_type != expected_type", "FinanceCategoryAccountMap.tenant_id == tenant.id", ".with_for_update()", '"category_account_map"'):
+            self.assertIn(marker, segment)
+
+    def test_chart_account_stop_preserves_system_mapped_and_active_subaccounts(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_account_stop")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceChartAccount.tenant_id == tenant.id", ".with_for_update()", "FinanceCategoryAccountMap.tenant_id == tenant.id", "FinanceSubaccount.tenant_id == tenant.id", "item.system_key", "mapped", "active_sub", 'item.active = False', '"chart_account_stop"'):
+            self.assertIn(marker, segment)
+
+    def test_chart_accounts_have_navigation_guide_and_audit_actions(self):
+        self.assertIn('"finance/chart-accounts": ("勘定科目・補助科目管理"', SOURCE)
+        self.assertIn('href="/modules/finance/chart-accounts"', SOURCE)
+        for marker in ('"chart_initialize": "標準勘定科目作成"', '"chart_account_create": "勘定科目登録"', '"chart_account_stop": "勘定科目停止"', '"subaccount_create": "補助科目登録"', '"subaccount_stop": "補助科目停止"', '"category_account_map": "費目対応設定"'):
+            self.assertIn(marker, SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("勘定科目", "補助科目", "科目マスター", "借方", "貸方", "標準科目", "税理士"):
+            self.assertIn(marker, guide_source)
+
     def test_fixed_asset_models_are_tenant_scoped_and_depreciation_is_unique(self):
         asset = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFixedAsset")
         asset_source = ast.get_source_segment(SOURCE, asset)

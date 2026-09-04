@@ -75,6 +75,7 @@ MODULES = {
     "finance/books": ("仕訳帳・科目別元帳", "日付順、費目別、口座別の会計帳簿とCSV出力"),
     "finance/trial-balance": ("月次・年度試算表", "事業年度内の口座残高、費目別収支、当期差引の確認"),
     "finance/statements-report": ("損益計算書・簡易貸借対照表", "事業年度の収益・費用・資産・負債・純資産の確認"),
+    "finance/chart-accounts": ("勘定科目・補助科目管理", "複式簿記で使用する勘定科目、補助科目、既存費目との対応管理"),
     "finance/fixed-assets": ("固定資産台帳・減価償却", "設備・車両等の取得情報、耐用年数、年度償却の管理"),
     "finance/year-end": ("会計年度設定・年度締め", "事業年度の開始月、年度点検、年度確定の管理"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
@@ -732,6 +733,46 @@ class FinanceDepreciationPosting(Base):
     financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="RESTRICT"), unique=True)
     posted_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceChartAccount(Base):
+    __tablename__ = "finance_chart_accounts"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_finance_chart_account_code"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(100))
+    account_type: Mapped[str] = mapped_column(String(20), index=True)
+    normal_side: Mapped[str] = mapped_column(String(10))
+    system_key: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceSubaccount(Base):
+    __tablename__ = "finance_subaccounts"
+    __table_args__ = (UniqueConstraint("account_id", "code", name="uq_finance_subaccount_code"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("finance_chart_accounts.id", ondelete="RESTRICT"), index=True)
+    code: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(100))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceCategoryAccountMap(Base):
+    __tablename__ = "finance_category_account_maps"
+    __table_args__ = (UniqueConstraint("tenant_id", "entry_type", "category", name="uq_finance_category_account_map"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    entry_type: Mapped[str] = mapped_column(String(20), index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("finance_chart_accounts.id", ondelete="RESTRICT"), index=True)
+    updated_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1736,6 +1777,7 @@ def page_usage_guide(title: str) -> str:
         (("仕訳帳", "科目別元帳", "会計帳簿"), ["収支台帳を日付順の仕訳帳と費目別集計で確認できます。", "口座を指定すると、その口座の取引と口座間振替だけを抽出できます。"], ["対象年・月、区分、費目、口座を選びます。", "合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "この帳簿は収支台帳を基礎にした管理帳簿です。法定帳簿や複式簿記として利用する場合は、税理士と勘定科目・期首残高を確認してください。"),
         (("月次・年度試算表", "残高試算表"), ["事業年度の開始から指定月末までの口座残高と費目別収支を一覧で確認できます。", "口座ごとの期首残高、入金、支出、振替、期末残高を照合できます。"], ["事業年度と集計月を選びます。", "口座別残高と費目別収支を確認します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の収支台帳を基礎にした管理用試算表です。売掛金・買掛金などを含む複式簿記の法定試算表として利用する場合は、税理士へ確認してください。"),
         (("損益計算書", "簡易貸借対照表", "財務諸表"), ["事業年度の開始から指定月末までの収益、費用、利益を損益計算書形式で確認できます。", "口座残高、売掛金、固定資産、買掛金から簡易的な資産・負債・純資産を確認できます。"], ["事業年度と集計月を選びます。", "損益計算書と簡易貸借対照表の内訳を照合します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の登録データを基礎にした経営管理用の概算です。正式な決算書・税務申告には、複式簿記化後の残高と税理士の確認が必要です。"),
+        (("勘定科目", "補助科目", "科目マスター"), ["資産、負債、純資産、収益、費用の勘定科目と借方・貸方の通常残高を管理できます。", "既存の入金・経費費目を勘定科目へ対応付け、次段階の複式簿記へ引き継げます。"], ["初回は標準科目を一括作成します。", "必要な勘定科目・補助科目を追加します。", "既存費目の対応科目を確認・変更します。"], "使用済み科目の削除は行わず、停止して履歴を保持してください。科目区分や税務上の扱いは税理士に確認してください。"),
         (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
@@ -1787,7 +1829,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/chart-accounts"><span>⌘</span>勘定科目</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4689,6 +4731,7 @@ FINANCE_AUDIT_ACTIONS = {
     "statement_import": "銀行明細取込", "account_transfer": "口座振替", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
     "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上",
+    "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
 }
 
 
@@ -4976,6 +5019,129 @@ def finance_statements_report_csv(start_year: str = "", through_month: str = "",
     rows.append(["簡易貸借対照表", "純資産", "資産－負債（概算）", asset_total - sum(item.amount for item in payables)])
     content = finance_export_csv(["帳票", "区分", "科目・内訳", "金額"], rows)
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-statements-{selected_year}-{period_end:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+FINANCE_ACCOUNT_TYPES = {"asset": "資産", "liability": "負債", "equity": "純資産", "revenue": "収益", "expense": "費用"}
+FINANCE_NORMAL_SIDES = {"debit": "借方", "credit": "貸方"}
+
+
+@app.get("/modules/finance/chart-accounts", response_class=HTMLResponse)
+def finance_chart_accounts_page(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    accounts = session.scalars(select(FinanceChartAccount).where(FinanceChartAccount.tenant_id == tenant.id).order_by(FinanceChartAccount.code, FinanceChartAccount.id).limit(1000)).all()
+    subaccounts = session.scalars(select(FinanceSubaccount).where(FinanceSubaccount.tenant_id == tenant.id).order_by(FinanceSubaccount.account_id, FinanceSubaccount.code, FinanceSubaccount.id).limit(2000)).all()
+    mappings = session.scalars(select(FinanceCategoryAccountMap).where(FinanceCategoryAccountMap.tenant_id == tenant.id)).all()
+    account_by_id = {item.id: item for item in accounts}; mapped_account_ids = {item.account_id for item in mappings}
+    subs_by_account: dict[int, list[FinanceSubaccount]] = {}
+    for item in subaccounts: subs_by_account.setdefault(item.account_id, []).append(item)
+    rows = ""; cards = ""
+    for item in accounts:
+        subs = "、".join(f'{html.escape(sub.code)} {html.escape(sub.name)}{"（停止）" if not sub.active else ""}' for sub in subs_by_account.get(item.id, [])) or "－"
+        can_stop = item.active and not item.system_key and item.id not in mapped_account_ids and not any(sub.active for sub in subs_by_account.get(item.id, []))
+        stop = f'<form class="inline" method="post" action="/modules/finance/chart-accounts/{item.id}/stop"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 停止</label><button class="danger">停止</button></form>' if can_stop else ""
+        state = "使用中" if item.active else "停止"
+        rows += f'<tr><td>{html.escape(item.code)}</td><td>{html.escape(item.name)}</td><td>{FINANCE_ACCOUNT_TYPES[item.account_type]}</td><td>{FINANCE_NORMAL_SIDES[item.normal_side]}</td><td>{subs}</td><td><span class="badge">{state}</span>{stop}</td></tr>'
+        cards += f'<article class="calendar-mobile-card"><h3>{html.escape(item.code)} {html.escape(item.name)}</h3><p>{FINANCE_ACCOUNT_TYPES[item.account_type]}／通常残高 {FINANCE_NORMAL_SIDES[item.normal_side]}／<span class="badge">{state}</span></p><p>補助科目：{subs}</p>{stop}</article>'
+    active_accounts = [item for item in accounts if item.active]
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.code)} {html.escape(item.name)}</option>' for item in active_accounts)
+    type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ACCOUNT_TYPES.items())
+    side_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_NORMAL_SIDES.items())
+    mapping_rows = ""
+    mapping_by_key = {(item.entry_type, item.category): item for item in mappings}
+    for entry_type in ("income", "expense"):
+        allowed_type = "revenue" if entry_type == "income" else "expense"
+        for category, label in FINANCE_CATEGORIES.items():
+            selected = mapping_by_key.get((entry_type, category)); current = account_by_id.get(selected.account_id) if selected else None
+            category_options = "".join(f'<option value="{item.id}" {"selected" if current and current.id == item.id else ""}>{html.escape(item.code)} {html.escape(item.name)}</option>' for item in active_accounts if item.account_type == allowed_type)
+            mapping_rows += f'<tr><td>{"入金" if entry_type == "income" else "経費"}</td><td>{html.escape(label)}</td><td><form class="inline" method="post" action="/modules/finance/chart-accounts/map"><input type="hidden" name="entry_type" value="{entry_type}"><input type="hidden" name="category" value="{category}"><select name="account_id"><option value="">未設定</option>{category_options}</select><button>保存</button></form></td></tr>'
+    initialize = '<form method="post" action="/modules/finance/chart-accounts/initialize"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 標準科目と既存費目の対応を作成する</label><button>標準科目を一括作成</button></form>' if not accounts else ""
+    sub_rows = "".join(f'<tr><td>{html.escape(account_by_id[item.account_id].code)} {html.escape(account_by_id[item.account_id].name)}</td><td>{html.escape(item.code)}</td><td>{html.escape(item.name)}</td><td><span class="badge">{"使用中" if item.active else "停止"}</span>{f"<form class=\"inline\" method=\"post\" action=\"/modules/finance/chart-accounts/subaccounts/{item.id}/stop\"><label><input type=\"checkbox\" name=\"confirmed\" value=\"true\" style=\"width:auto\" required> 停止</label><button class=\"danger\">停止</button></form>" if item.active else ""}</td></tr>' for item in subaccounts if item.account_id in account_by_id)
+    body = f'''<h1>勘定科目・補助科目管理</h1><p>複式簿記で使用する科目マスターと、現在の収支費目との対応を管理します。</p><p class="tenant">使用中・対応設定済みの勘定科目は削除せず履歴を保持します。科目区分や税務上の扱いは税理士へ確認してください。</p>{initialize}
+    <h2>勘定科目を追加</h2><form method="post" action="/modules/finance/chart-accounts"><div class="grid"><div><label>科目コード</label><input name="code" maxlength="20" pattern="[A-Za-z0-9-]+" required></div><div><label>科目名</label><input name="name" maxlength="100" required></div><div><label>科目区分</label><select name="account_type">{type_options}</select></div><div><label>通常残高</label><select name="normal_side">{side_options}</select></div></div><button>勘定科目を登録</button></form>
+    <h2>補助科目を追加</h2><form method="post" action="/modules/finance/chart-accounts/subaccounts"><div class="grid"><div><label>親勘定科目</label><select name="account_id">{account_options}</select></div><div><label>補助コード</label><input name="code" maxlength="20" pattern="[A-Za-z0-9-]+" required></div><div><label>補助科目名</label><input name="name" maxlength="100" required></div></div><button>補助科目を登録</button></form>
+    <h2>科目一覧</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>コード</th><th>科目名</th><th>区分</th><th>通常残高</th><th>補助科目</th><th>状態</th></tr>{rows or '<tr><td colspan="6">標準科目を作成してください。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">標準科目を作成してください。</div>'}</section>
+    <h2>補助科目一覧</h2><table><tr><th>親勘定科目</th><th>コード</th><th>補助科目名</th><th>状態・操作</th></tr>{sub_rows or '<tr><td colspan="4">補助科目は登録されていません。</td></tr>'}</table>
+    <h2>既存費目との対応</h2><table><tr><th>区分</th><th>現在の費目</th><th>対応する勘定科目</th></tr>{mapping_rows or '<tr><td colspan="3">収益・費用科目を登録してください。</td></tr>'}</table>'''
+    return layout("勘定科目・補助科目管理", body, user)
+
+
+@app.post("/modules/finance/chart-accounts/initialize")
+def finance_chart_accounts_initialize(confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if not confirmed or session.scalar(select(FinanceChartAccount.id).where(FinanceChartAccount.tenant_id == tenant.id).limit(1)):
+        raise HTTPException(status_code=400, detail="標準科目の作成条件を確認してください")
+    defaults = [("1000", "現金・預金", "asset", "debit", "cash"), ("1100", "売掛金", "asset", "debit", "receivable"), ("1500", "固定資産", "asset", "debit", "fixed_asset"), ("2000", "買掛金", "liability", "credit", "payable"), ("3000", "元入金・純資産", "equity", "credit", "equity"), ("4000", "売上高", "revenue", "credit", "sales")]
+    expense_codes = {category: str(5100 + index * 10) for index, category in enumerate(FINANCE_CATEGORIES)}
+    created: dict[str, FinanceChartAccount] = {}
+    for code, name, account_type, normal_side, system_key in defaults:
+        item = FinanceChartAccount(tenant_id=tenant.id, code=code, name=name, account_type=account_type, normal_side=normal_side, system_key=system_key, created_by_id=user.id); session.add(item); session.flush(); created[system_key] = item
+    for category, label in FINANCE_CATEGORIES.items():
+        item = FinanceChartAccount(tenant_id=tenant.id, code=expense_codes[category], name=label, account_type="expense", normal_side="debit", system_key=f"expense_{category}", created_by_id=user.id); session.add(item); session.flush(); created[f"expense_{category}"] = item
+    for category in FINANCE_CATEGORIES:
+        session.add(FinanceCategoryAccountMap(tenant_id=tenant.id, entry_type="income", category=category, account_id=created["sales"].id, updated_by_id=user.id))
+        session.add(FinanceCategoryAccountMap(tenant_id=tenant.id, entry_type="expense", category=category, account_id=created[f"expense_{category}"].id, updated_by_id=user.id))
+    record_finance_audit(session, tenant.id, user.id, "chart_initialize", "finance_chart_account", None, "標準勘定科目と費目対応を作成", f"accounts={len(defaults) + len(FINANCE_CATEGORIES)} maps={len(FINANCE_CATEGORIES) * 2}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
+
+
+@app.post("/modules/finance/chart-accounts")
+def finance_chart_account_create(code: str = Form(...), name: str = Form(...), account_type: str = Form(...), normal_side: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; clean_code = code.strip().upper(); clean_name = name.strip()
+    duplicate = session.scalar(select(FinanceChartAccount.id).where(FinanceChartAccount.tenant_id == tenant.id, FinanceChartAccount.code == clean_code))
+    expected_side = "debit" if account_type in {"asset", "expense"} else "credit"
+    if not re.fullmatch(r"[A-Z0-9-]{1,20}", clean_code) or not clean_name or len(clean_name) > 100 or account_type not in FINANCE_ACCOUNT_TYPES or normal_side not in FINANCE_NORMAL_SIDES or normal_side != expected_side or duplicate:
+        raise HTTPException(status_code=400, detail="勘定科目の登録内容を確認してください")
+    item = FinanceChartAccount(tenant_id=tenant.id, code=clean_code, name=clean_name, account_type=account_type, normal_side=normal_side, created_by_id=user.id); session.add(item); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "chart_account_create", "finance_chart_account", item.id, "勘定科目を登録", f"code={clean_code} type={account_type}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
+
+
+@app.post("/modules/finance/chart-accounts/subaccounts")
+def finance_subaccount_create(account_id: int = Form(...), code: str = Form(...), name: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; clean_code = code.strip().upper(); clean_name = name.strip()
+    account = session.scalar(select(FinanceChartAccount).where(FinanceChartAccount.id == account_id, FinanceChartAccount.tenant_id == tenant.id, FinanceChartAccount.active.is_(True)))
+    duplicate = session.scalar(select(FinanceSubaccount.id).where(FinanceSubaccount.tenant_id == tenant.id, FinanceSubaccount.account_id == account_id, FinanceSubaccount.code == clean_code))
+    if not account or not re.fullmatch(r"[A-Z0-9-]{1,20}", clean_code) or not clean_name or len(clean_name) > 100 or duplicate:
+        raise HTTPException(status_code=400, detail="補助科目の登録内容を確認してください")
+    item = FinanceSubaccount(tenant_id=tenant.id, account_id=account.id, code=clean_code, name=clean_name, created_by_id=user.id); session.add(item); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "subaccount_create", "finance_subaccount", item.id, "補助科目を登録", f"account={account.id} code={clean_code}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
+
+
+@app.post("/modules/finance/chart-accounts/subaccounts/{subaccount_id}/stop")
+def finance_subaccount_stop(subaccount_id: int, confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    item = session.scalar(select(FinanceSubaccount).where(FinanceSubaccount.id == subaccount_id, FinanceSubaccount.tenant_id == tenant.id).with_for_update())
+    if not confirmed or not item or not item.active:
+        raise HTTPException(status_code=400, detail="補助科目を停止できません")
+    item.active = False; record_finance_audit(session, tenant.id, user.id, "subaccount_stop", "finance_subaccount", item.id, "補助科目を停止", f"code={item.code}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
+
+
+@app.post("/modules/finance/chart-accounts/map")
+def finance_category_account_map(entry_type: str = Form(...), category: str = Form(...), account_id: int = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    account = session.scalar(select(FinanceChartAccount).where(FinanceChartAccount.id == account_id, FinanceChartAccount.tenant_id == tenant.id, FinanceChartAccount.active.is_(True)))
+    expected_type = "revenue" if entry_type == "income" else "expense"
+    if entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or not account or account.account_type != expected_type:
+        raise HTTPException(status_code=400, detail="費目対応の内容を確認してください")
+    item = session.scalar(select(FinanceCategoryAccountMap).where(FinanceCategoryAccountMap.tenant_id == tenant.id, FinanceCategoryAccountMap.entry_type == entry_type, FinanceCategoryAccountMap.category == category).with_for_update())
+    if item: item.account_id = account.id; item.updated_by_id = user.id; item.updated_at = datetime.now(timezone.utc)
+    else: item = FinanceCategoryAccountMap(tenant_id=tenant.id, entry_type=entry_type, category=category, account_id=account.id, updated_by_id=user.id); session.add(item)
+    session.flush(); record_finance_audit(session, tenant.id, user.id, "category_account_map", "finance_category_account_map", item.id, "既存費目の対応科目を設定", f"type={entry_type} category={category} account={account.id}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
+
+
+@app.post("/modules/finance/chart-accounts/{account_id}/stop")
+def finance_chart_account_stop(account_id: int, confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    item = session.scalar(select(FinanceChartAccount).where(FinanceChartAccount.id == account_id, FinanceChartAccount.tenant_id == tenant.id).with_for_update())
+    mapped = session.scalar(select(FinanceCategoryAccountMap.id).where(FinanceCategoryAccountMap.tenant_id == tenant.id, FinanceCategoryAccountMap.account_id == account_id).limit(1))
+    active_sub = session.scalar(select(FinanceSubaccount.id).where(FinanceSubaccount.tenant_id == tenant.id, FinanceSubaccount.account_id == account_id, FinanceSubaccount.active.is_(True)).limit(1))
+    if not confirmed or not item or not item.active or item.system_key or mapped or active_sub:
+        raise HTTPException(status_code=400, detail="勘定科目を停止できません")
+    item.active = False; record_finance_audit(session, tenant.id, user.id, "chart_account_stop", "finance_chart_account", item.id, "勘定科目を停止", f"code={item.code}")
+    session.commit(); return RedirectResponse("/modules/finance/chart-accounts", status_code=303)
 
 
 FINANCE_ASSET_TYPES = {"equipment": "設備・機器", "vehicle": "車両", "building": "建物・内装", "software": "ソフトウェア", "other": "その他"}
