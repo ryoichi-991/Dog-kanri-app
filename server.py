@@ -74,6 +74,7 @@ MODULES = {
     "finance/audit": ("会計操作ログ・監査証跡", "会計操作の実行者、日時、対象、処理内容の追跡"),
     "finance/books": ("仕訳帳・科目別元帳", "日付順、費目別、口座別の会計帳簿とCSV出力"),
     "finance/trial-balance": ("月次・年度試算表", "事業年度内の口座残高、費目別収支、当期差引の確認"),
+    "finance/fixed-assets": ("固定資産台帳・減価償却", "設備・車両等の取得情報、耐用年数、年度償却の管理"),
     "finance/year-end": ("会計年度設定・年度締め", "事業年度の開始月、年度点検、年度確定の管理"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
@@ -700,6 +701,36 @@ class FinanceYearClose(Base):
     closed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FinanceFixedAsset(Base):
+    __tablename__ = "finance_fixed_assets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(150))
+    asset_type: Mapped[str] = mapped_column(String(30), index=True)
+    acquired_on: Mapped[date] = mapped_column(Date, index=True)
+    acquisition_cost: Mapped[int] = mapped_column(Integer)
+    useful_life_years: Mapped[int] = mapped_column(Integer)
+    business_use_percent: Mapped[int] = mapped_column(Integer, default=100)
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    disposed_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceDepreciationPosting(Base):
+    __tablename__ = "finance_depreciation_postings"
+    __table_args__ = (UniqueConstraint("asset_id", "start_year", name="uq_finance_depreciation_asset_year"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    asset_id: Mapped[int] = mapped_column(ForeignKey("finance_fixed_assets.id", ondelete="RESTRICT"), index=True)
+    start_year: Mapped[int] = mapped_column(Integer, index=True)
+    amount: Mapped[int] = mapped_column(Integer)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="RESTRICT"), unique=True)
+    posted_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1703,6 +1734,7 @@ def page_usage_guide(title: str) -> str:
         (("会計操作ログ", "監査証跡", "会計監査"), ["月次締め、仕訳訂正、経費承認、入出金など重要な会計操作を追跡できます。", "実行者、日時、対象番号、処理内容を管理者だけが確認・CSV出力できます。"], ["期間や操作区分で検索します。", "対象番号と概要を確認します。", "監査や税理士共有が必要な場合はCSVを安全に保管します。"], "監査ログは追記専用です。個人情報と取引情報を含むため、CSVは権限管理された場所で保管してください。"),
         (("仕訳帳", "科目別元帳", "会計帳簿"), ["収支台帳を日付順の仕訳帳と費目別集計で確認できます。", "口座を指定すると、その口座の取引と口座間振替だけを抽出できます。"], ["対象年・月、区分、費目、口座を選びます。", "合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "この帳簿は収支台帳を基礎にした管理帳簿です。法定帳簿や複式簿記として利用する場合は、税理士と勘定科目・期首残高を確認してください。"),
         (("月次・年度試算表", "残高試算表"), ["事業年度の開始から指定月末までの口座残高と費目別収支を一覧で確認できます。", "口座ごとの期首残高、入金、支出、振替、期末残高を照合できます。"], ["事業年度と集計月を選びます。", "口座別残高と費目別収支を確認します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の収支台帳を基礎にした管理用試算表です。売掛金・買掛金などを含む複式簿記の法定試算表として利用する場合は、税理士へ確認してください。"),
+        (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
@@ -1753,7 +1785,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4654,6 +4686,7 @@ FINANCE_AUDIT_ACTIONS = {
     "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
     "statement_import": "銀行明細取込", "account_transfer": "口座振替", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
+    "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上",
 }
 
 
@@ -4879,6 +4912,140 @@ def finance_trial_balance_csv(start_year: str = "", through_month: str = "", acc
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-trial-balance-{selected_year}-{period_end:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
+FINANCE_ASSET_TYPES = {"equipment": "設備・機器", "vehicle": "車両", "building": "建物・内装", "software": "ソフトウェア", "other": "その他"}
+
+
+def finance_non_cash_entry_ids(session: Session, tenant_id: int, entry_ids: set[int] | list[int]) -> set[int]:
+    if not entry_ids:
+        return set()
+    return set(session.scalars(select(FinanceDepreciationPosting.financial_entry_id).where(FinanceDepreciationPosting.tenant_id == tenant_id, FinanceDepreciationPosting.financial_entry_id.in_(entry_ids))).all())
+
+
+def finance_depreciation_amount(asset: FinanceFixedAsset, period_start: date, period_end: date, posted_total: int) -> int:
+    business_cost = asset.acquisition_cost * asset.business_use_percent // 100
+    remaining = max(0, business_cost - posted_total)
+    if not remaining or asset.acquired_on > period_end or (asset.disposed_on and asset.disposed_on < period_start):
+        return 0
+    annual = max(1, business_cost // asset.useful_life_years)
+    calculation_start = max(period_start, asset.acquired_on.replace(day=1))
+    calculation_end = min(period_end, asset.disposed_on or period_end)
+    months = (calculation_end.year - calculation_start.year) * 12 + calculation_end.month - calculation_start.month + 1
+    return min(remaining, annual * max(0, months) // 12)
+
+
+@app.get("/modules/finance/fixed-assets", response_class=HTMLResponse)
+def finance_fixed_assets_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
+    start_month = setting.start_month if setting else 1
+    try:
+        selected_year = int(start_year) if start_year else (date.today().year if date.today().month >= start_month else date.today().year - 1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    if selected_year < 2000 or selected_year > 2099:
+        raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(selected_year, start_month)
+    assets = session.scalars(select(FinanceFixedAsset).where(FinanceFixedAsset.tenant_id == tenant.id).order_by(FinanceFixedAsset.acquired_on.desc(), FinanceFixedAsset.id.desc()).limit(1000)).all()
+    postings = session.scalars(select(FinanceDepreciationPosting).where(FinanceDepreciationPosting.tenant_id == tenant.id)).all()
+    posted_by_asset: dict[int, int] = {}
+    current_postings = {item.asset_id: item for item in postings if item.start_year == selected_year}
+    for item in postings:
+        posted_by_asset[item.asset_id] = posted_by_asset.get(item.asset_id, 0) + item.amount
+    rows = ""; cards = ""
+    for asset in assets:
+        estimate = finance_depreciation_amount(asset, period_start, period_end, posted_by_asset.get(asset.id, 0))
+        posted = current_postings.get(asset.id)
+        state = "計上済み" if posted else ("計上対象" if estimate else "対象外")
+        action = f'<form class="inline" method="post" action="/modules/finance/fixed-assets/{asset.id}/depreciate"><input type="hidden" name="start_year" value="{selected_year}"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 金額を確認</label><button>¥{estimate:,}を計上</button></form>' if estimate and not posted and period_end <= date.today() else ""
+        dispose = f'<form class="inline" method="post" action="/modules/finance/fixed-assets/{asset.id}/dispose"><input type="date" name="disposed_on" min="{asset.acquired_on}" max="{date.today()}" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 除却を確認</label><button class="danger">除却</button></form>' if asset.status == "active" else ""
+        label = html.escape(FINANCE_ASSET_TYPES.get(asset.asset_type, asset.asset_type))
+        rows += f'<tr><td>{html.escape(asset.name)}</td><td>{label}</td><td>{asset.acquired_on}</td><td>¥{asset.acquisition_cost:,}</td><td>{asset.useful_life_years}年／{asset.business_use_percent}%</td><td>¥{posted_by_asset.get(asset.id, 0):,}</td><td><span class="badge">{state}</span>{action}{dispose}</td></tr>'
+        cards += f'<article class="calendar-mobile-card"><h3>{html.escape(asset.name)}／{label}</h3><p>{asset.acquired_on}取得／¥{asset.acquisition_cost:,}／{asset.useful_life_years}年／事業使用{asset.business_use_percent}%</p><p>累計償却 ¥{posted_by_asset.get(asset.id, 0):,}／<span class="badge">{state}</span></p>{action}{dispose}</article>'
+    options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ASSET_TYPES.items())
+    body = f'''<h1>固定資産台帳・減価償却</h1><p>設備・機器・車両等の取得情報を登録し、事業年度ごとの定額法による管理用償却額を確認します。</p>
+    <form method="get"><label>表示する事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button> <a class="button secondary" href="/modules/finance/fixed-assets.csv?start_year={selected_year}">CSV出力</a></form>
+    <p class="tenant">対象期間：{period_start}～{period_end}。耐用年数、少額資産、償却方法、事業使用割合は税理士へ確認してください。終了前の事業年度は経費計上できません。</p>
+    <h2>固定資産を登録</h2><form method="post" action="/modules/finance/fixed-assets"><div class="grid"><div><label>資産名</label><input name="name" maxlength="150" required></div><div><label>種類</label><select name="asset_type">{options}</select></div><div><label>取得日</label><input type="date" name="acquired_on" max="{date.today()}" required></div><div><label>取得価額</label><input type="number" name="acquisition_cost" min="1" max="999999999" required></div><div><label>耐用年数</label><input type="number" name="useful_life_years" min="1" max="50" required></div><div><label>事業使用割合（%）</label><input type="number" name="business_use_percent" min="1" max="100" value="100" required></div></div><label>メモ</label><input name="notes" maxlength="500"><button>固定資産を登録</button></form>
+    <h2>固定資産台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>資産名</th><th>種類</th><th>取得日</th><th>取得価額</th><th>耐用年数・事業使用</th><th>累計償却</th><th>状態・操作</th></tr>{rows or '<tr><td colspan="7">固定資産は登録されていません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">固定資産は登録されていません。</div>'}</section>'''
+    return layout("固定資産台帳・減価償却", body, user)
+
+
+@app.get("/modules/finance/fixed-assets.csv")
+def finance_fixed_assets_csv(start_year: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
+    if start_year < 2000 or start_year > 2099:
+        raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(start_year, setting.start_month if setting else 1)
+    assets = session.scalars(select(FinanceFixedAsset).where(FinanceFixedAsset.tenant_id == tenant.id).order_by(FinanceFixedAsset.acquired_on, FinanceFixedAsset.id).limit(1000)).all()
+    postings = session.scalars(select(FinanceDepreciationPosting).where(FinanceDepreciationPosting.tenant_id == tenant.id)).all()
+    posted_by_asset: dict[int, int] = {}
+    current_by_asset: dict[int, int] = {}
+    for item in postings:
+        posted_by_asset[item.asset_id] = posted_by_asset.get(item.asset_id, 0) + item.amount
+        if item.start_year == start_year:
+            current_by_asset[item.asset_id] = item.amount
+    rows = [[asset.id, asset.name, FINANCE_ASSET_TYPES.get(asset.asset_type, asset.asset_type), asset.acquired_on, asset.acquisition_cost, asset.useful_life_years, asset.business_use_percent, "使用中" if asset.status == "active" else "除却済み", asset.disposed_on or "", current_by_asset.get(asset.id, 0), posted_by_asset.get(asset.id, 0), 0 if asset.id in current_by_asset else finance_depreciation_amount(asset, period_start, period_end, posted_by_asset.get(asset.id, 0)), asset.notes or ""] for asset in assets]
+    content = finance_export_csv(["資産ID", "資産名", "種類", "取得日", "取得価額", "耐用年数", "事業使用割合", "状態", "除却日", "当年度計上額", "累計償却額", "当年度未計上見込", "メモ"], rows)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-fixed-assets-{start_year}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/modules/finance/fixed-assets")
+def finance_fixed_asset_create(name: str = Form(...), asset_type: str = Form(...), acquired_on: str = Form(...), acquisition_cost: int = Form(...), useful_life_years: int = Form(...), business_use_percent: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    clean_name = name.strip()
+    try:
+        acquired_day = date.fromisoformat(acquired_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="取得日を確認してください")
+    if not clean_name or len(clean_name) > 150 or asset_type not in FINANCE_ASSET_TYPES or acquired_day < date(2000, 1, 1) or acquired_day > date.today() or acquisition_cost <= 0 or acquisition_cost > 999999999 or useful_life_years < 1 or useful_life_years > 50 or business_use_percent < 1 or business_use_percent > 100 or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="固定資産の登録内容を確認してください")
+    asset = FinanceFixedAsset(tenant_id=tenant.id, name=clean_name, asset_type=asset_type, acquired_on=acquired_day, acquisition_cost=acquisition_cost, useful_life_years=useful_life_years, business_use_percent=business_use_percent, notes=notes.strip() or None, created_by_id=user.id)
+    session.add(asset); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "fixed_asset_create", "finance_fixed_asset", asset.id, "固定資産を登録", f"cost={acquisition_cost} life={useful_life_years} use={business_use_percent}")
+    session.commit()
+    return RedirectResponse("/modules/finance/fixed-assets", status_code=303)
+
+
+@app.post("/modules/finance/fixed-assets/{asset_id}/depreciate")
+def finance_fixed_asset_depreciate(asset_id: int, start_year: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    asset = session.scalar(select(FinanceFixedAsset).where(FinanceFixedAsset.id == asset_id, FinanceFixedAsset.tenant_id == tenant.id).with_for_update())
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
+    if start_year < 2000 or start_year > 2099:
+        raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(start_year, setting.start_month if setting else 1)
+    existing = session.scalar(select(FinanceDepreciationPosting.id).where(FinanceDepreciationPosting.tenant_id == tenant.id, FinanceDepreciationPosting.asset_id == asset_id, FinanceDepreciationPosting.start_year == start_year))
+    posted_total = session.scalar(select(func.coalesce(func.sum(FinanceDepreciationPosting.amount), 0)).where(FinanceDepreciationPosting.tenant_id == tenant.id, FinanceDepreciationPosting.asset_id == asset_id)) or 0
+    amount = finance_depreciation_amount(asset, period_start, period_end, posted_total) if asset else 0
+    if not confirmed or not asset or existing or period_end > date.today() or amount <= 0:
+        raise HTTPException(status_code=400, detail="減価償却の計上内容を確認してください")
+    ensure_finance_period_open(session, tenant.id, period_end)
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=period_end, entry_type="expense", category="facility", description=f"減価償却費：{asset.name}", amount=amount, notes=f"固定資産#{asset.id}／{period_start}～{period_end}")
+    session.add(entry); session.flush()
+    posting = FinanceDepreciationPosting(tenant_id=tenant.id, asset_id=asset.id, start_year=start_year, amount=amount, financial_entry_id=entry.id, posted_by_id=user.id)
+    session.add(posting); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "depreciation_post", "finance_depreciation_posting", posting.id, "減価償却費を台帳計上", f"asset={asset.id} ledger={entry.id} amount={amount}")
+    session.commit()
+    return RedirectResponse(f"/modules/finance/fixed-assets?start_year={start_year}", status_code=303)
+
+
+@app.post("/modules/finance/fixed-assets/{asset_id}/dispose")
+def finance_fixed_asset_dispose(asset_id: int, disposed_on: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    asset = session.scalar(select(FinanceFixedAsset).where(FinanceFixedAsset.id == asset_id, FinanceFixedAsset.tenant_id == tenant.id).with_for_update())
+    try:
+        disposed_day = date.fromisoformat(disposed_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="除却日を確認してください")
+    if not confirmed or not asset or asset.status != "active" or disposed_day < asset.acquired_on or disposed_day > date.today():
+        raise HTTPException(status_code=400, detail="固定資産の除却内容を確認してください")
+    asset.status = "disposed"; asset.disposed_on = disposed_day
+    record_finance_audit(session, tenant.id, user.id, "fixed_asset_dispose", "finance_fixed_asset", asset.id, "固定資産を除却", f"disposed_on={disposed_day}")
+    session.commit()
+    return RedirectResponse("/modules/finance/fixed-assets", status_code=303)
+
+
 @app.get("/modules/finance/year-end", response_class=HTMLResponse)
 def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -4898,8 +5065,9 @@ def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_ad
     month_rows = "".join(f'<tr><td>{year}年{month}月</td><td><span class="badge">{"締め済み" if (year, month) in closed_months else "未締め"}</span></td><td><a class="button secondary" href="/modules/finance/closing?month={year:04d}-{month:02d}">月次締めを確認</a></td></tr>' for year, month in months)
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end)).all()
     entry_ids = {item.id for item in entries}
+    non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, entry_ids)
     assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
-    unassigned_count = len(entry_ids - assigned_ids)
+    unassigned_count = len(entry_ids - assigned_ids - non_cash_ids)
     pending_count = session.scalar(select(func.count(FinanceExpenseRequest.id)).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.status == "pending", FinanceExpenseRequest.expense_on >= period_start, FinanceExpenseRequest.expense_on <= period_end)) or 0
     unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched", FinanceStatementLine.transacted_on >= period_start, FinanceStatementLine.transacted_on <= period_end)) or 0
     monthly_closed_count = sum((year, month) in closed_months for year, month in months)
@@ -4956,8 +5124,9 @@ def finance_year_close(start_year: int = Form(...), notes: str = Form(""), confi
     unmatched = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched", FinanceStatementLine.transacted_on >= period_start, FinanceStatementLine.transacted_on <= period_end)) or 0
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end)).all()
     entry_ids = {item.id for item in entries}
+    non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, entry_ids)
     assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
-    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids:
+    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids - non_cash_ids:
         raise HTTPException(status_code=409, detail="月次締めまたは未処理項目を確認してください")
     close_item = FinanceYearClose(tenant_id=tenant.id, start_year=start_year, period_start=period_start, period_end=period_end, income_total=sum(item.amount for item in entries if item.entry_type == "income"), expense_total=sum(item.amount for item in entries if item.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None)
     session.add(close_item); session.flush()
@@ -4989,18 +5158,19 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end)).all()
     entry_ids = [item.id for item in entries]
+    non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, entry_ids)
     assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
-    expense_ids = [item.id for item in entries if item.entry_type == "expense"]
+    expense_ids = [item.id for item in entries if item.entry_type == "expense" and item.id not in non_cash_ids]
     documented_ids = set(session.scalars(select(FinanceDocument.financial_entry_id).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(expense_ids))).all()) if expense_ids else set()
     income_total = sum(item.amount for item in entries if item.entry_type == "income")
     expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
-    unassigned_count = len(set(entry_ids) - assigned_ids)
+    unassigned_count = len(set(entry_ids) - assigned_ids - non_cash_ids)
     missing_document_count = len(set(expense_ids) - documented_ids)
     statement_unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.transacted_on >= first_day, FinanceStatementLine.transacted_on <= month_end, FinanceStatementLine.status == "unmatched")) or 0
     correction_count = (session.scalar(select(func.count(FinanceEntryCorrection.id)).where(FinanceEntryCorrection.tenant_id == tenant.id, FinanceEntryCorrection.reversal_entry_id.in_(entry_ids))) or 0) if entry_ids else 0
     tax_classifications = session.scalars(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant.id, FinanceTaxClassification.financial_entry_id.in_(entry_ids))).all() if entry_ids else []
     tax_by_entry = {item.financial_entry_id: item for item in tax_classifications}
-    tax_unclassified_count = len(entries) - len(tax_by_entry)
+    tax_unclassified_count = len(set(entry_ids) - non_cash_ids - set(tax_by_entry))
     invoice_unconfirmed_count = sum(1 for item in entries if item.entry_type == "expense" and item.id in tax_by_entry and tax_by_entry[item.id].tax_category == "taxable" and tax_by_entry[item.id].invoice_status == "unconfirmed")
     active_accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
     reconciliation_day = min(month_end, date.today())
@@ -5112,7 +5282,7 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
 
 def finance_source_entry_ids(session: Session, tenant_id: int) -> set[int]:
     source_ids: set[int] = set()
-    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (FinanceExpenseRequest, FinanceExpenseRequest.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id)):
+    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (FinanceExpenseRequest, FinanceExpenseRequest.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id), (FinanceDepreciationPosting, FinanceDepreciationPosting.financial_entry_id)):
         source_ids.update(value for value in session.scalars(select(column).where(model.tenant_id == tenant_id, column.is_not(None))).all() if value)
     return source_ids
 
@@ -5870,6 +6040,7 @@ def finance_accounts_page(access=Depends(require_tenant_user), session: Session 
     entry_ids = [item.financial_entry_id for item in assignments]
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id)).all()
     entries_by_id = {item.id: item for item in entries}; assigned_ids = set(entry_ids)
+    non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, list(entries_by_id))
     transfers = session.scalars(select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant.id).order_by(FinanceAccountTransfer.transferred_on.desc(), FinanceAccountTransfer.id.desc())).all()
     balances = {item.id: item.opening_balance for item in accounts}
     for assignment in assignments:
@@ -5881,7 +6052,7 @@ def finance_accounts_page(access=Depends(require_tenant_user), session: Session 
     account_cards = "".join(f'<div class="module"><h3>{html.escape(item.name)}</h3><p>{FINANCE_ACCOUNT_TYPES.get(item.account_type, item.account_type)}</p><p><strong class="{"error" if balances[item.id] < 0 else ""}" style="font-size:25px">¥{balances[item.id]:,}</strong></p></div>' for item in accounts)
     active_accounts = [item for item in accounts if item.active]
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_accounts)
-    unassigned = [item for item in sorted(entries, key=lambda value: (value.occurred_on, value.id), reverse=True) if item.id not in assigned_ids][:100]
+    unassigned = [item for item in sorted(entries, key=lambda value: (value.occurred_on, value.id), reverse=True) if item.id not in assigned_ids and item.id not in non_cash_ids][:100]
     unassigned_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(item.description)}／¥{item.amount:,}</option>' for item in unassigned)
     transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.from_account_id), "不明"))}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.to_account_id), "不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in transfers[:50])
     type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ACCOUNT_TYPES.items())

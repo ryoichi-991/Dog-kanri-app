@@ -1191,6 +1191,78 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("月次・年度試算表", "期首残高", "期末残高", "CSV", "法定試算表"):
             self.assertIn(marker, guide_source)
 
+    def test_fixed_asset_models_are_tenant_scoped_and_depreciation_is_unique(self):
+        asset = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFixedAsset")
+        asset_source = ast.get_source_segment(SOURCE, asset)
+        for marker in ('__tablename__ = "finance_fixed_assets"', "tenant_id", "acquired_on", "acquisition_cost", "useful_life_years", "business_use_percent", "disposed_on", "created_by_id"):
+            self.assertIn(marker, asset_source)
+        posting = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceDepreciationPosting")
+        posting_source = ast.get_source_segment(SOURCE, posting)
+        for marker in ('__tablename__ = "finance_depreciation_postings"', 'UniqueConstraint("asset_id", "start_year"', "tenant_id", "amount", "financial_entry_id", "posted_by_id"):
+            self.assertIn(marker, posting_source)
+
+    def test_depreciation_calculation_caps_remaining_and_prorates_months(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_depreciation_amount")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("business_use_percent", "remaining", "asset.useful_life_years", "calculation_start", "calculation_end", "months", "annual * max(0, months) // 12", "min(remaining"):
+            self.assertIn(marker, segment)
+
+    def test_fixed_asset_page_is_admin_tenant_scoped_mobile_and_warns_tax_review(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_assets_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", "FinanceDepreciationPosting.tenant_id == tenant.id", ".limit(1000)", "finance_depreciation_amount", "calendar-desktop-only", "calendar-mobile-card", "税理士", "終了前の事業年度は経費計上できません"):
+            self.assertIn(marker, segment)
+
+    def test_fixed_asset_create_validates_fields_and_writes_audit(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_asset_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "asset_type not in FINANCE_ASSET_TYPES", "acquired_day > date.today()", "acquisition_cost > 999999999", "useful_life_years > 50", "business_use_percent > 100", "FinanceFixedAsset(", "record_finance_audit", '"fixed_asset_create"'):
+            self.assertIn(marker, segment)
+
+    def test_fixed_asset_csv_is_admin_scoped_bounded_and_private(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_assets_csv")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", "FinanceDepreciationPosting.tenant_id == tenant.id", ".limit(1000)", "finance_depreciation_amount", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, segment)
+
+    def test_depreciation_post_is_locked_idempotent_and_links_ledger(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_asset_depreciate")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", ".with_for_update()", "FinanceDepreciationPosting.tenant_id == tenant.id", "existing", "period_end > date.today()", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', 'category="facility"', "FinanceDepreciationPosting(", "financial_entry_id=entry.id", '"depreciation_post"'):
+            self.assertIn(marker, segment)
+
+    def test_depreciation_is_non_cash_and_exempt_from_account_close_checks(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_non_cash_entry_ids")
+        helper_source = ast.get_source_segment(SOURCE, helper)
+        for marker in ("FinanceDepreciationPosting.financial_entry_id", "FinanceDepreciationPosting.tenant_id == tenant_id", ".in_(entry_ids)"):
+            self.assertIn(marker, helper_source)
+        year_page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_end_page"))
+        year_close = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_close"))
+        month_page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page"))
+        accounts_page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_accounts_page"))
+        for segment in (year_page, year_close, month_page, accounts_page):
+            self.assertIn("finance_non_cash_entry_ids", segment)
+        self.assertIn("entry_ids - assigned_ids - non_cash_ids", year_close)
+        self.assertIn("item.id not in non_cash_ids", accounts_page)
+        source_helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids"))
+        self.assertIn("FinanceDepreciationPosting", source_helper)
+
+    def test_fixed_asset_dispose_is_confirmed_scoped_and_audited(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fixed_asset_dispose")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceFixedAsset.tenant_id == tenant.id", ".with_for_update()", "not confirmed", 'asset.status != "active"', "disposed_day < asset.acquired_on", "disposed_day > date.today()", 'asset.status = "disposed"', '"fixed_asset_dispose"'):
+            self.assertIn(marker, segment)
+
+    def test_fixed_assets_have_navigation_guide_and_audit_actions(self):
+        self.assertIn('"finance/fixed-assets": ("固定資産台帳・減価償却"', SOURCE)
+        self.assertIn('href="/modules/finance/fixed-assets"', SOURCE)
+        for marker in ('"fixed_asset_create": "固定資産登録"', '"fixed_asset_dispose": "固定資産除却"', '"depreciation_post": "減価償却計上"'):
+            self.assertIn(marker, SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("固定資産", "減価償却", "取得価額", "耐用年数", "税理士", "定額法"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
