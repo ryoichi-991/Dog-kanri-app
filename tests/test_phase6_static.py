@@ -1251,27 +1251,27 @@ class Phase6StaticTests(unittest.TestCase):
     def test_statement_report_data_is_tenant_scoped_bounded_and_complete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_report_data")
         segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ("FinancialEntry.tenant_id == tenant_id", "FinanceAccount.tenant_id == tenant_id", "Invoice.tenant_id == tenant_id", "FinancePayable.tenant_id == tenant_id", "FinanceFixedAsset.tenant_id == tenant_id", "FinanceDepreciationPosting.tenant_id == tenant_id", ".limit(10000)", ".limit(1000)", "finance_account_balance_on", "profit_categories", "cash_assets", "fixed_assets"):
+        for marker in ("finance_double_entry_data", "signed_balances", 'line.amount if line.side == "debit" else -line.amount', "statement_balances", 'account.account_type in {"asset", "expense"}', "accounts, subaccounts, journals, lines"):
             self.assertIn(marker, segment)
 
     def test_statement_report_page_is_admin_only_fiscal_mobile_and_warns_estimate(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statements_report_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_trial_balance_period", "finance_statement_report_data", "損益計算書", "簡易貸借対照表", "当期利益", "資産合計", "負債・純資産合計", "calendar-desktop-only", "calendar-mobile-card", "正式な決算書・税務申告", "/modules/finance/statements-report.csv"):
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_trial_balance_period", "finance_statement_report_data", "income_total", "expense_total", "equity_total", "equation_difference", "損益計算書", "貸借対照表", "当期利益", "資産合計", "負債・純資産・当期利益合計", "貸借差額", "calendar-desktop-only", "calendar-mobile-card", "正式な決算書・税務申告", "/modules/finance/statements-report.csv", "/modules/finance/general-ledger"):
             self.assertIn(marker, segment)
 
     def test_statement_report_csv_is_private_formula_safe_and_has_both_reports(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statements_report_csv")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "finance_trial_balance_period", "finance_statement_report_data", '"損益計算書"', '"簡易貸借対照表"', '"純資産"', "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+        for marker in ("require_tenant_admin", "finance_trial_balance_period", "finance_statement_report_data", '"損益計算書"', '"貸借対照表"', 'item.account_type == "equity"', "equity_total", '"貸借差額"', "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
             self.assertIn(marker, segment)
 
     def test_statement_reports_have_module_navigation_and_guide(self):
-        self.assertIn('"finance/statements-report": ("損益計算書・簡易貸借対照表"', SOURCE)
+        self.assertIn('"finance/statements-report": ("損益計算書・貸借対照表"', SOURCE)
         self.assertIn('href="/modules/finance/statements-report"', SOURCE)
         guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
         guide_source = ast.get_source_segment(SOURCE, guide)
-        for marker in ("損益計算書", "簡易貸借対照表", "収益", "費用", "資産", "負債", "純資産", "複式簿記化"):
+        for marker in ("損益計算書", "貸借対照表", "収益", "費用", "資産", "負債", "純資産", "複式仕訳"):
             self.assertIn(marker, guide_source)
 
     def test_chart_account_models_are_tenant_scoped_unique_and_audited(self):
