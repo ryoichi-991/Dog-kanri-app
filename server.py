@@ -74,6 +74,7 @@ MODULES = {
     "finance/audit": ("会計操作ログ・監査証跡", "会計操作の実行者、日時、対象、処理内容の追跡"),
     "finance/books": ("仕訳帳・科目別元帳", "日付順、費目別、口座別の会計帳簿とCSV出力"),
     "finance/trial-balance": ("月次・年度試算表", "事業年度内の口座残高、費目別収支、当期差引の確認"),
+    "finance/statements-report": ("損益計算書・簡易貸借対照表", "事業年度の収益・費用・資産・負債・純資産の確認"),
     "finance/fixed-assets": ("固定資産台帳・減価償却", "設備・車両等の取得情報、耐用年数、年度償却の管理"),
     "finance/year-end": ("会計年度設定・年度締め", "事業年度の開始月、年度点検、年度確定の管理"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
@@ -1734,6 +1735,7 @@ def page_usage_guide(title: str) -> str:
         (("会計操作ログ", "監査証跡", "会計監査"), ["月次締め、仕訳訂正、経費承認、入出金など重要な会計操作を追跡できます。", "実行者、日時、対象番号、処理内容を管理者だけが確認・CSV出力できます。"], ["期間や操作区分で検索します。", "対象番号と概要を確認します。", "監査や税理士共有が必要な場合はCSVを安全に保管します。"], "監査ログは追記専用です。個人情報と取引情報を含むため、CSVは権限管理された場所で保管してください。"),
         (("仕訳帳", "科目別元帳", "会計帳簿"), ["収支台帳を日付順の仕訳帳と費目別集計で確認できます。", "口座を指定すると、その口座の取引と口座間振替だけを抽出できます。"], ["対象年・月、区分、費目、口座を選びます。", "合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "この帳簿は収支台帳を基礎にした管理帳簿です。法定帳簿や複式簿記として利用する場合は、税理士と勘定科目・期首残高を確認してください。"),
         (("月次・年度試算表", "残高試算表"), ["事業年度の開始から指定月末までの口座残高と費目別収支を一覧で確認できます。", "口座ごとの期首残高、入金、支出、振替、期末残高を照合できます。"], ["事業年度と集計月を選びます。", "口座別残高と費目別収支を確認します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の収支台帳を基礎にした管理用試算表です。売掛金・買掛金などを含む複式簿記の法定試算表として利用する場合は、税理士へ確認してください。"),
+        (("損益計算書", "簡易貸借対照表", "財務諸表"), ["事業年度の開始から指定月末までの収益、費用、利益を損益計算書形式で確認できます。", "口座残高、売掛金、固定資産、買掛金から簡易的な資産・負債・純資産を確認できます。"], ["事業年度と集計月を選びます。", "損益計算書と簡易貸借対照表の内訳を照合します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の登録データを基礎にした経営管理用の概算です。正式な決算書・税務申告には、複式簿記化後の残高と税理士の確認が必要です。"),
         (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
@@ -1785,7 +1787,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4910,6 +4912,70 @@ def finance_trial_balance_csv(start_year: str = "", through_month: str = "", acc
     rows.append(["集計", "当期差引", "", income_total, expense_total, "", "", income_total - expense_total])
     content = finance_export_csv(["種別", "口座・費目", "期首残高", "入金・収益", "支出・費用", "振替入", "振替出", "期末残高・差引"], rows)
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-trial-balance-{selected_year}-{period_end:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+def finance_statement_report_data(session: Session, tenant_id: int, selected_year: int, period_start: date, period_end: date):
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end).order_by(FinancialEntry.occurred_on, FinancialEntry.id).limit(10000)).all()
+    profit_categories: dict[tuple[str, str], int] = {}
+    for item in entries:
+        key = (item.entry_type, item.category)
+        profit_categories[key] = profit_categories.get(key, 0) + item.amount
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant_id, FinanceAccount.active.is_(True)).order_by(FinanceAccount.name, FinanceAccount.id).limit(1000)).all()
+    cash_assets = [(item.name, finance_account_balance_on(session, tenant_id, item, period_end)) for item in accounts]
+    receivables = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant_id, Invoice.issued_on <= period_end, Invoice.status == "issued", Invoice.ledger_entry_id.is_(None)).order_by(Invoice.issued_on, Invoice.id).limit(1000)).all()
+    payables = session.scalars(select(FinancePayable).where(FinancePayable.tenant_id == tenant_id, FinancePayable.received_on <= period_end, FinancePayable.status == "unpaid").order_by(FinancePayable.received_on, FinancePayable.id).limit(1000)).all()
+    assets = session.scalars(select(FinanceFixedAsset).where(FinanceFixedAsset.tenant_id == tenant_id, FinanceFixedAsset.acquired_on <= period_end).order_by(FinanceFixedAsset.acquired_on, FinanceFixedAsset.id).limit(1000)).all()
+    postings = session.scalars(select(FinanceDepreciationPosting).where(FinanceDepreciationPosting.tenant_id == tenant_id, FinanceDepreciationPosting.start_year <= selected_year)).all()
+    depreciation_by_asset: dict[int, int] = {}
+    for item in postings:
+        depreciation_by_asset[item.asset_id] = depreciation_by_asset.get(item.asset_id, 0) + item.amount
+    fixed_assets = [(item.name, max(0, item.acquisition_cost * item.business_use_percent // 100 - depreciation_by_asset.get(item.id, 0))) for item in assets if not item.disposed_on or item.disposed_on > period_end]
+    return entries, profit_categories, cash_assets, receivables, payables, fixed_assets
+
+
+@app.get("/modules/finance/statements-report", response_class=HTMLResponse)
+def finance_statements_report_page(start_year: str = "", through_month: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
+    start_month = setting.start_month if setting else 1
+    selected_year, period_start, period_end = finance_trial_balance_period(start_year, through_month, start_month)
+    entries, categories, cash_assets, receivables, payables, fixed_assets = finance_statement_report_data(session, tenant.id, selected_year, period_start, period_end)
+    income_total = sum(item.amount for item in entries if item.entry_type == "income")
+    expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
+    profit = income_total - expense_total
+    profit_rows = "".join(f'<tr><td>{"収益" if entry_type == "income" else "費用"}</td><td>{html.escape(FINANCE_CATEGORIES.get(category, category))}</td><td>¥{amount:,}</td></tr>' for (entry_type, category), amount in sorted(categories.items(), key=lambda pair: (pair[0][0], pair[0][1])))
+    cash_total = sum(amount for _, amount in cash_assets); receivable_total = sum(item.amount for item in receivables); fixed_total = sum(amount for _, amount in fixed_assets)
+    asset_total = cash_total + receivable_total + fixed_total; liability_total = sum(item.amount for item in payables); net_assets = asset_total - liability_total
+    cash_rows = "".join(f'<tr><td>現金・預金</td><td>{html.escape(name)}</td><td class="{"error" if amount < 0 else ""}">{"-" if amount < 0 else ""}¥{abs(amount):,}</td></tr>' for name, amount in cash_assets)
+    fixed_rows = "".join(f'<tr><td>固定資産</td><td>{html.escape(name)}</td><td>¥{amount:,}</td></tr>' for name, amount in fixed_assets)
+    fiscal_month_options = "".join(f'<option value="{year:04d}-{month:02d}" {"selected" if period_end.year == year and period_end.month == month else ""}>{year}年{month}月</option>' for year, month in finance_fiscal_months(period_start))
+    query_string = urlencode({"start_year": selected_year, "through_month": f"{period_end:%Y-%m}"})
+    body = f'''<h1>損益計算書・簡易貸借対照表</h1><p>登録済み会計データから、事業年度の損益と指定月末の財政状態を確認します。</p>
+    <form method="get"><div class="grid"><div><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required></div><div><label>集計月</label><select name="through_month">{fiscal_month_options}</select></div></div><button>財務諸表を表示</button> <a class="button secondary" href="/modules/finance/statements-report.csv?{query_string}">CSV出力</a></form>
+    <p class="tenant">対象期間：{period_start}～{period_end}。現在の入金・支出と未決済情報を基礎にした経営管理用の概算です。正式な決算書・税務申告には複式簿記化と税理士の確認が必要です。</p>
+    <h2>損益計算書</h2><div class="grid"><div class="module"><h3>収益合計</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>費用合計</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>当期利益</h3><strong class="{'error' if profit < 0 else ''}">{'-' if profit < 0 else ''}¥{abs(profit):,}</strong></div></div><table><tr><th>区分</th><th>費目</th><th>金額</th></tr>{profit_rows or '<tr><td colspan="3">対象期間の取引はありません。</td></tr>'}<tr><th colspan="2">当期利益</th><th>{'-' if profit < 0 else ''}¥{abs(profit):,}</th></tr></table>
+    <h2>簡易貸借対照表（{period_end}現在）</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>区分</th><th>内訳</th><th>金額</th></tr>{cash_rows}<tr><td>売掛金</td><td>未入金請求 {len(receivables)}件</td><td>¥{receivable_total:,}</td></tr>{fixed_rows}<tr><th colspan="2">資産合計</th><th>¥{asset_total:,}</th></tr><tr><td>負債</td><td>未払・買掛金 {len(payables)}件</td><td>¥{liability_total:,}</td></tr><tr><td>純資産</td><td>資産－負債（概算）</td><td class="{'error' if net_assets < 0 else ''}">{'-' if net_assets < 0 else ''}¥{abs(net_assets):,}</td></tr><tr><th colspan="2">負債・純資産合計</th><th>¥{asset_total:,}</th></tr></table></div>
+    <section class="calendar-mobile-only"><article class="calendar-mobile-card"><h3>資産合計 ¥{asset_total:,}</h3><p>現金・預金 ¥{cash_total:,}／売掛金 ¥{receivable_total:,}／固定資産 ¥{fixed_total:,}</p></article><article class="calendar-mobile-card"><h3>負債・純資産</h3><p>負債 ¥{liability_total:,}／純資産 {'-' if net_assets < 0 else ''}¥{abs(net_assets):,}</p></article></section>'''
+    return layout("損益計算書・簡易貸借対照表", body, user)
+
+
+@app.get("/modules/finance/statements-report.csv")
+def finance_statements_report_csv(start_year: str = "", through_month: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
+    selected_year, period_start, period_end = finance_trial_balance_period(start_year, through_month, setting.start_month if setting else 1)
+    entries, categories, cash_assets, receivables, payables, fixed_assets = finance_statement_report_data(session, tenant.id, selected_year, period_start, period_end)
+    rows = [["損益計算書", "収益" if entry_type == "income" else "費用", FINANCE_CATEGORIES.get(category, category), amount] for (entry_type, category), amount in sorted(categories.items())]
+    income_total = sum(item.amount for item in entries if item.entry_type == "income"); expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
+    rows.append(["損益計算書", "利益", "当期利益", income_total - expense_total])
+    rows.extend([["簡易貸借対照表", "資産", f"現金・預金：{name}", amount] for name, amount in cash_assets])
+    rows.append(["簡易貸借対照表", "資産", "売掛金", sum(item.amount for item in receivables)])
+    rows.extend([["簡易貸借対照表", "資産", f"固定資産：{name}", amount] for name, amount in fixed_assets])
+    rows.append(["簡易貸借対照表", "負債", "未払・買掛金", sum(item.amount for item in payables)])
+    asset_total = sum(amount for _, amount in cash_assets) + sum(item.amount for item in receivables) + sum(amount for _, amount in fixed_assets)
+    rows.append(["簡易貸借対照表", "純資産", "資産－負債（概算）", asset_total - sum(item.amount for item in payables)])
+    content = finance_export_csv(["帳票", "区分", "科目・内訳", "金額"], rows)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-statements-{selected_year}-{period_end:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 FINANCE_ASSET_TYPES = {"equipment": "設備・機器", "vehicle": "車両", "building": "建物・内装", "software": "ソフトウェア", "other": "その他"}
