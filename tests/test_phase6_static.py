@@ -973,6 +973,40 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("経費申請", "従業員", "管理者", "承認者", "申請だけでは台帳へ計上されません", "重複登録"):
             self.assertIn(marker, guide_source)
 
+    def test_finance_expense_document_model_is_tenant_scoped_and_one_per_request(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceExpenseDocument")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ('__tablename__ = "finance_expense_documents"', 'UniqueConstraint("expense_request_id"', "tenant_id", "expense_request_id", "uploaded_by_id", "filename", "content_type", "file_data", "uploaded_at"):
+            self.assertIn(marker, segment)
+
+    def test_finance_expense_document_upload_validates_owner_state_type_extension_and_size(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "finance_expense_request_document_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceExpenseRequest.tenant_id == tenant.id", "FinanceExpenseRequest.requested_by_id == user.id", ".with_for_update()", 'item.status != "pending"', "FinanceExpenseDocument.tenant_id == tenant.id", "document_file.content_type not in allowed_types", "allowed_extensions", "8 * 1024 * 1024 + 1", "len(content) > 8 * 1024 * 1024", "Path(document_file.filename", "uploaded_by_id=user.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_expense_document_view_is_tenant_and_role_protected(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_document_file")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceExpenseRequest.tenant_id == tenant.id", "role not in {Role.admin, Role.employee}", "item.requested_by_id != user.id", "FinanceExpenseDocument.tenant_id == tenant.id", '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, segment)
+
+    def test_finance_expense_approval_requires_and_archives_document(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_approve")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("FinanceExpenseDocument.tenant_id == tenant.id", "FinanceExpenseDocument.expense_request_id == request_id", "not document", "FinanceDocument(", 'document_type="receipt"', "file_data=document.file_data"):
+            self.assertIn(marker, segment)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_requests_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ("defer(FinanceExpenseDocument.file_data)", "documents_by_request", "証憑未登録", "申請者の証憑登録後に承認できます", 'enctype="multipart/form-data"'):
+            self.assertIn(marker, page_source)
+
+    def test_finance_export_includes_expense_request_documents_and_checksums(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("expense_documents", "expense-request-documents/request-", '"expense_request_documents": len(expense_documents)', "document_bytes", "expense_document_files", "checksums"):
+            self.assertIn(marker, segment)
+
 
 if __name__ == "__main__":
     unittest.main()

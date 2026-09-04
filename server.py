@@ -70,7 +70,7 @@ MODULES = {
     "finance/payables": ("取引先・買掛金・支払管理", "支払先、請求額、期限、未払・支払済みの管理"),
     "finance/receivables": ("売掛金・請求書入金消込", "未入金請求、期限超過、口座入金、銀行明細との消込"),
     "finance/corrections": ("仕訳訂正・取消履歴", "元記録を残す反対仕訳、訂正仕訳、理由と操作履歴"),
-    "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、管理者承認、却下、台帳計上"),
+    "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、領収書添付、管理者承認、却下、台帳計上"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -644,6 +644,19 @@ class FinanceExpenseRequest(Base):
     account_id: Mapped[int | None] = mapped_column(ForeignKey("finance_accounts.id", ondelete="SET NULL"), nullable=True)
     financial_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceExpenseDocument(Base):
+    __tablename__ = "finance_expense_documents"
+    __table_args__ = (UniqueConstraint("expense_request_id", name="uq_finance_expense_document_request"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    expense_request_id: Mapped[int] = mapped_column(ForeignKey("finance_expense_requests.id", ondelete="CASCADE"), index=True)
+    uploaded_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(100))
+    file_data: Mapped[bytes] = mapped_column(LargeBinary)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinancePeriodClose(Base):
@@ -1634,7 +1647,7 @@ def page_usage_guide(title: str) -> str:
         (("買掛金", "支払管理", "取引先"), ["仕入先・病院・会場・配送会社などの取引先と未払請求を管理できます。", "支払期限、期限超過、支払済みを確認し、支払時に口座と収支台帳へ一度だけ反映できます。"], ["取引先を登録します。", "請求日・支払期限・費目・請求額を未払として登録します。", "実際の支払日と口座を確認して支払済みにします。"], "支払済み操作は収支台帳へ実際の経費を作成します。二重計上を防ぐため、同じ支払を銀行明細や手入力から重複登録しないでください。"),
         (("売掛金", "入金消込"), ["発行済み請求書の未入金額、期限超過、入金履歴を確認できます。", "口座への直接入金または銀行明細の入金を、請求書と収支台帳へ一度だけ結び付けられます。"], ["請求書を発行済みにします。", "入金日・入金口座を確認するか、銀行明細の一致候補を選びます。", "確認欄を入れて請求書を入金済みにします。"], "同じ入金を手入力と銀行明細の両方から登録しないでください。金額が同じ請求書が複数ある場合は、請求番号とお客様名を必ず確認してください。"),
         (("仕訳訂正", "取消履歴", "反対仕訳"), ["誤った収支記録を削除せず、元記録・反対仕訳・訂正後の記録を一組で残せます。", "訂正理由、実行者、実行日時を記録し、会計データの変更経緯を確認できます。"], ["訂正対象と訂正日を選びます。", "取消のみ、または正しい内容へ訂正を選び、理由を入力します。", "確認欄を入れて管理者が実行します。"], "元記録は削除されません。請求書入金、買掛金支払、定期収支など他機能から作られた記録は、元機能との不整合を防ぐためこの画面では訂正できません。"),
-        (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、管理者が承認または却下できます。", "承認者、承認日時、判断コメントを残し、承認された申請だけを口座と収支台帳へ一度だけ計上できます。"], ["経費日・費目・内容・金額を入力して申請します。", "管理者が申請内容と証憑を確認し、支払口座を選びます。", "確認欄を入れて承認するか、理由を記載して却下します。"], "申請だけでは台帳へ計上されません。承認前に日付・金額・費目・証憑を確認し、同じ経費を手入力や銀行明細から重複登録しないでください。"),
+        (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、領収書やレシートの原本を添付できます。", "管理者は証憑を確認して承認または却下し、承認者、承認日時、判断コメントを残せます。"], ["経費日・費目・内容・金額を入力して申請します。", "申請一覧からPDFまたは写真の証憑を登録します。", "管理者が証憑と支払口座を確認し、承認または却下します。"], "申請だけでは台帳へ計上されません。証憑がない申請は承認できず、承認後も手入力や銀行明細から重複登録しないでください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -4719,6 +4732,9 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         query = query.where(FinanceExpenseRequest.requested_by_id == user.id)
     all_requests = session.scalars(query.order_by(FinanceExpenseRequest.created_at.desc(), FinanceExpenseRequest.id.desc()).limit(1000)).all()
     requests = [item for item in all_requests if not request_status or item.status == request_status]
+    request_ids = [item.id for item in all_requests]
+    expense_documents = session.scalars(select(FinanceExpenseDocument).options(defer(FinanceExpenseDocument.file_data)).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id.in_(request_ids))).all() if request_ids else []
+    documents_by_request = {item.expense_request_id: item for item in expense_documents}
     accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)).order_by(FinanceAccount.name, FinanceAccount.id)).all()
     account_names = {item.id: item.name for item in accounts}
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in accounts)
@@ -4734,8 +4750,13 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         state = {"pending": "承認待ち", "approved": "承認済み", "rejected": "却下", "cancelled": "申請取消"}.get(item.status, item.status)
         requester = html.escape(user_names.get(item.requested_by_id, f"ユーザー#{item.requested_by_id}"))
         reviewer = html.escape(user_names.get(item.reviewed_by_id, "－")) if item.reviewed_by_id else "－"
-        if item.status == "pending" and role == Role.admin and accounts:
+        document = documents_by_request.get(item.id)
+        document_view = f'<a class="button secondary" href="/modules/finance/expense-requests/{item.id}/document" target="_blank">証憑を見る</a>' if document else '<span class="error">証憑未登録</span>'
+        upload_form = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/document" enctype="multipart/form-data"><label>領収書・レシート（PDF・写真／8MB以下）</label><input type="file" name="document_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>証憑を登録</button></form>''' if item.status == "pending" and item.requested_by_id == user.id and not document else ""
+        if item.status == "pending" and role == Role.admin and accounts and document:
             action = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/approve"><select name="account_id">{account_options}</select><input name="review_comment" maxlength="500" placeholder="承認コメント（任意）"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 内容と支払口座を確認しました</label><button class="success">承認して台帳計上</button></form><form method="post" action="/modules/finance/expense-requests/{item.id}/reject"><input name="review_comment" maxlength="500" placeholder="却下理由" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 却下内容を確認しました</label><button class="danger">却下</button></form>'''
+        elif item.status == "pending" and role == Role.admin and not document:
+            action = '<span class="error">申請者の証憑登録後に承認できます</span>'
         elif item.status == "pending" and role == Role.admin:
             action = '<a class="button secondary" href="/modules/finance/accounts">先に支払口座を登録</a>'
         elif item.status == "pending" and item.requested_by_id == user.id:
@@ -4743,14 +4764,14 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         else:
             action = f'台帳 #{item.financial_entry_id}／{html.escape(account_names.get(item.account_id, "口座記録なし"))}' if item.status == "approved" else html.escape(item.review_comment or "－")
         reviewed_label = f'{reviewer}／{item.reviewed_at.strftime("%Y-%m-%d %H:%M")}' if item.reviewed_at else "－"
-        rows += f'<tr><td>{item.expense_on}</td><td>{requester}</td><td>{FINANCE_CATEGORIES.get(item.category, item.category)}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td><span class="badge">{state}</span></td><td>{reviewed_label}</td><td>{action}</td></tr>'
-        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}／¥{item.amount:,}</h3><p>{item.expense_on}／{FINANCE_CATEGORIES.get(item.category, item.category)}／{requester}</p><p><span class="badge">{state}</span>／承認者 {reviewed_label}</p>{action}</article>'''
+        rows += f'<tr><td>{item.expense_on}</td><td>{requester}</td><td>{FINANCE_CATEGORIES.get(item.category, item.category)}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{document_view}{upload_form}</td><td><span class="badge">{state}</span></td><td>{reviewed_label}</td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}／¥{item.amount:,}</h3><p>{item.expense_on}／{FINANCE_CATEGORIES.get(item.category, item.category)}／{requester}</p><p>証憑：{document_view}</p>{upload_form}<p><span class="badge">{state}</span>／承認者 {reviewed_label}</p>{action}</article>'''
     scope_label = "犬舎全体" if role == Role.admin else "自分の申請"
-    body = f'''<h1>経費申請・承認管理</h1><p>従業員の経費申請を管理者が確認し、承認された申請だけを支払口座と収支台帳へ計上します。</p>
+    body = f'''<h1>経費申請・承認管理</h1><p>従業員が経費と領収書・証憑を申請し、管理者が原本を確認した申請だけを支払口座と収支台帳へ計上します。</p>
     <div class="grid"><div class="module"><h3>{scope_label}の承認待ち</h3><strong class="{'error' if pending else ''}">{len(pending)}件</strong><p>¥{sum(item.amount for item in pending):,}</p></div><div class="module"><h3>承認済み</h3><strong>{len(approved)}件</strong><p>¥{sum(item.amount for item in approved):,}</p></div><div class="module"><h3>却下</h3><strong>{len(rejected)}件</strong></div></div>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
-    <h2>経費を申請</h2><form method="post" action="/modules/finance/expense-requests"><div class="grid"><div><label>経費日</label><input type="date" name="expense_on" value="{date.today()}" max="{date.today()}" required></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>申請メモ・証憑の保管場所</label><input name="notes" maxlength="500"><button>承認申請を送る</button></form>
-    <h2>申請一覧</h2><form method="get"><label>状態</label><select name="request_status">{status_options}</select><button>表示</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>経費日</th><th>申請者</th><th>費目</th><th>内容</th><th>金額</th><th>状態</th><th>承認者・日時</th><th>操作・結果</th></tr>{rows or '<tr><td colspan="8">条件に一致する申請はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する申請はありません。</div>'}</section>'''
+    <h2>経費を申請</h2><form method="post" action="/modules/finance/expense-requests"><div class="grid"><div><label>経費日</label><input type="date" name="expense_on" value="{date.today()}" max="{date.today()}" required></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>申請メモ</label><input name="notes" maxlength="500"><button>承認申請を送る</button></form><p class="tenant">申請後、一覧から領収書またはレシートを登録してください。証憑が登録されるまで管理者は承認できません。</p>
+    <h2>申請一覧</h2><form method="get"><label>状態</label><select name="request_status">{status_options}</select><button>表示</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>経費日</th><th>申請者</th><th>費目</th><th>内容</th><th>金額</th><th>証憑</th><th>状態</th><th>承認者・日時</th><th>操作・結果</th></tr>{rows or '<tr><td colspan="9">条件に一致する申請はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する申請はありません。</div>'}</section>'''
     return layout("経費申請・承認管理", body, user)
 
 
@@ -4771,17 +4792,51 @@ def finance_expense_request_create(expense_on: str = Form(...), category: str = 
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
 
+@app.post("/modules/finance/expense-requests/{request_id}/document")
+async def finance_expense_request_document_create(request_id: int, document_file: UploadFile = File(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if tenant_role(user, tenant, session) not in {Role.admin, Role.employee}:
+        raise HTTPException(status_code=403, detail="経費申請を利用できる権限がありません")
+    item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.requested_by_id == user.id).with_for_update())
+    existing = session.scalar(select(FinanceExpenseDocument.id).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id == request_id))
+    filename = Path(document_file.filename or "").name[:255]
+    allowed_types = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
+    allowed_extensions = {"application/pdf": {".pdf"}, "image/jpeg": {".jpg", ".jpeg"}, "image/png": {".png"}, "image/webp": {".webp"}}
+    content = await document_file.read(8 * 1024 * 1024 + 1)
+    suffix = Path(filename).suffix.lower()
+    if not item or item.status != "pending" or existing or document_file.content_type not in allowed_types or suffix not in allowed_extensions.get(document_file.content_type or "", set()) or not filename or not content or len(content) > 8 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="未承認の自分の申請へ、PDF・JPG・PNG・WebPの8MB以下を1件登録してください")
+    session.add(FinanceExpenseDocument(tenant_id=tenant.id, expense_request_id=item.id, uploaded_by_id=user.id, filename=filename, content_type=document_file.content_type, file_data=content))
+    session.commit()
+    return RedirectResponse("/modules/finance/expense-requests", status_code=303)
+
+
+@app.get("/modules/finance/expense-requests/{request_id}/document")
+def finance_expense_request_document_file(request_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    role = tenant_role(user, tenant, session)
+    item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id))
+    if not item or role not in {Role.admin, Role.employee} or (role != Role.admin and item.requested_by_id != user.id):
+        raise HTTPException(status_code=404, detail="証憑が見つかりません")
+    document = session.scalar(select(FinanceExpenseDocument).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id == item.id))
+    if not document:
+        raise HTTPException(status_code=404, detail="証憑が見つかりません")
+    return Response(content=document.file_data, media_type=document.content_type, headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Content-Disposition": f"inline; filename*=UTF-8''{quote(document.filename)}"})
+
+
 @app.post("/modules/finance/expense-requests/{request_id}/approve")
 def finance_expense_request_approve(request_id: int, account_id: int = Form(...), review_comment: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
     item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id).with_for_update())
     account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
-    if not confirmed or not item or item.status != "pending" or item.financial_entry_id or not account or len(review_comment) > 500:
+    document = session.scalar(select(FinanceExpenseDocument).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id == request_id))
+    if not confirmed or not item or item.status != "pending" or item.financial_entry_id or not account or not document or len(review_comment) > 500:
         raise HTTPException(status_code=400, detail="承認内容と支払口座を確認してください")
     ensure_finance_period_open(session, tenant.id, item.expense_on)
     entry = FinancialEntry(tenant_id=tenant.id, occurred_on=item.expense_on, entry_type="expense", category=item.category, amount=item.amount, description=item.description, notes=f"経費申請 #{item.id}／申請者 #{item.requested_by_id}／{item.notes or '申請メモなし'}")
     session.add(entry); session.flush()
     session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
+    session.add(FinanceDocument(tenant_id=tenant.id, financial_entry_id=entry.id, document_type="receipt", issued_by=item.description, filename=document.filename, content_type=document.content_type, file_data=document.file_data))
     item.status = "approved"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = review_comment.strip() or None; item.account_id = account.id; item.financial_entry_id = entry.id
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
@@ -5805,16 +5860,19 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
     entry_ids = [item.id for item in entries]
     invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.issued_on >= year_start, Invoice.issued_on <= year_end).order_by(Invoice.issued_on, Invoice.id)).all()
     expense_requests = session.scalars(select(FinanceExpenseRequest).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.expense_on >= year_start, FinanceExpenseRequest.expense_on <= year_end).order_by(FinanceExpenseRequest.expense_on, FinanceExpenseRequest.id)).all()
+    expense_request_ids = [item.id for item in expense_requests]
+    expense_documents = session.scalars(select(FinanceExpenseDocument).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id.in_(expense_request_ids)).order_by(FinanceExpenseDocument.id)).all() if expense_request_ids else []
+    expense_documents_by_request = {item.expense_request_id: item for item in expense_documents}
     corrections = session.scalars(select(FinanceEntryCorrection).where(FinanceEntryCorrection.tenant_id == tenant.id, (FinanceEntryCorrection.original_entry_id.in_(entry_ids) | FinanceEntryCorrection.reversal_entry_id.in_(entry_ids) | FinanceEntryCorrection.replacement_entry_id.in_(entry_ids))).order_by(FinanceEntryCorrection.corrected_at, FinanceEntryCorrection.id)).all() if entry_ids else []
     allocations = session.scalars(select(CostAllocation).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id.in_(entry_ids)).order_by(CostAllocation.id)).all() if entry_ids else []
     documents = session.scalars(select(FinanceDocument).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(entry_ids)).order_by(FinanceDocument.id)).all() if entry_ids else []
-    document_bytes = sum(len(item.file_data) for item in documents)
-    if document_bytes > 200 * 1024 * 1024 or len(documents) > 5000:
+    document_bytes = sum(len(item.file_data) for item in documents) + sum(len(item.file_data) for item in expense_documents)
+    if document_bytes > 200 * 1024 * 1024 or len(documents) > 5000 or len(expense_documents) > 5000 or len(documents) + len(expense_documents) > 5000:
         raise HTTPException(status_code=413, detail="証憑の合計容量または件数が安全上限を超えています。期間を分けて管理してください")
     entry_map = {item.id: item for item in entries}
     ledger_csv = finance_export_csv(["ID", "日付", "区分", "費目", "内容", "金額", "メモ"], [[item.id, item.occurred_on, "入金" if item.entry_type == "income" else "経費", FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.notes or ""] for item in entries])
     invoice_csv = finance_export_csv(["ID", "請求番号", "発行日", "支払期限", "金額", "状態", "販売案件ID", "台帳ID", "備考"], [[item.id, item.invoice_no, item.issued_on, item.due_on or "", item.amount, INVOICE_STATUSES.get(item.status, item.status), item.puppy_sale_id, item.ledger_entry_id or "", item.notes or ""] for item in invoices])
-    expense_request_csv = finance_export_csv(["ID", "経費日", "費目", "内容", "金額", "状態", "申請者ID", "申請メモ", "承認者ID", "承認日時", "判断コメント", "口座ID", "台帳ID"], [[item.id, item.expense_on, FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.status, item.requested_by_id, item.notes or "", item.reviewed_by_id or "", item.reviewed_at.isoformat() if item.reviewed_at else "", item.review_comment or "", item.account_id or "", item.financial_entry_id or ""] for item in expense_requests])
+    expense_request_csv = finance_export_csv(["ID", "経費日", "費目", "内容", "金額", "状態", "申請者ID", "申請メモ", "証憑ファイル名", "承認者ID", "承認日時", "判断コメント", "口座ID", "台帳ID"], [[item.id, item.expense_on, FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.status, item.requested_by_id, item.notes or "", expense_documents_by_request[item.id].filename if item.id in expense_documents_by_request else "", item.reviewed_by_id or "", item.reviewed_at.isoformat() if item.reviewed_at else "", item.review_comment or "", item.account_id or "", item.financial_entry_id or ""] for item in expense_requests])
     correction_csv = finance_export_csv(["ID", "元仕訳ID", "反対仕訳ID", "訂正後仕訳ID", "処理", "理由", "実行者ID", "実行日時"], [[item.id, item.original_entry_id, item.reversal_entry_id, item.replacement_entry_id or "", "訂正" if item.correction_type == "replace" else "取消", item.reason, item.corrected_by_id, item.corrected_at.isoformat()] for item in corrections])
     allocation_csv = finance_export_csv(["ID", "台帳ID", "台帳内容", "犬ID", "出産回ID", "配賦額", "メモ"], [[item.id, item.financial_entry_id, entry_map[item.financial_entry_id].description, item.dog_id or "", item.litter_id or "", item.amount, item.notes or ""] for item in allocations])
     extension_by_type = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -5824,12 +5882,13 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
         entry = entry_map[item.financial_entry_id]
         document_rows.append([item.id, item.financial_entry_id, entry.occurred_on, entry.description, FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type), item.issued_by or "", item.document_no or "", item.filename, archive_name])
         document_files.append((archive_name, item.file_data))
+    expense_document_files = [(f'expense-request-documents/request-{item.expense_request_id}.{extension_by_type.get(item.content_type, "bin")}', item.file_data) for item in expense_documents]
     documents_csv = finance_export_csv(["ID", "台帳ID", "台帳日付", "台帳内容", "書類種別", "発行元", "書類番号", "元ファイル名", "ZIP内ファイル"], document_rows)
     output = io.BytesIO(); checksums = {}
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for filename, content in [("ledger.csv", ledger_csv), ("invoices.csv", invoice_csv), ("expense-requests.csv", expense_request_csv), ("entry-corrections.csv", correction_csv), ("cost-allocations.csv", allocation_csv), ("documents.csv", documents_csv), *document_files]:
+        for filename, content in [("ledger.csv", ledger_csv), ("invoices.csv", invoice_csv), ("expense-requests.csv", expense_request_csv), ("entry-corrections.csv", correction_csv), ("cost-allocations.csv", allocation_csv), ("documents.csv", documents_csv), *document_files, *expense_document_files]:
             archive.writestr(filename, content); checksums[filename] = hashlib.sha256(content).hexdigest()
-        manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "expense_requests": len(expense_requests), "corrections": len(corrections), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
+        manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "expense_requests": len(expense_requests), "expense_request_documents": len(expense_documents), "corrections": len(corrections), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
     record_operation(session, "finance_export", "success", "会計・証憑一括出力", tenant.id, f"year={year} ledger={len(entries)} invoices={len(invoices)} documents={len(documents)}")
     session.commit()
