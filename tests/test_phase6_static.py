@@ -1118,7 +1118,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_year_end_page_is_admin_scoped_and_checks_twelve_months_and_open_items(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_end_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinancePeriodClose.tenant_id == tenant.id", "FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "FinanceStatementLine.tenant_id == tenant.id", 'FinanceStatementLine.status == "unmatched"', "FinanceAccountEntry.tenant_id == tenant.id", "monthly_closed_count == 12", "unassigned_count == 0", "12か月の締め状況"):
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinancePeriodClose.tenant_id == tenant.id", "FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "FinanceStatementLine.tenant_id == tenant.id", 'FinanceStatementLine.status == "unmatched"', "FinanceAccountEntry.tenant_id == tenant.id", "FinanceJournalEntry.tenant_id == tenant.id", "unjournaled_count", "monthly_closed_count == 12", "unassigned_count == 0", "unjournaled_count == 0", "12か月の締め状況"):
             self.assertIn(marker, segment)
 
     def test_fiscal_setting_is_validated_locked_after_year_close_and_audited(self):
@@ -1130,7 +1130,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_year_close_requires_all_months_and_no_open_items_then_snapshots(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_close")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "not confirmed", "finance_fiscal_period", "finance_fiscal_months", "FinancePeriodClose.tenant_id == tenant.id", "any(month not in monthly_closed", "pending", "unmatched", "entry_ids - assigned_ids", "FinanceYearClose(", "income_total=sum", "expense_total=sum", "record_finance_audit", '"year_close"'):
+        for marker in ("require_tenant_admin", "not confirmed", "finance_fiscal_period", "finance_fiscal_months", "FinancePeriodClose.tenant_id == tenant.id", "any(month not in monthly_closed", "pending", "unmatched", "entry_ids - assigned_ids", "FinanceJournalEntry.source_entry_id.in_(entry_ids)", "entry_ids - journaled_ids", "FinanceYearClose(", "income_total=sum", "expense_total=sum", "record_finance_audit", '"year_close"'):
             self.assertIn(marker, segment)
 
     def test_year_reopen_is_confirmed_locked_and_audited_without_reopening_months(self):
@@ -1292,7 +1292,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_journal_helper_requires_balance_and_valid_tenant_accounts_and_subaccounts(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_journal")
         segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ("debit_total", "credit_total", "debit_total != credit_total", "len(lines) > 20", 'side not in {"debit", "credit"}', "FinanceChartAccount.tenant_id == tenant_id", "FinanceSubaccount.tenant_id == tenant_id", "subaccounts[sub_id].account_id != account_id", "FinanceJournalEntry(", "FinanceJournalLine(", "enumerate(lines, 1)"):
+        for marker in ("debit_total", "credit_total", "debit_total != credit_total", "len(lines) > max_lines", 'side not in {"debit", "credit"}', "FinanceChartAccount.tenant_id == tenant_id", "FinanceSubaccount.tenant_id == tenant_id", "subaccounts[sub_id].account_id != account_id", "FinanceJournalEntry(", "FinanceJournalLine(", "enumerate(lines, 1)"):
             self.assertIn(marker, segment)
 
     def test_journal_page_is_admin_scoped_bounded_mobile_and_shows_unlinked(self):
@@ -1341,6 +1341,53 @@ class Phase6StaticTests(unittest.TestCase):
         guide_source = ast.get_source_segment(SOURCE, guide)
         for marker in ("複式簿記", "仕訳伝票", "借方", "貸方", "貸借不一致", "取消仕訳", "締め済み期間"):
             self.assertIn(marker, guide_source)
+
+    def test_opening_and_carryforward_models_are_tenant_scoped_and_unique(self):
+        opening = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceOpeningBalance"))
+        for marker in ('__tablename__ = "finance_opening_balances"', 'UniqueConstraint("tenant_id", "start_year", "account_id", "subaccount_id"', "balance", "journal_entry_id", "created_by_id"):
+            self.assertIn(marker, opening)
+        carry = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceYearCarryforward"))
+        for marker in ('__tablename__ = "finance_year_carryforwards"', 'UniqueConstraint("tenant_id", "source_start_year"', 'UniqueConstraint("tenant_id", "target_start_year"', "source_year_close_id", "journal_entry_id", "debit_total", "credit_total"):
+            self.assertIn(marker, carry)
+
+    def test_journal_balance_helper_is_tenant_period_scoped_signed_and_bounded(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journal_balances"))
+        for marker in ("FinanceJournalEntry.tenant_id == tenant_id", "FinanceJournalEntry.entry_date >= period_start", "FinanceJournalEntry.entry_date <= period_end", "FinanceJournalLine.tenant_id == tenant_id", ".limit(20000)", 'line.amount if line.side == "debit" else -line.amount'):
+            self.assertIn(marker, helper)
+
+    def test_opening_page_is_admin_scoped_bounded_and_exports_csv(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_opening_balances_page"))
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinanceChartAccount.tenant_id == tenant.id", "FinanceSubaccount.tenant_id == tenant.id", "FinanceOpeningBalance.tenant_id == tenant.id", "FinanceYearCarryforward.tenant_id == tenant.id", ".limit(1000)", ".limit(2000)", ".limit(100)", "/modules/finance/opening-balances.csv"):
+            self.assertIn(marker, page)
+
+    def test_manual_opening_is_balanced_validated_locked_unique_and_audited(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_opening_balance_create"))
+        for marker in ("require_tenant_admin", "not confirmed", "ensure_finance_period_open", "FinanceYearCarryforward.target_start_year == start_year", "FinanceChartAccount.tenant_id == tenant.id", 'account.account_type not in {"asset", "liability"}', 'FinanceChartAccount.system_key == "equity"', "FinanceSubaccount.tenant_id == tenant.id", "duplicate", "finance_create_journal", "opposite", "FinanceOpeningBalance(", '"opening_balance_create"'):
+            self.assertIn(marker, route)
+
+    def test_carryforward_requires_close_no_existing_opening_and_balances_equity(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_carryforward"))
+        for marker in ("require_tenant_admin", "not confirmed", "FinanceYearClose.tenant_id == tenant.id", ".with_for_update()", "FinanceYearCarryforward.target_start_year == target_year", "FinanceOpeningBalance.start_year == target_year", "ensure_finance_period_open", "FinancialEntry.tenant_id == tenant.id", "source_entry_ids - journaled_source_ids", "finance_journal_balances", 'account_type in {"asset", "liability", "equity"}', "active_subaccount_ids != subaccount_ids", "- sum(carried.values())", "max_lines=500", "debit_total", "credit_total", "FinanceYearCarryforward(", '"year_carryforward"'):
+            self.assertIn(marker, route)
+
+    def test_year_reopen_is_blocked_after_carryforward(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_reopen"))
+        for marker in ("FinanceYearCarryforward.tenant_id == tenant.id", "FinanceYearCarryforward.source_start_year == start_year", "carryforward"):
+            self.assertIn(marker, route)
+
+    def test_opening_csv_is_private_bounded_and_formula_safe(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_opening_balances_csv"))
+        for marker in ("require_tenant_admin", "start_year < 2000", "start_year > 2099", "FinanceOpeningBalance.tenant_id == tenant.id", ".limit(2000)", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, route)
+
+    def test_opening_balances_have_navigation_guide_and_audit_actions(self):
+        self.assertIn('"finance/opening-balances": ("期首残高・年度繰越"', SOURCE)
+        self.assertIn('href="/modules/finance/opening-balances"', SOURCE)
+        self.assertIn('"opening_balance_create": "期首残高登録"', SOURCE)
+        self.assertIn('"year_carryforward": "年度残高繰越"', SOURCE)
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("期首残高", "年度繰越", "資産", "負債", "純資産", "当期損益", "税理士"):
+            self.assertIn(marker, guide)
 
     def test_fixed_asset_models_are_tenant_scoped_and_depreciation_is_unique(self):
         asset = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFixedAsset")
