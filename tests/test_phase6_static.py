@@ -1490,6 +1490,33 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ('system_key == "depreciation_expense"', 'system_key == "accumulated_depreciation"', "available_code", 'name="減価償却費"', 'account_type="expense"', 'normal_side="debit"', 'name="減価償却累計額"', 'account_type="asset"', 'normal_side="credit"'):
             self.assertIn(marker, segment)
 
+    def test_accrual_helpers_create_balanced_receivable_and_payable_journals(self):
+        invoice = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_invoice_accrual_journal"))
+        for marker in ('"receivable"', '"income", "sale"', 'f"AR-{invoice.id}"', '("debit", receivable.id', '("credit", sales.id'):
+            self.assertIn(marker, invoice)
+        payable = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_payable_accrual_journal"))
+        for marker in ('"expense", payable.category', '"payable"', 'f"AP-{payable.id}"', '("debit", expense.id', '("credit", payable_account.id'):
+            self.assertIn(marker, payable)
+
+    def test_accrual_settlement_clears_balance_sheet_accounts(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_accrual_settlement_journal"))
+        for marker in ('"cash"', 'account_key == "receivable"', '("debit", cash.id', '("credit", accrual.id', '("debit", accrual.id', '("credit", cash.id', 'source_entry_id=entry.id'):
+            self.assertIn(marker, helper)
+
+    def test_invoice_issue_and_payable_creation_post_accrual_journals(self):
+        invoice_status = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_status_update"))
+        for marker in ("with_for_update", 'invoice.status == "draft"', 'status_value == "issued"', "ensure_finance_period_open", "finance_create_invoice_accrual_journal", '"receivable_accrual"'):
+            self.assertIn(marker, invoice_status)
+        payable_create = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_create"))
+        for marker in ("ensure_finance_period_open", "session.flush()", "finance_create_payable_accrual_journal", '"payable_accrual"'):
+            self.assertIn(marker, payable_create)
+
+    def test_receivable_and_payable_settlement_create_clearing_journals(self):
+        receivable = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "settle_invoice_receivable"))
+        self.assertIn('finance_create_accrual_settlement_journal(session, tenant_id, user_id, entry, invoice.amount, "receivable"', receivable)
+        payable = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_pay"))
+        self.assertIn('finance_create_accrual_settlement_journal(session, tenant.id, user.id, entry, payable.amount, "payable"', payable)
+
     def test_depreciation_journal_is_balanced_linked_and_idempotent(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_depreciation_journal")
         segment = ast.get_source_segment(SOURCE, helper)
