@@ -914,6 +914,65 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("仕訳訂正", "元記録は削除されません", "訂正理由", "実行者", "他機能から作られた記録"):
             self.assertIn(marker, guide_source)
 
+    def test_finance_expense_request_model_keeps_approval_audit_and_ledger_link(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceExpenseRequest")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "requested_by_id", "expense_on", "category", "description", "amount", "notes", "status", "reviewed_by_id", "reviewed_at", "review_comment", "account_id", "financial_entry_id", "unique=True", "created_at"):
+            self.assertIn(marker, segment)
+
+    def test_finance_expense_requests_page_separates_admin_and_employee_scope(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_requests_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ('role not in {Role.admin, Role.employee}', "FinanceExpenseRequest.tenant_id == tenant.id", "role != Role.admin", "FinanceExpenseRequest.requested_by_id == user.id", "FinanceAccount.tenant_id == tenant.id", 'item.status == "pending" and role == Role.admin', 'name="confirmed"', "calendar-desktop-only", "calendar-mobile-card"):
+            self.assertIn(marker, segment)
+        for label in ("経費申請・承認管理", "承認待ち", "承認して台帳計上", "却下", "申請を取り消す"):
+            self.assertIn(label, segment)
+
+    def test_finance_expense_request_create_validates_business_role_and_fields(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_create")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('not in {Role.admin, Role.employee}', "date.fromisoformat", "expense_day < date(2000, 1, 1)", "expense_day > date.today()", "category not in FINANCE_CATEGORIES", "amount <= 0", "amount > 999999999", "len(clean_description) > 200", "len(notes) > 500", "requested_by_id=user.id", 'status="pending"'):
+            self.assertIn(marker, segment)
+        self.assertNotIn("FinancialEntry(", segment)
+
+    def test_finance_expense_approval_is_admin_confirmed_locked_and_posted_once(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_approve")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceExpenseRequest.tenant_id == tenant.id", ".with_for_update()", "FinanceAccount.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "item.financial_entry_id", "len(review_comment) > 500", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', "FinanceAccountEntry(", 'item.status = "approved"', "item.reviewed_by_id = user.id", "item.reviewed_at", "item.account_id = account.id", "item.financial_entry_id = entry.id"):
+            self.assertIn(marker, segment)
+
+    def test_finance_expense_reject_and_requester_cancel_are_non_destructive(self):
+        reject = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_reject")
+        reject_source = ast.get_source_segment(SOURCE, reject)
+        for marker in ("require_tenant_admin", "FinanceExpenseRequest.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "not clean_comment", "len(clean_comment) > 500", 'item.status = "rejected"', "item.reviewed_by_id = user.id", "item.reviewed_at"):
+            self.assertIn(marker, reject_source)
+        cancel = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_cancel")
+        cancel_source = ast.get_source_segment(SOURCE, cancel)
+        for marker in ("FinanceExpenseRequest.tenant_id == tenant.id", "FinanceExpenseRequest.requested_by_id == user.id", "not confirmed", 'item.status != "pending"', 'item.status = "cancelled"'):
+            self.assertIn(marker, cancel_source)
+        self.assertIn(".with_for_update()", reject_source + cancel_source)
+        self.assertNotIn("session.delete", reject_source + cancel_source)
+
+    def test_finance_expense_requests_feed_corrections_close_and_export(self):
+        source_guard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids")
+        self.assertIn("FinanceExpenseRequest.financial_entry_id", ast.get_source_segment(SOURCE, source_guard))
+        closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
+        closing_source = ast.get_source_segment(SOURCE, closing)
+        for marker in ("FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "pending_expense_request_count", "経費申請の承認待ち", "/modules/finance/expense-requests"):
+            self.assertIn(marker, closing_source)
+        export = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
+        export_source = ast.get_source_segment(SOURCE, export)
+        for marker in ("FinanceExpenseRequest.tenant_id == tenant.id", "expense-requests.csv", '"expense_requests": len(expense_requests)', "reviewed_by_id", "reviewed_at"):
+            self.assertIn(marker, export_source)
+
+    def test_finance_expense_requests_have_navigation_module_and_guide(self):
+        self.assertIn('"finance/expense-requests": ("経費申請・承認管理"', SOURCE)
+        self.assertIn('href="/modules/finance/expense-requests"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("経費申請", "従業員", "管理者", "承認者", "申請だけでは台帳へ計上されません", "重複登録"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()

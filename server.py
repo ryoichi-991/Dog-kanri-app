@@ -70,6 +70,7 @@ MODULES = {
     "finance/payables": ("取引先・買掛金・支払管理", "支払先、請求額、期限、未払・支払済みの管理"),
     "finance/receivables": ("売掛金・請求書入金消込", "未入金請求、期限超過、口座入金、銀行明細との消込"),
     "finance/corrections": ("仕訳訂正・取消履歴", "元記録を残す反対仕訳、訂正仕訳、理由と操作履歴"),
+    "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、管理者承認、却下、台帳計上"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -623,6 +624,25 @@ class FinancePayable(Base):
     financial_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True, unique=True)
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceExpenseRequest(Base):
+    __tablename__ = "finance_expense_requests"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    requested_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    expense_on: Mapped[date] = mapped_column(Date, index=True)
+    category: Mapped[str] = mapped_column(String(50), index=True)
+    description: Mapped[str] = mapped_column(String(200))
+    amount: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    reviewed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("finance_accounts.id", ondelete="SET NULL"), nullable=True)
+    financial_entry_id: Mapped[int | None] = mapped_column(ForeignKey("financial_entries.id", ondelete="SET NULL"), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1614,6 +1634,7 @@ def page_usage_guide(title: str) -> str:
         (("買掛金", "支払管理", "取引先"), ["仕入先・病院・会場・配送会社などの取引先と未払請求を管理できます。", "支払期限、期限超過、支払済みを確認し、支払時に口座と収支台帳へ一度だけ反映できます。"], ["取引先を登録します。", "請求日・支払期限・費目・請求額を未払として登録します。", "実際の支払日と口座を確認して支払済みにします。"], "支払済み操作は収支台帳へ実際の経費を作成します。二重計上を防ぐため、同じ支払を銀行明細や手入力から重複登録しないでください。"),
         (("売掛金", "入金消込"), ["発行済み請求書の未入金額、期限超過、入金履歴を確認できます。", "口座への直接入金または銀行明細の入金を、請求書と収支台帳へ一度だけ結び付けられます。"], ["請求書を発行済みにします。", "入金日・入金口座を確認するか、銀行明細の一致候補を選びます。", "確認欄を入れて請求書を入金済みにします。"], "同じ入金を手入力と銀行明細の両方から登録しないでください。金額が同じ請求書が複数ある場合は、請求番号とお客様名を必ず確認してください。"),
         (("仕訳訂正", "取消履歴", "反対仕訳"), ["誤った収支記録を削除せず、元記録・反対仕訳・訂正後の記録を一組で残せます。", "訂正理由、実行者、実行日時を記録し、会計データの変更経緯を確認できます。"], ["訂正対象と訂正日を選びます。", "取消のみ、または正しい内容へ訂正を選び、理由を入力します。", "確認欄を入れて管理者が実行します。"], "元記録は削除されません。請求書入金、買掛金支払、定期収支など他機能から作られた記録は、元機能との不整合を防ぐためこの画面では訂正できません。"),
+        (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、管理者が承認または却下できます。", "承認者、承認日時、判断コメントを残し、承認された申請だけを口座と収支台帳へ一度だけ計上できます。"], ["経費日・費目・内容・金額を入力して申請します。", "管理者が申請内容と証憑を確認し、支払口座を選びます。", "確認欄を入れて承認するか、理由を記載して却下します。"], "申請だけでは台帳へ計上されません。承認前に日付・金額・費目・証憑を確認し、同じ経費を手入力や銀行明細から重複登録しないでください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1663,7 +1684,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4579,6 +4600,7 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     reconciliation_day = min(month_end, date.today())
     due_payable_count = session.scalar(select(func.count(FinancePayable.id)).where(FinancePayable.tenant_id == tenant.id, FinancePayable.status == "unpaid", FinancePayable.due_on <= reconciliation_day)) or 0
     due_receivable_count = session.scalar(select(func.count(Invoice.id)).where(Invoice.tenant_id == tenant.id, Invoice.status == "issued", Invoice.ledger_entry_id.is_(None), Invoice.due_on.is_not(None), Invoice.due_on <= reconciliation_day)) or 0
+    pending_expense_request_count = session.scalar(select(func.count(FinanceExpenseRequest.id)).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.status == "pending", FinanceExpenseRequest.expense_on >= first_day, FinanceExpenseRequest.expense_on <= month_end)) or 0
     reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
     reconciled_by_account = {item.account_id: item for item in reconciliations}
     unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or reconciled_by_account[account.id].difference != 0)
@@ -4592,8 +4614,8 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>当月訂正・取消</h3><strong>{correction_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未入金</h3><strong class="{'error' if due_receivable_count else ''}">{due_receivable_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/corrections">仕訳訂正・取消履歴</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/receivables">売掛・未入金確認</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
+    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>当月訂正・取消</h3><strong>{correction_count}件</strong></div><div class="module"><h3>経費申請の承認待ち</h3><strong class="{'error' if pending_expense_request_count else ''}">{pending_expense_request_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未入金</h3><strong class="{'error' if due_receivable_count else ''}">{due_receivable_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/expense-requests">経費申請の承認待ち</a><a class="button secondary" href="/modules/finance/corrections">仕訳訂正・取消履歴</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/receivables">売掛・未入金確認</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
 
 
@@ -4655,7 +4677,7 @@ def finance_page(month: str = "", entry_type: str = "", finance_category: str = 
     body = f'''<h1>収支・経費台帳</h1><p>犬舎の入金・経費を月ごとに記録し、収支と販売未入金をまとめて確認します。</p>{'<p class="tenant"><strong>この月は締め済みです。</strong> 過去日付で追加する場合は管理者が月次締めを解除してください。</p>' if closed_period else ''}
     <div class="grid"><div class="module"><h3>当月入金</h3><p><strong style="font-size:25px">¥{income_total:,}</strong></p></div><div class="module"><h3>当月経費</h3><p><strong style="font-size:25px">¥{expense_total:,}</strong></p></div><div class="module"><h3>当月収支</h3><p><strong class="{'error' if balance < 0 else ''}" style="font-size:25px">¥{balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div></div>
     <h2>表示条件</h2><form method="get" action="/modules/finance"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="finance_category">{category_options}</select></div></div><button>台帳を表示</button> <a class="button secondary" href="/modules/finance">今月へ戻る</a></form>
-    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/corrections">仕訳訂正・取消</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
+    <h2>入金・経費を登録</h2><div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益を見る</a><a class="button secondary" href="/modules/finance/expense-requests">経費申請・承認</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/corrections">仕訳訂正・取消</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締めを確認</a><a class="button secondary" href="/modules/invoices">請求書管理を開く</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑を管理</a></div><form method="post" action="/modules/finance"><div class="grid"><div><label>日付</label><input type="date" name="occurred_on" value="{date.today()}" required></div><div><label>区分</label><select name="entry_type"><option value="income">入金</option><option value="expense">経費</option></select></div><div><label>費目</label><select name="category">{entry_categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>メモ</label><textarea name="notes" maxlength="2000"></textarea><button>台帳へ登録</button></form>
     <h2>{first_day:%Y年%m月}の台帳</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">条件に一致する記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する記録はありません。</div>'}</section>
     <h2>当月の経費内訳</h2><table><tr><th>費目</th><th>合計</th></tr>{cost_rows or '<tr><td colspan="2">経費記録はありません。</td></tr>'}</table>'''
     return layout("収支・経費台帳", body, user)
@@ -4679,9 +4701,113 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
 
 def finance_source_entry_ids(session: Session, tenant_id: int) -> set[int]:
     source_ids: set[int] = set()
-    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id)):
+    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (FinanceExpenseRequest, FinanceExpenseRequest.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id)):
         source_ids.update(value for value in session.scalars(select(column).where(model.tenant_id == tenant_id, column.is_not(None))).all() if value)
     return source_ids
+
+
+@app.get("/modules/finance/expense-requests", response_class=HTMLResponse)
+def finance_expense_requests_page(request_status: str = "pending", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    role = tenant_role(user, tenant, session)
+    if role not in {Role.admin, Role.employee}:
+        raise HTTPException(status_code=403, detail="経費申請を利用できる権限がありません")
+    if request_status not in {"", "pending", "approved", "rejected", "cancelled"}:
+        raise HTTPException(status_code=400, detail="表示条件を確認してください")
+    query = select(FinanceExpenseRequest).where(FinanceExpenseRequest.tenant_id == tenant.id)
+    if role != Role.admin:
+        query = query.where(FinanceExpenseRequest.requested_by_id == user.id)
+    all_requests = session.scalars(query.order_by(FinanceExpenseRequest.created_at.desc(), FinanceExpenseRequest.id.desc()).limit(1000)).all()
+    requests = [item for item in all_requests if not request_status or item.status == request_status]
+    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)).order_by(FinanceAccount.name, FinanceAccount.id)).all()
+    account_names = {item.id: item.name for item in accounts}
+    account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in accounts)
+    user_ids = {item.requested_by_id for item in all_requests} | {item.reviewed_by_id for item in all_requests if item.reviewed_by_id}
+    user_names = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+    pending = [item for item in all_requests if item.status == "pending"]
+    approved = [item for item in all_requests if item.status == "approved"]
+    rejected = [item for item in all_requests if item.status == "rejected"]
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+    status_options = "".join(f'<option value="{value}" {"selected" if value == request_status else ""}>{label}</option>' for value, label in (("", "すべて"), ("pending", "承認待ち"), ("approved", "承認済み"), ("rejected", "却下"), ("cancelled", "申請取消")))
+    rows = ""; mobile_cards = ""
+    for item in requests[:500]:
+        state = {"pending": "承認待ち", "approved": "承認済み", "rejected": "却下", "cancelled": "申請取消"}.get(item.status, item.status)
+        requester = html.escape(user_names.get(item.requested_by_id, f"ユーザー#{item.requested_by_id}"))
+        reviewer = html.escape(user_names.get(item.reviewed_by_id, "－")) if item.reviewed_by_id else "－"
+        if item.status == "pending" and role == Role.admin and accounts:
+            action = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/approve"><select name="account_id">{account_options}</select><input name="review_comment" maxlength="500" placeholder="承認コメント（任意）"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 内容と支払口座を確認しました</label><button class="success">承認して台帳計上</button></form><form method="post" action="/modules/finance/expense-requests/{item.id}/reject"><input name="review_comment" maxlength="500" placeholder="却下理由" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 却下内容を確認しました</label><button class="danger">却下</button></form>'''
+        elif item.status == "pending" and role == Role.admin:
+            action = '<a class="button secondary" href="/modules/finance/accounts">先に支払口座を登録</a>'
+        elif item.status == "pending" and item.requested_by_id == user.id:
+            action = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/cancel"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> この申請の取消を確認</label><button class="danger">申請を取り消す</button></form>'''
+        else:
+            action = f'台帳 #{item.financial_entry_id}／{html.escape(account_names.get(item.account_id, "口座記録なし"))}' if item.status == "approved" else html.escape(item.review_comment or "－")
+        reviewed_label = f'{reviewer}／{item.reviewed_at.strftime("%Y-%m-%d %H:%M")}' if item.reviewed_at else "－"
+        rows += f'<tr><td>{item.expense_on}</td><td>{requester}</td><td>{FINANCE_CATEGORIES.get(item.category, item.category)}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td><span class="badge">{state}</span></td><td>{reviewed_label}</td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}／¥{item.amount:,}</h3><p>{item.expense_on}／{FINANCE_CATEGORIES.get(item.category, item.category)}／{requester}</p><p><span class="badge">{state}</span>／承認者 {reviewed_label}</p>{action}</article>'''
+    scope_label = "犬舎全体" if role == Role.admin else "自分の申請"
+    body = f'''<h1>経費申請・承認管理</h1><p>従業員の経費申請を管理者が確認し、承認された申請だけを支払口座と収支台帳へ計上します。</p>
+    <div class="grid"><div class="module"><h3>{scope_label}の承認待ち</h3><strong class="{'error' if pending else ''}">{len(pending)}件</strong><p>¥{sum(item.amount for item in pending):,}</p></div><div class="module"><h3>承認済み</h3><strong>{len(approved)}件</strong><p>¥{sum(item.amount for item in approved):,}</p></div><div class="module"><h3>却下</h3><strong>{len(rejected)}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
+    <h2>経費を申請</h2><form method="post" action="/modules/finance/expense-requests"><div class="grid"><div><label>経費日</label><input type="date" name="expense_on" value="{date.today()}" max="{date.today()}" required></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>内容</label><input name="description" maxlength="200" required><label>申請メモ・証憑の保管場所</label><input name="notes" maxlength="500"><button>承認申請を送る</button></form>
+    <h2>申請一覧</h2><form method="get"><label>状態</label><select name="request_status">{status_options}</select><button>表示</button></form><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>経費日</th><th>申請者</th><th>費目</th><th>内容</th><th>金額</th><th>状態</th><th>承認者・日時</th><th>操作・結果</th></tr>{rows or '<tr><td colspan="8">条件に一致する申請はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する申請はありません。</div>'}</section>'''
+    return layout("経費申請・承認管理", body, user)
+
+
+@app.post("/modules/finance/expense-requests")
+def finance_expense_request_create(expense_on: str = Form(...), category: str = Form(...), amount: int = Form(...), description: str = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if tenant_role(user, tenant, session) not in {Role.admin, Role.employee}:
+        raise HTTPException(status_code=403, detail="経費申請を利用できる権限がありません")
+    try:
+        expense_day = date.fromisoformat(expense_on)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="経費日を確認してください")
+    clean_description = description.strip()
+    if expense_day < date(2000, 1, 1) or expense_day > date.today() or category not in FINANCE_CATEGORIES or amount <= 0 or amount > 999999999 or not clean_description or len(clean_description) > 200 or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="経費申請の内容を確認してください")
+    session.add(FinanceExpenseRequest(tenant_id=tenant.id, requested_by_id=user.id, expense_on=expense_day, category=category, description=clean_description, amount=amount, notes=notes.strip() or None, status="pending"))
+    session.commit()
+    return RedirectResponse("/modules/finance/expense-requests", status_code=303)
+
+
+@app.post("/modules/finance/expense-requests/{request_id}/approve")
+def finance_expense_request_approve(request_id: int, account_id: int = Form(...), review_comment: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id).with_for_update())
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
+    if not confirmed or not item or item.status != "pending" or item.financial_entry_id or not account or len(review_comment) > 500:
+        raise HTTPException(status_code=400, detail="承認内容と支払口座を確認してください")
+    ensure_finance_period_open(session, tenant.id, item.expense_on)
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=item.expense_on, entry_type="expense", category=item.category, amount=item.amount, description=item.description, notes=f"経費申請 #{item.id}／申請者 #{item.requested_by_id}／{item.notes or '申請メモなし'}")
+    session.add(entry); session.flush()
+    session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
+    item.status = "approved"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = review_comment.strip() or None; item.account_id = account.id; item.financial_entry_id = entry.id
+    session.commit()
+    return RedirectResponse("/modules/finance/expense-requests", status_code=303)
+
+
+@app.post("/modules/finance/expense-requests/{request_id}/reject")
+def finance_expense_request_reject(request_id: int, review_comment: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id).with_for_update())
+    clean_comment = review_comment.strip()
+    if not confirmed or not item or item.status != "pending" or item.financial_entry_id or not clean_comment or len(clean_comment) > 500:
+        raise HTTPException(status_code=400, detail="却下内容を確認してください")
+    item.status = "rejected"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = clean_comment
+    session.commit()
+    return RedirectResponse("/modules/finance/expense-requests", status_code=303)
+
+
+@app.post("/modules/finance/expense-requests/{request_id}/cancel")
+def finance_expense_request_cancel(request_id: int, confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.requested_by_id == user.id).with_for_update())
+    if not confirmed or not item or item.status != "pending" or item.financial_entry_id:
+        raise HTTPException(status_code=400, detail="取消対象を確認してください")
+    item.status = "cancelled"
+    session.commit()
+    return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
 
 @app.get("/modules/finance/corrections", response_class=HTMLResponse)
@@ -5662,7 +5788,7 @@ def finance_export_csv(headers: list[str], rows: list[list]) -> bytes:
 def finance_export_page(access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
     body = f'''<h1>会計・証憑一括出力</h1><p>{html.escape(tenant.name)}の会計資料を年度単位のZIPにまとめ、税理士への共有や年度保管に利用します。</p>
-    <div class="tenant"><strong>ZIPに含まれる内容</strong><ul><li>収支・経費台帳CSV</li><li>請求書CSV</li><li>原価配賦CSV</li><li>領収書・証憑原本と一覧CSV</li><li>全ファイルのSHA-256整合性情報</li></ul></div>
+    <div class="tenant"><strong>ZIPに含まれる内容</strong><ul><li>収支・経費台帳CSV</li><li>請求書CSV</li><li>経費申請・承認履歴CSV</li><li>原価配賦CSV</li><li>領収書・証憑原本と一覧CSV</li><li>全ファイルのSHA-256整合性情報</li></ul></div>
     <form method="post" action="/modules/finance/export"><div class="grid"><div><label>対象年</label><input type="number" name="year" min="2000" max="2100" value="{date.today().year}" required></div><div><label>管理者パスワード</label><input type="password" name="admin_password" autocomplete="current-password" required></div></div>
     <label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirmed" value="true" required> 個人情報・取引情報を含むZIPとして安全に保管します</label><button class="success">ZIPを作成・ダウンロード</button></form>
     <p><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボードへ戻る</a></p>'''
@@ -5678,6 +5804,7 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= year_start, FinancialEntry.occurred_on <= year_end).order_by(FinancialEntry.occurred_on, FinancialEntry.id)).all()
     entry_ids = [item.id for item in entries]
     invoices = session.scalars(select(Invoice).where(Invoice.tenant_id == tenant.id, Invoice.issued_on >= year_start, Invoice.issued_on <= year_end).order_by(Invoice.issued_on, Invoice.id)).all()
+    expense_requests = session.scalars(select(FinanceExpenseRequest).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.expense_on >= year_start, FinanceExpenseRequest.expense_on <= year_end).order_by(FinanceExpenseRequest.expense_on, FinanceExpenseRequest.id)).all()
     corrections = session.scalars(select(FinanceEntryCorrection).where(FinanceEntryCorrection.tenant_id == tenant.id, (FinanceEntryCorrection.original_entry_id.in_(entry_ids) | FinanceEntryCorrection.reversal_entry_id.in_(entry_ids) | FinanceEntryCorrection.replacement_entry_id.in_(entry_ids))).order_by(FinanceEntryCorrection.corrected_at, FinanceEntryCorrection.id)).all() if entry_ids else []
     allocations = session.scalars(select(CostAllocation).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id.in_(entry_ids)).order_by(CostAllocation.id)).all() if entry_ids else []
     documents = session.scalars(select(FinanceDocument).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(entry_ids)).order_by(FinanceDocument.id)).all() if entry_ids else []
@@ -5687,6 +5814,7 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
     entry_map = {item.id: item for item in entries}
     ledger_csv = finance_export_csv(["ID", "日付", "区分", "費目", "内容", "金額", "メモ"], [[item.id, item.occurred_on, "入金" if item.entry_type == "income" else "経費", FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.notes or ""] for item in entries])
     invoice_csv = finance_export_csv(["ID", "請求番号", "発行日", "支払期限", "金額", "状態", "販売案件ID", "台帳ID", "備考"], [[item.id, item.invoice_no, item.issued_on, item.due_on or "", item.amount, INVOICE_STATUSES.get(item.status, item.status), item.puppy_sale_id, item.ledger_entry_id or "", item.notes or ""] for item in invoices])
+    expense_request_csv = finance_export_csv(["ID", "経費日", "費目", "内容", "金額", "状態", "申請者ID", "申請メモ", "承認者ID", "承認日時", "判断コメント", "口座ID", "台帳ID"], [[item.id, item.expense_on, FINANCE_CATEGORIES.get(item.category, item.category), item.description, item.amount, item.status, item.requested_by_id, item.notes or "", item.reviewed_by_id or "", item.reviewed_at.isoformat() if item.reviewed_at else "", item.review_comment or "", item.account_id or "", item.financial_entry_id or ""] for item in expense_requests])
     correction_csv = finance_export_csv(["ID", "元仕訳ID", "反対仕訳ID", "訂正後仕訳ID", "処理", "理由", "実行者ID", "実行日時"], [[item.id, item.original_entry_id, item.reversal_entry_id, item.replacement_entry_id or "", "訂正" if item.correction_type == "replace" else "取消", item.reason, item.corrected_by_id, item.corrected_at.isoformat()] for item in corrections])
     allocation_csv = finance_export_csv(["ID", "台帳ID", "台帳内容", "犬ID", "出産回ID", "配賦額", "メモ"], [[item.id, item.financial_entry_id, entry_map[item.financial_entry_id].description, item.dog_id or "", item.litter_id or "", item.amount, item.notes or ""] for item in allocations])
     extension_by_type = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
@@ -5699,9 +5827,9 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
     documents_csv = finance_export_csv(["ID", "台帳ID", "台帳日付", "台帳内容", "書類種別", "発行元", "書類番号", "元ファイル名", "ZIP内ファイル"], document_rows)
     output = io.BytesIO(); checksums = {}
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        for filename, content in [("ledger.csv", ledger_csv), ("invoices.csv", invoice_csv), ("entry-corrections.csv", correction_csv), ("cost-allocations.csv", allocation_csv), ("documents.csv", documents_csv), *document_files]:
+        for filename, content in [("ledger.csv", ledger_csv), ("invoices.csv", invoice_csv), ("expense-requests.csv", expense_request_csv), ("entry-corrections.csv", correction_csv), ("cost-allocations.csv", allocation_csv), ("documents.csv", documents_csv), *document_files]:
             archive.writestr(filename, content); checksums[filename] = hashlib.sha256(content).hexdigest()
-        manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "corrections": len(corrections), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
+        manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "expense_requests": len(expense_requests), "corrections": len(corrections), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
     record_operation(session, "finance_export", "success", "会計・証憑一括出力", tenant.id, f"year={year} ledger={len(entries)} invoices={len(invoices)} documents={len(documents)}")
     session.commit()
