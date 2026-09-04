@@ -1225,13 +1225,13 @@ class Phase6StaticTests(unittest.TestCase):
     def test_trial_balance_data_is_tenant_scoped_and_calculates_account_balances(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_trial_balance_data")
         segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ("FinanceAccount.tenant_id == tenant_id", "FinanceAccountEntry.tenant_id == tenant_id", "FinancialEntry.tenant_id == tenant_id", "FinanceAccountTransfer.tenant_id == tenant_id", ".limit(10000)", "finance_account_balance_on", "transfer_in", "transfer_out", "category_totals"):
+        for marker in ("finance_double_entry_data", "journal_by_id", 'voucher_no.startswith("OB-")', 'voucher_no.startswith("CF-")', 'line.side == "debit"', "opening_debit", "period_debit", "max(0, signed)", "type_totals"):
             self.assertIn(marker, segment)
 
     def test_trial_balance_page_is_admin_only_mobile_and_has_management_warning(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_trial_balance_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_trial_balance_period", "finance_trial_balance_data", "収益合計", "費用合計", "当期差引", "口座別残高", "費目別収支", "calendar-desktop-only", "calendar-mobile-card", "複式簿記の法定試算表", "/modules/finance/trial-balance.csv"):
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_trial_balance_period", "finance_trial_balance_data", "debit_total", "credit_total", "ending_debit_total", "ending_credit_total", "当期借方合計", "当期貸方合計", "当期貸借差額", "期末貸借差額", "勘定科目別残高試算表", "科目区分別当期増減", "calendar-desktop-only", "calendar-mobile-card", "/modules/finance/general-ledger", "/modules/finance/statements-report", "/modules/finance/trial-balance.csv"):
             self.assertIn(marker, segment)
 
     def test_trial_balance_csv_is_private_and_formula_safe(self):
@@ -1241,11 +1241,11 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
 
     def test_trial_balance_has_module_navigation_and_guide(self):
-        self.assertIn('"finance/trial-balance": ("月次・年度試算表"', SOURCE)
+        self.assertIn('"finance/trial-balance": ("月次・年度複式試算表"', SOURCE)
         self.assertIn('href="/modules/finance/trial-balance"', SOURCE)
         guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
         guide_source = ast.get_source_segment(SOURCE, guide)
-        for marker in ("月次・年度試算表", "期首残高", "期末残高", "CSV", "法定試算表"):
+        for marker in ("月次・年度複式試算表", "期首残高", "当期増減", "期末残高", "借方", "貸方", "CSV", "税理士"):
             self.assertIn(marker, guide_source)
 
     def test_statement_report_data_is_tenant_scoped_bounded_and_complete(self):

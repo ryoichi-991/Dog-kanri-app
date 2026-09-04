@@ -73,7 +73,7 @@ MODULES = {
     "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、領収書添付、管理者承認、却下、台帳計上"),
     "finance/audit": ("会計操作ログ・監査証跡", "会計操作の実行者、日時、対象、処理内容の追跡"),
     "finance/books": ("仕訳帳・科目別元帳", "日付順、費目別、口座別の会計帳簿とCSV出力"),
-    "finance/trial-balance": ("月次・年度試算表", "事業年度内の口座残高、費目別収支、当期差引の確認"),
+    "finance/trial-balance": ("月次・年度複式試算表", "複式仕訳による期首・当期・期末の借方貸方残高確認"),
     "finance/statements-report": ("損益計算書・貸借対照表", "複式仕訳による収益・費用・資産・負債・純資産の確認"),
     "finance/chart-accounts": ("勘定科目・補助科目管理", "複式簿記で使用する勘定科目、補助科目、既存費目との対応管理"),
     "finance/journals": ("複式簿記仕訳", "借方・貸方が一致する仕訳伝票、既存収支連携、取消仕訳の管理"),
@@ -1850,7 +1850,7 @@ def page_usage_guide(title: str) -> str:
         (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、領収書やレシートの原本を添付できます。", "管理者は証憑を確認して承認または却下し、承認者、承認日時、判断コメントを残せます。"], ["経費日・費目・内容・金額を入力して申請します。", "申請一覧からPDFまたは写真の証憑を登録します。", "管理者が証憑と支払口座を確認し、承認または却下します。"], "申請だけでは台帳へ計上されません。証憑がない申請は承認できず、承認後も手入力や銀行明細から重複登録しないでください。"),
         (("会計操作ログ", "監査証跡", "会計監査"), ["月次締め、仕訳訂正、経費承認、入出金など重要な会計操作を追跡できます。", "実行者、日時、対象番号、処理内容を管理者だけが確認・CSV出力できます。"], ["期間や操作区分で検索します。", "対象番号と概要を確認します。", "監査や税理士共有が必要な場合はCSVを安全に保管します。"], "監査ログは追記専用です。個人情報と取引情報を含むため、CSVは権限管理された場所で保管してください。"),
         (("仕訳帳", "科目別元帳", "会計帳簿"), ["収支台帳を日付順の仕訳帳と費目別集計で確認できます。", "口座を指定すると、その口座の取引と口座間振替だけを抽出できます。"], ["対象年・月、区分、費目、口座を選びます。", "合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "この帳簿は収支台帳を基礎にした管理帳簿です。法定帳簿や複式簿記として利用する場合は、税理士と勘定科目・期首残高を確認してください。"),
-        (("月次・年度試算表", "残高試算表"), ["事業年度の開始から指定月末までの口座残高と費目別収支を一覧で確認できます。", "口座ごとの期首残高、入金、支出、振替、期末残高を照合できます。"], ["事業年度と集計月を選びます。", "口座別残高と費目別収支を確認します。", "税理士共有や月次保管にはCSVを出力します。"], "現在の収支台帳を基礎にした管理用試算表です。売掛金・買掛金などを含む複式簿記の法定試算表として利用する場合は、税理士へ確認してください。"),
+        (("月次・年度複式試算表", "残高試算表"), ["事業年度の開始から指定月末までの複式仕訳を勘定科目別に確認できます。", "期首残高、当期増減、期末残高を借方・貸方の6欄で照合できます。"], ["事業年度と集計月を選びます。", "当期と期末の貸借差額がゼロであることを確認します。", "税理士共有や月次保管にはCSVを出力します。"], "期首残高・年度繰越・取消仕訳を含む管理用の複式試算表です。正式な決算・税務申告は税理士へ確認してください。"),
         (("損益計算書", "貸借対照表", "財務諸表"), ["複式仕訳の勘定科目残高から、収益・費用・当期利益を損益計算書形式で確認できます。", "資産・負債・純資産と当期利益を貸借対照表形式で確認し、貸借差額を検査できます。"], ["事業年度と集計月を選びます。", "損益計算書、貸借対照表、総勘定元帳の残高を照合します。", "税理士共有や月次保管にはCSVを出力します。"], "期首残高、年度繰越、取消仕訳を含む登録済み複式仕訳を集計します。正式な決算書・税務申告は税理士と確認してください。"),
         (("勘定科目", "補助科目", "科目マスター"), ["資産、負債、純資産、収益、費用の勘定科目と借方・貸方の通常残高を管理できます。", "既存の入金・経費費目を勘定科目へ対応付け、次段階の複式簿記へ引き継げます。"], ["初回は標準科目を一括作成します。", "必要な勘定科目・補助科目を追加します。", "既存費目の対応科目を確認・変更します。"], "使用済み科目の削除は行わず、停止して履歴を保持してください。科目区分や税務上の扱いは税理士に確認してください。"),
         (("複式簿記", "仕訳伝票", "借方", "貸方"), ["借方と貸方が一致する仕訳伝票を登録し、勘定科目・補助科目別に記録できます。", "既存の収支台帳を科目対応に従って複式仕訳へ重複なく変換できます。"], ["標準科目と費目対応を先に設定します。", "未連携の収支を複式仕訳へ変換するか、手動仕訳を登録します。", "誤りは元伝票を削除せず取消仕訳で訂正します。"], "貸借不一致の仕訳は登録できません。締め済み期間は変更できず、取消も新しい伝票として履歴を保持します。"),
@@ -4993,25 +4993,25 @@ def finance_trial_balance_period(start_year: str, through_month: str, start_mont
 
 
 def finance_trial_balance_data(session: Session, tenant_id: int, period_start: date, period_end: date):
-    accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant_id).order_by(FinanceAccount.name, FinanceAccount.id)).all()
-    assignments = session.scalars(select(FinanceAccountEntry).where(FinanceAccountEntry.tenant_id == tenant_id)).all()
-    account_by_entry = {item.financial_entry_id: item.account_id for item in assignments}
-    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end).order_by(FinancialEntry.occurred_on, FinancialEntry.id).limit(10000)).all()
-    transfers = session.scalars(select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant_id, FinanceAccountTransfer.transferred_on >= period_start, FinanceAccountTransfer.transferred_on <= period_end).order_by(FinanceAccountTransfer.transferred_on, FinanceAccountTransfer.id).limit(10000)).all()
+    accounts, _, journals, lines = finance_double_entry_data(session, tenant_id, period_start, period_end)
+    journal_by_id = {item.id: item for item in journals}
+    totals = {item.id: [0, 0, 0, 0] for item in accounts}
+    for line in lines:
+        journal = journal_by_id.get(line.journal_id)
+        if not journal or line.account_id not in totals:
+            continue
+        is_opening = journal.entry_date == period_start and (journal.voucher_no.startswith("OB-") or journal.voucher_no.startswith("CF-"))
+        offset = 0 if is_opening else 2
+        totals[line.account_id][offset if line.side == "debit" else offset + 1] += line.amount
     account_rows = []
+    type_totals = {account_type: [0, 0] for account_type in FINANCE_ACCOUNT_TYPES}
     for account in accounts:
-        opening = finance_account_balance_on(session, tenant_id, account, period_start - timedelta(days=1))
-        account_entries = [item for item in entries if account_by_entry.get(item.id) == account.id]
-        income = sum(item.amount for item in account_entries if item.entry_type == "income")
-        expense = sum(item.amount for item in account_entries if item.entry_type == "expense")
-        transfer_in = sum(item.amount for item in transfers if item.to_account_id == account.id)
-        transfer_out = sum(item.amount for item in transfers if item.from_account_id == account.id)
-        account_rows.append((account, opening, income, expense, transfer_in, transfer_out, opening + income - expense + transfer_in - transfer_out))
-    category_totals: dict[tuple[str, str], int] = {}
-    for item in entries:
-        key = (item.entry_type, item.category)
-        category_totals[key] = category_totals.get(key, 0) + item.amount
-    return accounts, entries, transfers, account_rows, category_totals
+        opening_debit, opening_credit, period_debit, period_credit = totals[account.id]
+        signed = opening_debit - opening_credit + period_debit - period_credit
+        account_rows.append((account, opening_debit, opening_credit, period_debit, period_credit, max(0, signed), max(0, -signed)))
+        type_totals[account.account_type][0] += period_debit
+        type_totals[account.account_type][1] += period_credit
+    return accounts, journals, lines, account_rows, type_totals
 
 
 @app.get("/modules/finance/trial-balance", response_class=HTMLResponse)
@@ -5020,21 +5020,21 @@ def finance_trial_balance_page(start_year: str = "", through_month: str = "", ac
     setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
     start_month = setting.start_month if setting else 1
     selected_year, period_start, period_end = finance_trial_balance_period(start_year, through_month, start_month)
-    accounts, entries, transfers, account_rows, category_totals = finance_trial_balance_data(session, tenant.id, period_start, period_end)
-    income_total = sum(item.amount for item in entries if item.entry_type == "income")
-    expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
-    account_table = "".join(f'<tr><td>{html.escape(account.name)}</td><td>¥{opening:,}</td><td>¥{income:,}</td><td>¥{expense:,}</td><td>¥{transfer_in:,}</td><td>¥{transfer_out:,}</td><td class="{"error" if closing < 0 else ""}">{"-" if closing < 0 else ""}¥{abs(closing):,}</td></tr>' for account, opening, income, expense, transfer_in, transfer_out, closing in account_rows)
-    account_cards = "".join(f'<article class="calendar-mobile-card"><h3>{html.escape(account.name)}</h3><p>期首 ¥{opening:,}／入金 ¥{income:,}／支出 ¥{expense:,}</p><p>振替入 ¥{transfer_in:,}／振替出 ¥{transfer_out:,}</p><p>期末 <strong class="{"error" if closing < 0 else ""}">{"-" if closing < 0 else ""}¥{abs(closing):,}</strong></p></article>' for account, opening, income, expense, transfer_in, transfer_out, closing in account_rows)
-    category_rows = "".join(f'<tr><td>{"収益" if entry_type == "income" else "費用"}</td><td>{html.escape(FINANCE_CATEGORIES.get(category, category))}</td><td>¥{amount:,}</td></tr>' for (entry_type, category), amount in sorted(category_totals.items(), key=lambda pair: (pair[0][0], pair[0][1])))
+    accounts, journals, lines, account_rows, type_totals = finance_trial_balance_data(session, tenant.id, period_start, period_end)
+    debit_total = sum(row[3] for row in account_rows); credit_total = sum(row[4] for row in account_rows)
+    ending_debit_total = sum(row[5] for row in account_rows); ending_credit_total = sum(row[6] for row in account_rows)
+    account_table = "".join(f'<tr><td>{FINANCE_ACCOUNT_TYPES[account.account_type]}</td><td>{html.escape(account.code)} {html.escape(account.name)}</td><td>¥{opening_debit:,}</td><td>¥{opening_credit:,}</td><td>¥{period_debit:,}</td><td>¥{period_credit:,}</td><td>¥{ending_debit:,}</td><td>¥{ending_credit:,}</td></tr>' for account, opening_debit, opening_credit, period_debit, period_credit, ending_debit, ending_credit in account_rows)
+    account_cards = "".join(f'<article class="calendar-mobile-card"><h3>{html.escape(account.code)} {html.escape(account.name)}</h3><p>{FINANCE_ACCOUNT_TYPES[account.account_type]}／期首 借方¥{opening_debit:,} 貸方¥{opening_credit:,}</p><p>当期 借方¥{period_debit:,} 貸方¥{period_credit:,}</p><p>期末 借方¥{ending_debit:,} 貸方¥{ending_credit:,}</p></article>' for account, opening_debit, opening_credit, period_debit, period_credit, ending_debit, ending_credit in account_rows)
+    type_rows = "".join(f'<tr><td>{FINANCE_ACCOUNT_TYPES[account_type]}</td><td>¥{amounts[0]:,}</td><td>¥{amounts[1]:,}</td></tr>' for account_type, amounts in type_totals.items())
     fiscal_month_options = "".join(f'<option value="{year:04d}-{month:02d}" {"selected" if period_end.year == year and period_end.month == month else ""}>{year}年{month}月</option>' for year, month in finance_fiscal_months(period_start))
     query_string = urlencode({"start_year": selected_year, "through_month": f"{period_end:%Y-%m}"})
-    body = f'''<h1>月次・年度試算表</h1><p>事業年度の開始から指定月末までの口座残高と費目別収支を集計します。</p>
+    body = f'''<h1>月次・年度複式試算表</h1><p>事業年度の開始から指定月末までの複式仕訳を、勘定科目別の6欄試算表に集計します。</p>
     <form method="get"><div class="grid"><div><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required></div><div><label>集計月</label><select name="through_month">{fiscal_month_options}</select></div></div><button>試算表を表示</button> <a class="button secondary" href="/modules/finance/trial-balance.csv?{query_string}">CSV出力</a></form>
-    <div class="grid"><div class="module"><h3>収益合計</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>費用合計</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>当期差引</h3><strong class="{'error' if income_total - expense_total < 0 else ''}">{'-' if income_total - expense_total < 0 else ''}¥{abs(income_total - expense_total):,}</strong></div><div class="module"><h3>取引件数</h3><strong>{len(entries)}件</strong></div></div>
-    <p class="tenant">集計期間：{period_start}～{period_end}。現在の収支台帳を基礎にした管理用試算表です。売掛金・買掛金などを含む複式簿記の法定試算表として利用する場合は、税理士へご確認ください。</p>
-    <h2>口座別残高</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>口座</th><th>期首残高</th><th>入金</th><th>支出</th><th>振替入</th><th>振替出</th><th>期末残高</th></tr>{account_table or '<tr><td colspan="7">口座が登録されていません。</td></tr>'}</table></div><section class="calendar-mobile-only">{account_cards or '<div class="tenant">口座が登録されていません。</div>'}</section>
-    <h2>費目別収支</h2><table><tr><th>区分</th><th>費目</th><th>金額</th></tr>{category_rows or '<tr><td colspan="3">対象期間の取引はありません。</td></tr>'}</table>'''
-    return layout("月次・年度試算表", body, user)
+    <div class="grid"><div class="module"><h3>当期借方合計</h3><strong>¥{debit_total:,}</strong></div><div class="module"><h3>当期貸方合計</h3><strong>¥{credit_total:,}</strong></div><div class="module"><h3>当期貸借差額</h3><strong class="{'error' if debit_total != credit_total else ''}">¥{abs(debit_total-credit_total):,}</strong></div><div class="module"><h3>期末貸借差額</h3><strong class="{'error' if ending_debit_total != ending_credit_total else ''}">¥{abs(ending_debit_total-ending_credit_total):,}</strong></div></div>
+    <p class="tenant">集計期間：{period_start}～{period_end}。期首残高・年度繰越・取消仕訳を含む複式仕訳 {len(journals)}伝票／{len(lines)}明細を集計しています。正式な決算・税務申告は税理士へご確認ください。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance/general-ledger?start_year={selected_year}">総勘定元帳</a><a class="button secondary" href="/modules/finance/statements-report?{query_string}">財務諸表</a></div>
+    <h2>勘定科目別残高試算表</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>区分</th><th>勘定科目</th><th>期首借方</th><th>期首貸方</th><th>当期借方</th><th>当期貸方</th><th>期末借方</th><th>期末貸方</th></tr>{account_table or '<tr><td colspan="8">勘定科目が登録されていません。</td></tr>'}</table></div><section class="calendar-mobile-only">{account_cards or '<div class="tenant">勘定科目が登録されていません。</div>'}</section>
+    <h2>科目区分別当期増減</h2><table><tr><th>区分</th><th>当期借方</th><th>当期貸方</th></tr>{type_rows}</table>'''
+    return layout("月次・年度複式試算表", body, user)
 
 
 @app.get("/modules/finance/trial-balance.csv")
@@ -5043,13 +5043,10 @@ def finance_trial_balance_csv(start_year: str = "", through_month: str = "", acc
     setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id))
     start_month = setting.start_month if setting else 1
     selected_year, period_start, period_end = finance_trial_balance_period(start_year, through_month, start_month)
-    _, entries, _, account_rows, category_totals = finance_trial_balance_data(session, tenant.id, period_start, period_end)
-    rows = [["口座残高", account.name, opening, income, expense, transfer_in, transfer_out, closing] for account, opening, income, expense, transfer_in, transfer_out, closing in account_rows]
-    rows.extend([["費目別収支", f'{"収益" if entry_type == "income" else "費用"}：{FINANCE_CATEGORIES.get(category, category)}', "", amount if entry_type == "income" else "", amount if entry_type == "expense" else "", "", "", amount if entry_type == "income" else -amount] for (entry_type, category), amount in sorted(category_totals.items())])
-    income_total = sum(item.amount for item in entries if item.entry_type == "income")
-    expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
-    rows.append(["集計", "当期差引", "", income_total, expense_total, "", "", income_total - expense_total])
-    content = finance_export_csv(["種別", "口座・費目", "期首残高", "入金・収益", "支出・費用", "振替入", "振替出", "期末残高・差引"], rows)
+    _, _, _, account_rows, _ = finance_trial_balance_data(session, tenant.id, period_start, period_end)
+    rows = [["勘定科目", FINANCE_ACCOUNT_TYPES[account.account_type], account.code, account.name, opening_debit, opening_credit, period_debit, period_credit, ending_debit, ending_credit] for account, opening_debit, opening_credit, period_debit, period_credit, ending_debit, ending_credit in account_rows]
+    rows.append(["集計", "", "", "貸借合計", sum(row[1] for row in account_rows), sum(row[2] for row in account_rows), sum(row[3] for row in account_rows), sum(row[4] for row in account_rows), sum(row[5] for row in account_rows), sum(row[6] for row in account_rows)])
+    content = finance_export_csv(["種別", "区分", "科目コード", "勘定科目・集計", "期首借方", "期首貸方", "当期借方", "当期貸方", "期末借方", "期末貸方"], rows)
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-trial-balance-{selected_year}-{period_end:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
