@@ -66,7 +66,7 @@ MODULES = {
     "finance/reconciliation": ("口座残高照合・差額チェック", "帳簿残高と銀行・現金の実残高を照合"),
     "finance/statements": ("銀行明細CSV取込・自動照合", "銀行・決済明細の取込、台帳照合、未処理確認"),
     "finance/rules": ("摘要ルール・自動仕訳候補", "摘要キーワードから費目候補を判定し確認後に登録"),
-    "finance/tax": ("消費税区分・インボイス確認", "取引ごとの税区分、税率、適格請求書の確認"),
+    "finance/tax": ("消費税集計・インボイス確認", "税率・課税区分別集計、納付見込、適格請求書の確認"),
     "finance/payables": ("取引先・買掛金・支払管理", "支払先、請求額、期限、未払・支払済みの管理"),
     "finance/receivables": ("売掛金・請求書入金消込", "未入金請求、期限超過、口座入金、銀行明細との消込"),
     "finance/corrections": ("仕訳訂正・取消履歴", "元記録を残す反対仕訳、訂正仕訳、理由と操作履歴"),
@@ -4752,6 +4752,20 @@ def estimated_included_tax(amount: int, tax_rate: int) -> int:
     return amount * tax_rate // (100 + tax_rate) if tax_rate else 0
 
 
+def finance_input_tax_credit(entry_day: date, tax_amount: int, invoice_status: str) -> int:
+    if invoice_status in {"qualified", "not_required"}:
+        return tax_amount
+    if invoice_status != "nonqualified":
+        return 0
+    if entry_day < date(2023, 10, 1):
+        return tax_amount
+    if entry_day < date(2026, 10, 1):
+        return tax_amount * 80 // 100
+    if entry_day < date(2029, 10, 1):
+        return tax_amount * 50 // 100
+    return 0
+
+
 def finance_period_close(session: Session, tenant_id: int, target_day: date) -> FinancePeriodClose | None:
     return session.scalar(select(FinancePeriodClose).where(
         FinancePeriodClose.tenant_id == tenant_id,
@@ -6028,26 +6042,31 @@ def finance_tax_page(month: str = "", access=Depends(require_tenant_user), sessi
     if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1):
         raise HTTPException(status_code=400, detail="対象月を確認してください")
     month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc()).limit(10000)).all()
     entry_ids = [item.id for item in entries]
     classifications = session.scalars(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant.id, FinanceTaxClassification.financial_entry_id.in_(entry_ids))).all() if entry_ids else []
     tax_by_entry = {item.financial_entry_id: item for item in classifications}
-    taxable_sales = taxable_expenses = output_tax = input_tax = qualified_input_tax = 0
+    taxable_sales = taxable_expenses = output_tax = input_tax = deductible_input_tax = 0
+    sales_by_rate = {8: [0, 0], 10: [0, 0]}; expenses_by_rate = {8: [0, 0, 0], 10: [0, 0, 0]}
+    category_totals = {key: [0, 0] for key in FINANCE_TAX_CATEGORIES}
     invoice_unconfirmed_count = 0
     for entry in entries:
         detail = tax_by_entry.get(entry.id)
+        if detail:
+            category_totals[detail.tax_category][0] += entry.amount; category_totals[detail.tax_category][1] += 1
         if not detail or detail.tax_category != "taxable":
             continue
         tax_amount = estimated_included_tax(entry.amount, detail.tax_rate)
         if entry.entry_type == "income":
-            taxable_sales += entry.amount; output_tax += tax_amount
+            taxable_sales += entry.amount; output_tax += tax_amount; sales_by_rate[detail.tax_rate][0] += entry.amount; sales_by_rate[detail.tax_rate][1] += tax_amount
         else:
-            taxable_expenses += entry.amount; input_tax += tax_amount
-            if detail.invoice_status == "qualified":
-                qualified_input_tax += tax_amount
-            elif detail.invoice_status == "unconfirmed":
+            credit = finance_input_tax_credit(entry.occurred_on, tax_amount, detail.invoice_status)
+            taxable_expenses += entry.amount; input_tax += tax_amount; deductible_input_tax += credit
+            expenses_by_rate[detail.tax_rate][0] += entry.amount; expenses_by_rate[detail.tax_rate][1] += tax_amount; expenses_by_rate[detail.tax_rate][2] += credit
+            if detail.invoice_status == "unconfirmed":
                 invoice_unconfirmed_count += 1
     unclassified_count = len(entries) - len(tax_by_entry)
+    estimated_tax_due = max(0, output_tax - deductible_input_tax)
     closed = finance_period_close(session, tenant.id, first_day)
 
     def select_options(values: dict, selected: str) -> str:
@@ -6068,13 +6087,16 @@ def finance_tax_page(month: str = "", access=Depends(require_tenant_user), sessi
         state = "分類済み" if detail else "未分類"
         rows += f'<tr><td>{entry.occurred_on}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>{html.escape(entry.description)}</td><td>¥{entry.amount:,}</td><td>¥{tax_amount:,}</td><td><span class="badge">{state}</span></td><td>{form}</td></tr>'
         mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(entry.description)}</h3><p>{entry.occurred_on}／{"入金" if entry.entry_type == "income" else "経費"}／¥{entry.amount:,}</p><p>消費税概算 ¥{tax_amount:,}／<span class="badge">{state}</span></p>{form}</article>'''
-    body = f'''<h1>消費税区分・インボイス確認</h1><p>収支台帳の税込金額へ税区分・税率・適格請求書の確認状況を記録し、月次締め前の確認漏れを見つけます。</p>
+    rate_rows = "".join(f'<tr><td>{rate}%</td><td>¥{sales_by_rate[rate][0]:,}</td><td>¥{sales_by_rate[rate][1]:,}</td><td>¥{expenses_by_rate[rate][0]:,}</td><td>¥{expenses_by_rate[rate][1]:,}</td><td>¥{expenses_by_rate[rate][2]:,}</td></tr>' for rate in (8, 10))
+    category_rows = "".join(f'<tr><td>{FINANCE_TAX_CATEGORIES[key]}</td><td>¥{value[0]:,}</td><td>{value[1]}件</td></tr>' for key, value in category_totals.items())
+    body = f'''<h1>消費税集計・インボイス確認</h1><p>収支台帳の税込金額を税率・課税区分別に集計し、仕入税額控除と納付見込を確認します。</p>
     <form method="get" action="/modules/finance/tax"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{'<p class="tenant"><strong>この月は締め済みです。</strong>変更する場合は管理者が月次締めを解除してください。</p>' if closed else ''}
-    <div class="grid"><div class="module"><h3>課税売上（税込）</h3><strong>¥{taxable_sales:,}</strong><p>消費税概算 ¥{output_tax:,}</p></div><div class="module"><h3>課税仕入（税込）</h3><strong>¥{taxable_expenses:,}</strong><p>消費税概算 ¥{input_tax:,}</p></div><div class="module"><h3>適格請求書確認済み</h3><strong>¥{qualified_input_tax:,}</strong><p>仕入税額の概算</p></div><div class="module"><h3>税区分未分類</h3><strong class="{'error' if unclassified_count else ''}">{unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締め</a></div>
-    <p class="tenant">税額は税込金額から単純計算した管理上の概算です。登録番号は形式だけを確認し、国税庁公表サイトへの実在・有効性照会は自動では行いません。申告区分、端数処理、仕入税額控除、経過措置は税理士と原資料を確認してください。</p>
+    <div class="grid"><div class="module"><h3>課税売上（税込）</h3><strong>¥{taxable_sales:,}</strong><p>売上税額概算 ¥{output_tax:,}</p></div><div class="module"><h3>課税仕入（税込）</h3><strong>¥{taxable_expenses:,}</strong><p>税額概算 ¥{input_tax:,}</p></div><div class="module"><h3>控除対象仕入税額</h3><strong>¥{deductible_input_tax:,}</strong><p>経過措置を反映</p></div><div class="module"><h3>納付見込</h3><strong>¥{estimated_tax_due:,}</strong><p>売上税額－控除対象税額</p></div><div class="module"><h3>税区分未分類</h3><strong class="{'error' if unclassified_count else ''}">{unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/tax/report">年度集計</a><a class="button secondary" href="/modules/finance/tax.csv?month={first_day:%Y-%m}">CSV出力</a><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/finance/closing?month={first_day:%Y-%m}">月次締め</a></div>
+    <h2>税率別集計</h2><table><tr><th>税率</th><th>課税売上（税込）</th><th>売上税額</th><th>課税仕入（税込）</th><th>仕入税額</th><th>控除対象</th></tr>{rate_rows}</table><h2>課税区分別集計</h2><table><tr><th>課税区分</th><th>税込金額</th><th>件数</th></tr>{category_rows}</table>
+    <p class="tenant">税額は取引ごとの税込金額から計算した管理用概算です。適格請求書なしの仕入は、2026年9月30日まで80%、2029年9月30日まで50%の経過措置を反映します。登録番号の実在・有効性は自動照会しません。簡易課税、2割特例、端数処理、個別対応方式など申告上の調整は税理士と原資料を確認してください。</p>
     <h2>{first_day:%Y年%m月}の取引</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>区分</th><th>内容</th><th>税込金額</th><th>税額概算</th><th>状態</th><th>税区分・インボイス</th></tr>{rows or '<tr><td colspan="7">取引はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">取引はありません。</div>'}</section>'''
-    return layout("消費税区分・インボイス確認", body, user)
+    return layout("消費税集計・インボイス確認", body, user)
 
 
 @app.post("/modules/finance/tax")
@@ -6105,6 +6127,70 @@ def finance_tax_save(financial_entry_id: int = Form(...), tax_category: str = Fo
     record_finance_audit(session, tenant.id, user.id, "tax_update", "financial_entry", entry.id, "消費税区分・インボイス情報を更新", f"category={tax_category} rate={tax_rate} invoice={invoice_status}")
     session.commit()
     return RedirectResponse(f"/modules/finance/tax?month={entry.occurred_on:%Y-%m}", status_code=303)
+
+
+def finance_tax_report_data(session: Session, tenant_id: int, period_start: date, period_end: date):
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end).order_by(FinancialEntry.occurred_on, FinancialEntry.id).limit(20000)).all()
+    entry_ids = [item.id for item in entries]
+    classifications = session.scalars(select(FinanceTaxClassification).where(FinanceTaxClassification.tenant_id == tenant_id, FinanceTaxClassification.financial_entry_id.in_(entry_ids)).limit(20000)).all() if entry_ids else []
+    tax_by_entry = {item.financial_entry_id: item for item in classifications}; monthly: dict[tuple[int, int], list[int]] = {}; rate_totals = {8: [0, 0, 0, 0], 10: [0, 0, 0, 0]}
+    unclassified_count = len(entries) - len(tax_by_entry); invoice_unconfirmed_count = 0
+    for entry in entries:
+        detail = tax_by_entry.get(entry.id)
+        if not detail or detail.tax_category != "taxable": continue
+        tax_amount = estimated_included_tax(entry.amount, detail.tax_rate); key = (entry.occurred_on.year, entry.occurred_on.month); values = monthly.setdefault(key, [0, 0, 0, 0])
+        if entry.entry_type == "income":
+            values[0] += entry.amount; values[1] += tax_amount; rate_totals[detail.tax_rate][0] += entry.amount; rate_totals[detail.tax_rate][1] += tax_amount
+        else:
+            credit = finance_input_tax_credit(entry.occurred_on, tax_amount, detail.invoice_status)
+            values[2] += entry.amount; values[3] += credit; rate_totals[detail.tax_rate][2] += entry.amount; rate_totals[detail.tax_rate][3] += credit
+            if detail.invoice_status == "unconfirmed": invoice_unconfirmed_count += 1
+    return entries, tax_by_entry, monthly, rate_totals, unclassified_count, invoice_unconfirmed_count
+
+
+@app.get("/modules/finance/tax/report", response_class=HTMLResponse)
+def finance_tax_report_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    try: selected_year = int(start_year) if start_year else (date.today().year if date.today().month >= start_month else date.today().year - 1)
+    except ValueError: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    if selected_year < 2000 or selected_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(selected_year, start_month)
+    _, _, monthly, rate_totals, unclassified_count, invoice_unconfirmed_count = finance_tax_report_data(session, tenant.id, period_start, period_end)
+    months = finance_fiscal_months(period_start); rows = ""; output_total = credit_total = 0
+    for year, month in months:
+        sales, output, purchases, credit = monthly.get((year, month), [0, 0, 0, 0]); output_total += output; credit_total += credit
+        rows += f'<tr><td>{year}年{month}月</td><td>¥{sales:,}</td><td>¥{output:,}</td><td>¥{purchases:,}</td><td>¥{credit:,}</td><td>¥{max(0, output-credit):,}</td></tr>'
+    rate_rows = "".join(f'<tr><td>{rate}%</td><td>¥{values[0]:,}</td><td>¥{values[1]:,}</td><td>¥{values[2]:,}</td><td>¥{values[3]:,}</td></tr>' for rate, values in rate_totals.items())
+    body = f'''<h1>消費税・年度集計</h1><form method="get"><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form><div class="health-toolbar"><a class="button secondary" href="/modules/finance/tax">月次確認</a><a class="button secondary" href="/modules/finance/tax/report.csv?start_year={selected_year}">年度CSV</a></div>
+    <div class="grid"><div class="module"><h3>売上税額</h3><strong>¥{output_total:,}</strong></div><div class="module"><h3>控除対象仕入税額</h3><strong>¥{credit_total:,}</strong></div><div class="module"><h3>年間納付見込</h3><strong>¥{max(0, output_total-credit_total):,}</strong></div><div class="module"><h3>税区分未分類</h3><strong class="{'error' if unclassified_count else ''}">{unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div></div>
+    <h2>月別集計</h2><table><tr><th>月</th><th>課税売上</th><th>売上税額</th><th>課税仕入</th><th>控除対象</th><th>納付見込</th></tr>{rows}</table><h2>税率別集計</h2><table><tr><th>税率</th><th>課税売上</th><th>売上税額</th><th>課税仕入</th><th>控除対象</th></tr>{rate_rows}</table><p class="tenant">管理用概算です。正式な申告税額は課税方式、端数処理、各種特例を確認して税理士と確定してください。</p>'''
+    return layout("消費税・年度集計", body, user)
+
+
+@app.get("/modules/finance/tax.csv")
+def finance_tax_csv(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    try: first_day = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError: raise HTTPException(status_code=400, detail="対象月を確認してください")
+    if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1): raise HTTPException(status_code=400, detail="対象月を確認してください")
+    month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1); entries, tax_by_entry, _, _, _, _ = finance_tax_report_data(session, tenant.id, first_day, month_end)
+    rows = []
+    for entry in entries:
+        detail = tax_by_entry.get(entry.id); tax_amount = estimated_included_tax(entry.amount, detail.tax_rate) if detail and detail.tax_category == "taxable" else 0
+        credit = finance_input_tax_credit(entry.occurred_on, tax_amount, detail.invoice_status) if detail and entry.entry_type == "expense" else 0
+        rows.append([entry.occurred_on, "売上" if entry.entry_type == "income" else "仕入", entry.description, entry.amount, FINANCE_TAX_CATEGORIES.get(detail.tax_category, "未分類") if detail else "未分類", detail.tax_rate if detail else 0, tax_amount, FINANCE_INVOICE_STATUSES.get(detail.invoice_status, "") if detail else "", credit])
+    content = finance_export_csv(["日付", "取引区分", "摘要", "税込金額", "課税区分", "税率", "税額概算", "インボイス", "控除対象税額"], rows)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-tax-{first_day:%Y-%m}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/modules/finance/tax/report.csv")
+def finance_tax_report_csv(start_year: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    if start_year < 2000 or start_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(start_year, start_month); _, _, monthly, _, unclassified, unconfirmed = finance_tax_report_data(session, tenant.id, period_start, period_end)
+    rows = [[f"{year:04d}-{month:02d}", *monthly.get((year, month), [0, 0, 0, 0]), max(0, monthly.get((year, month), [0, 0, 0, 0])[1] - monthly.get((year, month), [0, 0, 0, 0])[3]), unclassified, unconfirmed] for year, month in finance_fiscal_months(period_start)]
+    content = finance_export_csv(["対象月", "課税売上", "売上税額", "課税仕入", "控除対象仕入税額", "納付見込", "年度未分類件数", "年度インボイス未確認件数"], rows)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-tax-report-{start_year}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/modules/finance/payables", response_class=HTMLResponse)

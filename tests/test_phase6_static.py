@@ -716,12 +716,18 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("amount * tax_rate // (100 + tax_rate)", segment)
         self.assertIn("if tax_rate else 0", segment)
 
+    def test_input_tax_credit_applies_invoice_transitional_rates_by_date(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_input_tax_credit")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ('invoice_status in {"qualified", "not_required"}', 'invoice_status != "nonqualified"', "date(2023, 10, 1)", "date(2026, 10, 1)", "tax_amount * 80 // 100", "date(2029, 10, 1)", "tax_amount * 50 // 100"):
+            self.assertIn(marker, segment)
+
     def test_finance_tax_page_is_monthly_tenant_scoped_and_mobile(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceTaxClassification.tenant_id == tenant.id", "taxable_sales", "taxable_expenses", "output_tax", "input_tax", "qualified_input_tax", "unclassified_count", "invoice_unconfirmed_count", "calendar-mobile-card", "calendar-mobile-only"):
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceTaxClassification.tenant_id == tenant.id", ".limit(10000)", "taxable_sales", "taxable_expenses", "output_tax", "input_tax", "deductible_input_tax", "estimated_tax_due", "sales_by_rate", "expenses_by_rate", "category_totals", "unclassified_count", "invoice_unconfirmed_count", "calendar-mobile-card", "calendar-mobile-only"):
             self.assertIn(marker, segment)
-        for label in ("課税売上（税込）", "課税仕入（税込）", "適格請求書確認済み", "税区分未分類", "インボイス未確認"):
+        for label in ("課税売上（税込）", "課税仕入（税込）", "控除対象仕入税額", "納付見込", "税率別集計", "課税区分別集計", "税区分未分類", "インボイス未確認"):
             self.assertIn(label, segment)
 
     def test_finance_tax_save_validates_invoice_and_period_lock(self):
@@ -736,11 +742,32 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinanceTaxClassification", "tax_unclassified_count", "invoice_unconfirmed_count", "消費税区分未分類", "インボイス未確認"):
             self.assertIn(marker, closing_source)
         self.assertIn('href="/modules/finance/tax', SOURCE)
-        self.assertIn('"finance/tax": ("消費税区分・インボイス確認"', SOURCE)
+        self.assertIn('"finance/tax": ("消費税集計・インボイス確認"', SOURCE)
         guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
         guide_source = ast.get_source_segment(SOURCE, guide)
         for marker in ("消費税区分", "インボイス確認", "自動照会しません", "税理士と原資料"):
             self.assertIn(marker, guide_source)
+
+    def test_tax_report_data_is_tenant_period_scoped_bounded_and_aggregated(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_report_data"))
+        for marker in ("FinancialEntry.tenant_id == tenant_id", "FinancialEntry.occurred_on >= period_start", "FinancialEntry.occurred_on <= period_end", ".limit(20000)", "FinanceTaxClassification.tenant_id == tenant_id", "monthly", "rate_totals", "finance_input_tax_credit", "unclassified_count", "invoice_unconfirmed_count"):
+            self.assertIn(marker, helper)
+
+    def test_tax_annual_report_uses_fiscal_year_monthly_rates_and_admin_scope(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_report_page"))
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_fiscal_period", "finance_fiscal_months", "finance_tax_report_data", "output_total", "credit_total", "年間納付見込", "月別集計", "税率別集計", "/modules/finance/tax/report.csv"):
+            self.assertIn(marker, route)
+
+    def test_tax_monthly_and_annual_csv_are_private_and_formula_safe(self):
+        monthly = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_csv"))
+        annual = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_report_csv"))
+        for segment in (monthly, annual):
+            for marker in ("finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+                self.assertIn(marker, segment)
+        for marker in ("require_tenant_user", "finance_tax_report_data", "finance_input_tax_credit", "控除対象税額"):
+            self.assertIn(marker, monthly)
+        for marker in ("require_tenant_admin", "finance_fiscal_period", "finance_fiscal_months", "finance_tax_report_data", "年度未分類件数"):
+            self.assertIn(marker, annual)
 
     def test_finance_vendor_and_payable_models_are_tenant_scoped(self):
         vendor = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceVendor")
