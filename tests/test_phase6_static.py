@@ -1097,6 +1097,68 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("仕訳帳", "科目別元帳", "口座別", "CSV", "複式簿記", "税理士"):
             self.assertIn(marker, guide_source)
 
+    def test_fiscal_setting_and_year_close_models_are_tenant_scoped(self):
+        setting = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFiscalSetting")
+        setting_source = ast.get_source_segment(SOURCE, setting)
+        for marker in ('__tablename__ = "finance_fiscal_settings"', 'UniqueConstraint("tenant_id"', "start_month", "updated_by_id", "updated_at"):
+            self.assertIn(marker, setting_source)
+        close = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceYearClose")
+        close_source = ast.get_source_segment(SOURCE, close)
+        for marker in ('__tablename__ = "finance_year_closes"', 'UniqueConstraint("tenant_id", "start_year"', "period_start", "period_end", "income_total", "expense_total", "entry_count", "closed_by_id", "closed_at", "notes"):
+            self.assertIn(marker, close_source)
+
+    def test_fiscal_period_supports_non_calendar_business_years(self):
+        period = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fiscal_period")
+        self.assertIn("date(start_year + 1, start_month, 1)", ast.get_source_segment(SOURCE, period))
+        months = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fiscal_months")
+        segment = ast.get_source_segment(SOURCE, months)
+        for marker in ("range(12)", "month_index // 12", "month_index % 12 + 1"):
+            self.assertIn(marker, segment)
+
+    def test_year_end_page_is_admin_scoped_and_checks_twelve_months_and_open_items(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_end_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinancePeriodClose.tenant_id == tenant.id", "FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "FinanceStatementLine.tenant_id == tenant.id", 'FinanceStatementLine.status == "unmatched"', "FinanceAccountEntry.tenant_id == tenant.id", "monthly_closed_count == 12", "unassigned_count == 0", "12か月の締め状況"):
+            self.assertIn(marker, segment)
+
+    def test_fiscal_setting_is_validated_locked_after_year_close_and_audited(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fiscal_setting_save")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "start_month < 1", "start_month > 12", ".with_for_update()", "FinanceYearClose.tenant_id == tenant.id", "item.start_month != start_month", "record_finance_audit", '"fiscal_setting"'):
+            self.assertIn(marker, segment)
+
+    def test_year_close_requires_all_months_and_no_open_items_then_snapshots(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_close")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "not confirmed", "finance_fiscal_period", "finance_fiscal_months", "FinancePeriodClose.tenant_id == tenant.id", "any(month not in monthly_closed", "pending", "unmatched", "entry_ids - assigned_ids", "FinanceYearClose(", "income_total=sum", "expense_total=sum", "record_finance_audit", '"year_close"'):
+            self.assertIn(marker, segment)
+
+    def test_year_reopen_is_confirmed_locked_and_audited_without_reopening_months(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_reopen")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", ".with_for_update()", "not confirmed", "record_finance_audit", '"year_reopen"', "session.delete(close_item)"):
+            self.assertIn(marker, segment)
+        self.assertNotIn("session.delete(month", segment)
+
+    def test_year_close_blocks_postings_and_month_reopen_until_released(self):
+        guard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "ensure_finance_period_open")
+        guard_source = ast.get_source_segment(SOURCE, guard)
+        for marker in ("FinanceYearClose.tenant_id == tenant_id", "FinanceYearClose.period_start <= target_day", "FinanceYearClose.period_end >= target_day", "年度締め済み"):
+            self.assertIn(marker, guard_source)
+        reopen = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reopen_period")
+        self.assertIn("先に年度締めを解除してください", ast.get_source_segment(SOURCE, reopen))
+
+    def test_year_end_has_module_navigation_guide_and_audit_actions(self):
+        self.assertIn('"finance/year-end": ("会計年度設定・年度締め"', SOURCE)
+        self.assertIn('href="/modules/finance/year-end"', SOURCE)
+        self.assertIn('"fiscal_setting": "会計年度設定"', SOURCE)
+        self.assertIn('"year_close": "年度締め"', SOURCE)
+        self.assertIn('"year_reopen": "年度締め解除"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("会計年度", "事業年度", "12か月", "月次締め", "年度締めを解除"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
