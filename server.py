@@ -78,6 +78,7 @@ MODULES = {
     "finance/chart-accounts": ("勘定科目・補助科目管理", "複式簿記で使用する勘定科目、補助科目、既存費目との対応管理"),
     "finance/journals": ("複式簿記仕訳", "借方・貸方が一致する仕訳伝票、既存収支連携、取消仕訳の管理"),
     "finance/opening-balances": ("期首残高・年度繰越", "初年度の期首残高と締め済み年度から翌年度への残高繰越"),
+    "finance/general-ledger": ("総勘定元帳・複式試算表", "複式仕訳を基礎にした科目別元帳と貸借一致する残高試算表"),
     "finance/fixed-assets": ("固定資産台帳・減価償却", "設備・車両等の取得情報、耐用年数、年度償却の管理"),
     "finance/year-end": ("会計年度設定・年度締め", "事業年度の開始月、年度点検、年度確定の管理"),
     "finance/year-end-checklist": ("決算前チェックリスト", "年度締め前の残高・証憑・税務確認と完了記録"),
@@ -1854,6 +1855,7 @@ def page_usage_guide(title: str) -> str:
         (("勘定科目", "補助科目", "科目マスター"), ["資産、負債、純資産、収益、費用の勘定科目と借方・貸方の通常残高を管理できます。", "既存の入金・経費費目を勘定科目へ対応付け、次段階の複式簿記へ引き継げます。"], ["初回は標準科目を一括作成します。", "必要な勘定科目・補助科目を追加します。", "既存費目の対応科目を確認・変更します。"], "使用済み科目の削除は行わず、停止して履歴を保持してください。科目区分や税務上の扱いは税理士に確認してください。"),
         (("複式簿記", "仕訳伝票", "借方", "貸方"), ["借方と貸方が一致する仕訳伝票を登録し、勘定科目・補助科目別に記録できます。", "既存の収支台帳を科目対応に従って複式仕訳へ重複なく変換できます。"], ["標準科目と費目対応を先に設定します。", "未連携の収支を複式仕訳へ変換するか、手動仕訳を登録します。", "誤りは元伝票を削除せず取消仕訳で訂正します。"], "貸借不一致の仕訳は登録できません。締め済み期間は変更できず、取消も新しい伝票として履歴を保持します。"),
         (("期首残高", "年度繰越", "残高繰越"), ["初年度の資産・負債残高を貸借一致の期首仕訳として登録できます。", "締め済み年度の資産・負債・純資産残高と当期損益を翌年度へ一度だけ繰り越せます。"], ["初年度は科目ごとの期首残高を登録します。", "12か月を締めて年度締めを完了します。", "繰越内容を確認し、翌年度の初日に期首仕訳を作成します。"], "年度繰越後は元年度の締めを解除できません。訂正が必要な場合は繰越前に行い、期首残高と税務上の扱いは税理士へ確認してください。"),
+        (("総勘定元帳", "複式試算表"), ["登録済みの借方・貸方仕訳から勘定科目別の総勘定元帳を作成します。", "科目ごとの借方合計、貸方合計、期末残高と全体の貸借一致を確認できます。"], ["事業年度を選びます。", "複式試算表で貸借差額がゼロであることを確認します。", "勘定科目を選び、相手科目と残高推移を総勘定元帳で照合します。"], "期首残高、年度繰越、取消仕訳を含む複式仕訳が集計対象です。税理士共有にはCSVを出力してください。"),
         (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
         (("決算前チェックリスト", "決算準備"), ["年度締め前に棚卸、売掛・買掛、固定資産、消費税、証憑、税理士確認の完了状況を記録できます。", "自動点検項目と担当者が確認する項目を一画面で照合できます。"], ["対象事業年度を選び、自動点検の未処理を解消します。", "原資料と残高を照合し、各項目を完了にします。", "全項目完了後に年度締めを実行します。"], "チェックだけで正式な決算・税務判断が完了するものではありません。根拠資料を保存し、必要な項目は税理士へ確認してください。"),
@@ -5287,7 +5289,7 @@ def finance_journals_page(month: str = "", access=Depends(require_tenant_admin),
     active_accounts = [item for item in accounts if item.active]; account_options = "".join(f'<option value="{item.id}">{html.escape(account_names[item.id])}</option>' for item in active_accounts); sub_options = "".join(f'<option value="{item.id}">{html.escape(account_names.get(item.account_id, ""))}／{html.escape(item.code)} {html.escape(item.name)}</option>' for item in subaccounts)
     linked_source_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.is_not(None))).all())
     unlinked_count = session.scalar(select(func.count(FinancialEntry.id)).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.id.not_in(linked_source_ids))) if linked_source_ids else session.scalar(select(func.count(FinancialEntry.id)).where(FinancialEntry.tenant_id == tenant.id))
-    body = f'''<h1>複式簿記仕訳</h1><p>借方・貸方が一致する仕訳伝票を登録し、既存の収支台帳も重複なく複式仕訳へ連携します。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance/chart-accounts">勘定科目・補助科目</a><a class="button secondary" href="/modules/finance/journals.csv?month={first_day:%Y-%m}">CSV出力</a></div>
+    body = f'''<h1>複式簿記仕訳</h1><p>借方・貸方が一致する仕訳伝票を登録し、既存の収支台帳も重複なく複式仕訳へ連携します。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance/chart-accounts">勘定科目・補助科目</a><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳・複式試算表</a><a class="button secondary" href="/modules/finance/journals.csv?month={first_day:%Y-%m}">CSV出力</a></div>
     <form method="get"><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required><button>表示</button></form>
     <div class="tenant"><strong>収支台帳の未連携：{unlinked_count or 0}件</strong><form method="post" action="/modules/finance/journals/sync"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 科目対応を確認し、古い日付順に最大100件を連携する</label><button>未連携収支を複式仕訳へ変換</button></form></div>
     <h2>手動仕訳を登録</h2><form method="post" action="/modules/finance/journals"><div class="grid"><div><label>仕訳日</label><input type="date" name="entry_date" value="{date.today()}" max="{date.today()}" required></div><div><label>摘要</label><input name="description" maxlength="200" required></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div><div><label>借方科目</label><select name="debit_account_id">{account_options}</select></div><div><label>借方補助科目</label><select name="debit_subaccount_id"><option value="">なし</option>{sub_options}</select></div><div><label>貸方科目</label><select name="credit_account_id">{account_options}</select></div><div><label>貸方補助科目</label><select name="credit_subaccount_id"><option value="">なし</option>{sub_options}</select></div></div><label>明細メモ</label><input name="memo" maxlength="200"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 借方・貸方と金額を確認しました</label><button>仕訳を登録</button></form>
@@ -5455,6 +5457,65 @@ def finance_opening_balances_csv(start_year: int, access=Depends(require_tenant_
     rows = [[start_year, accounts[item.account_id].code, accounts[item.account_id].name, subs[item.subaccount_id].name if item.subaccount_id in subs else "", "借方" if item.balance > 0 else "貸方", abs(item.balance), item.journal_entry_id, item.created_at] for item in openings if item.account_id in accounts]
     content = finance_export_csv(["事業年度", "科目コード", "勘定科目", "補助科目", "残高方向", "期首残高", "仕訳ID", "登録日時"], rows)
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-opening-balances-{start_year}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
+def finance_double_entry_data(session: Session, tenant_id: int, period_start: date, period_end: date):
+    accounts = session.scalars(select(FinanceChartAccount).where(FinanceChartAccount.tenant_id == tenant_id).order_by(FinanceChartAccount.code, FinanceChartAccount.id).limit(1000)).all()
+    subaccounts = session.scalars(select(FinanceSubaccount).where(FinanceSubaccount.tenant_id == tenant_id).order_by(FinanceSubaccount.code, FinanceSubaccount.id).limit(2000)).all()
+    journals = session.scalars(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.entry_date >= period_start, FinanceJournalEntry.entry_date <= period_end).order_by(FinanceJournalEntry.entry_date, FinanceJournalEntry.id).limit(10000)).all()
+    journal_ids = [item.id for item in journals]
+    lines = session.scalars(select(FinanceJournalLine).where(FinanceJournalLine.tenant_id == tenant_id, FinanceJournalLine.journal_entry_id.in_(journal_ids)).order_by(FinanceJournalLine.journal_entry_id, FinanceJournalLine.line_no).limit(50000)).all() if journal_ids else []
+    journal_order = {item.id: (item.entry_date, item.id) for item in journals}; lines.sort(key=lambda item: (*journal_order[item.journal_entry_id], item.line_no))
+    return accounts, subaccounts, journals, lines
+
+
+@app.get("/modules/finance/general-ledger", response_class=HTMLResponse)
+def finance_general_ledger_page(start_year: str = "", account_id: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    try: selected_year = int(start_year) if start_year else (date.today().year if date.today().month >= start_month else date.today().year - 1); selected_account_id = int(account_id) if account_id else None
+    except ValueError: raise HTTPException(status_code=400, detail="表示条件を確認してください")
+    if selected_year < 2000 or selected_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(selected_year, start_month); accounts, subaccounts, journals, lines = finance_double_entry_data(session, tenant.id, period_start, period_end)
+    account_by_id = {item.id: item for item in accounts}; sub_by_id = {item.id: item for item in subaccounts}; journal_by_id = {item.id: item for item in journals}
+    if selected_account_id is not None and selected_account_id not in account_by_id: raise HTTPException(status_code=404, detail="勘定科目が見つかりません")
+    totals = {item.id: [0, 0] for item in accounts}
+    for line in lines: totals.setdefault(line.account_id, [0, 0])[0 if line.side == "debit" else 1] += line.amount
+    debit_grand = sum(value[0] for value in totals.values()); credit_grand = sum(value[1] for value in totals.values())
+    trial_rows = ""
+    for account in accounts:
+        debit, credit = totals.get(account.id, [0, 0]); signed = debit - credit
+        if not debit and not credit: continue
+        trial_rows += f'<tr><td>{html.escape(account.code)}</td><td><a href="/modules/finance/general-ledger?start_year={selected_year}&account_id={account.id}">{html.escape(account.name)}</a></td><td>¥{debit:,}</td><td>¥{credit:,}</td><td>{"借方" if signed >= 0 else "貸方"} ¥{abs(signed):,}</td></tr>'
+    options = "".join(f'<option value="{item.id}" {"selected" if selected_account_id == item.id else ""}>{html.escape(item.code)} {html.escape(item.name)}</option>' for item in accounts)
+    ledger_rows = ""; running = 0
+    if selected_account_id:
+        lines_by_journal: dict[int, list[FinanceJournalLine]] = {}
+        for line in lines: lines_by_journal.setdefault(line.journal_entry_id, []).append(line)
+        for line in lines:
+            if line.account_id != selected_account_id: continue
+            journal = journal_by_id[line.journal_entry_id]; running += line.amount if line.side == "debit" else -line.amount
+            counterparts = "、".join(html.escape(account_by_id.get(other.account_id).name if other.account_id in account_by_id else "科目不明") for other in lines_by_journal.get(journal.id, []) if other.line_no != line.line_no)
+            sub_name = html.escape(sub_by_id[line.subaccount_id].name) if line.subaccount_id in sub_by_id else "－"
+            ledger_rows += f'<tr><td>{journal.entry_date}</td><td>{html.escape(journal.voucher_no)}</td><td>{html.escape(journal.description)}</td><td>{sub_name}</td><td>{counterparts or "－"}</td><td>{f"¥{line.amount:,}" if line.side == "debit" else "－"}</td><td>{f"¥{line.amount:,}" if line.side == "credit" else "－"}</td><td>{"借方" if running >= 0 else "貸方"} ¥{abs(running):,}</td></tr>'
+    body = f'''<h1>総勘定元帳・複式試算表</h1><p>{period_start}～{period_end}の複式仕訳を科目別に集計します。期首残高、年度繰越、取消仕訳も反映されます。</p><form method="get"><div class="grid"><div><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required></div><div><label>総勘定元帳の科目</label><select name="account_id"><option value="">科目を選択</option>{options}</select></div></div><button>表示</button></form><div class="health-toolbar"><a class="button secondary" href="/modules/finance/general-ledger.csv?start_year={selected_year}&account_id={selected_account_id or ''}">CSV出力</a><a class="button secondary" href="/modules/finance/journals">複式仕訳</a><a class="button secondary" href="/modules/finance/opening-balances">期首・繰越</a></div>
+    <div class="grid"><div class="module"><h3>借方合計</h3><strong>¥{debit_grand:,}</strong></div><div class="module"><h3>貸方合計</h3><strong>¥{credit_grand:,}</strong></div><div class="module"><h3>貸借差額</h3><strong class="{'error' if debit_grand != credit_grand else ''}">¥{abs(debit_grand-credit_grand):,}</strong></div></div><h2>複式残高試算表</h2><table><tr><th>コード</th><th>勘定科目</th><th>借方合計</th><th>貸方合計</th><th>残高</th></tr>{trial_rows or '<tr><td colspan="5">対象期間の複式仕訳はありません。</td></tr>'}</table><h2>総勘定元帳</h2><table><tr><th>日付</th><th>伝票番号</th><th>摘要</th><th>補助科目</th><th>相手科目</th><th>借方</th><th>貸方</th><th>残高</th></tr>{ledger_rows or '<tr><td colspan="8">勘定科目を選択してください。</td></tr>'}</table>'''
+    return layout("総勘定元帳・複式試算表", body, user)
+
+
+@app.get("/modules/finance/general-ledger.csv")
+def finance_general_ledger_csv(start_year: int, account_id: int | None = None, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    if start_year < 2000 or start_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(start_year, start_month); accounts, subaccounts, journals, lines = finance_double_entry_data(session, tenant.id, period_start, period_end)
+    account_by_id = {item.id: item for item in accounts}; sub_by_id = {item.id: item for item in subaccounts}; journal_by_id = {item.id: item for item in journals}
+    if account_id is not None and account_id not in account_by_id: raise HTTPException(status_code=404, detail="勘定科目が見つかりません")
+    rows = []
+    for line in lines:
+        if account_id is not None and line.account_id != account_id: continue
+        journal = journal_by_id[line.journal_entry_id]; account = account_by_id.get(line.account_id)
+        rows.append([journal.entry_date, journal.voucher_no, journal.description, account.code if account else "", account.name if account else "", sub_by_id[line.subaccount_id].name if line.subaccount_id in sub_by_id else "", "借方" if line.side == "debit" else "貸方", line.amount, line.memo or ""])
+    content = finance_export_csv(["日付", "伝票番号", "摘要", "科目コード", "勘定科目", "補助科目", "借貸", "金額", "明細メモ"], rows)
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-general-ledger-{start_year}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
 
 FINANCE_ASSET_TYPES = {"equipment": "設備・機器", "vehicle": "車両", "building": "建物・内装", "software": "ソフトウェア", "other": "その他"}

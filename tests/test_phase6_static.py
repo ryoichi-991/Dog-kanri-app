@@ -1446,6 +1446,28 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("期首残高", "年度繰越", "資産", "負債", "純資産", "当期損益", "税理士"):
             self.assertIn(marker, guide)
 
+    def test_double_entry_data_is_tenant_period_scoped_ordered_and_bounded(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_double_entry_data"))
+        for marker in ("FinanceChartAccount.tenant_id == tenant_id", ".limit(1000)", "FinanceSubaccount.tenant_id == tenant_id", ".limit(2000)", "FinanceJournalEntry.tenant_id == tenant_id", "FinanceJournalEntry.entry_date >= period_start", "FinanceJournalEntry.entry_date <= period_end", ".limit(10000)", "FinanceJournalLine.tenant_id == tenant_id", ".limit(50000)", "journal_order", "lines.sort", "item.line_no"):
+            self.assertIn(marker, helper)
+
+    def test_general_ledger_page_is_admin_fiscal_scoped_and_balances_debits_credits(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_general_ledger_page"))
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_fiscal_period", "finance_double_entry_data", "selected_account_id not in account_by_id", "debit_grand", "credit_grand", "line.side == \"debit\"", "running", "counterparts", "貸借差額", "複式残高試算表", "総勘定元帳", "/modules/finance/general-ledger.csv"):
+            self.assertIn(marker, page)
+
+    def test_general_ledger_csv_is_admin_scoped_private_formula_safe_and_filterable(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_general_ledger_csv"))
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_fiscal_period", "finance_double_entry_data", "account_id not in account_by_id", "line.account_id != account_id", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, route)
+
+    def test_general_ledger_has_module_navigation_and_guide(self):
+        self.assertIn('"finance/general-ledger": ("総勘定元帳・複式試算表"', SOURCE)
+        self.assertIn('href="/modules/finance/general-ledger"', SOURCE)
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("総勘定元帳", "複式試算表", "借方合計", "貸方合計", "貸借一致", "期首残高", "年度繰越", "取消仕訳", "税理士"):
+            self.assertIn(marker, guide)
+
     def test_fixed_asset_models_are_tenant_scoped_and_depreciation_is_unique(self):
         asset = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceFixedAsset")
         asset_source = ast.get_source_segment(SOURCE, asset)
