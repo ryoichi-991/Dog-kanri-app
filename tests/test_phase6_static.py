@@ -1134,6 +1134,28 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ('__tablename__ = "finance_year_closes"', 'UniqueConstraint("tenant_id", "start_year"', "period_start", "period_end", "income_total", "expense_total", "entry_count", "closed_by_id", "closed_at", "notes"):
             self.assertIn(marker, close_source)
 
+    def test_year_close_checklist_model_is_tenant_year_item_unique_and_audited(self):
+        model = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceYearCloseChecklist"))
+        for marker in ('__tablename__ = "finance_year_close_checklists"', 'UniqueConstraint("tenant_id", "start_year", "item_key"', "completed", "notes", "checked_by_id", "checked_at"):
+            self.assertIn(marker, model)
+        for marker in ("inventory", "receivables", "payables", "fixed_assets", "tax", "documents", "accountant"):
+            self.assertIn(f'"{marker}"', SOURCE)
+
+    def test_year_checklist_complete_requires_exact_standard_keys(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_complete"))
+        for marker in ("FinanceYearCloseChecklist.tenant_id == tenant_id", "FinanceYearCloseChecklist.start_year == start_year", "FinanceYearCloseChecklist.completed.is_(True)", "set(FINANCE_YEAR_CHECKLIST_ITEMS).issubset(completed_keys)"):
+            self.assertIn(marker, helper)
+
+    def test_year_checklist_page_is_admin_scoped_bounded_and_links_reports(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_page"))
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinanceYearCloseChecklist.tenant_id == tenant.id", ".limit(100)", "FinanceYearClose.tenant_id == tenant.id", "completed_count", "/modules/finance/export", "/modules/finance/tax/report", "年度締め済み"):
+            self.assertIn(marker, page)
+
+    def test_year_checklist_update_validates_locks_upserts_and_audits(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_update"))
+        for marker in ("require_tenant_admin", "not confirmed", "item_key not in FINANCE_YEAR_CHECKLIST_ITEMS", "len(notes) > 500", "FinanceYearClose.tenant_id == tenant.id", "FinanceYearCloseChecklist.tenant_id == tenant.id", ".with_for_update()", "item.completed = completed", "FinanceYearCloseChecklist(", '"year_checklist_update"'):
+            self.assertIn(marker, route)
+
     def test_fiscal_period_supports_non_calendar_business_years(self):
         period = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_fiscal_period")
         self.assertIn("date(start_year + 1, start_month, 1)", ast.get_source_segment(SOURCE, period))
@@ -1145,7 +1167,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_year_end_page_is_admin_scoped_and_checks_twelve_months_and_open_items(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_end_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinancePeriodClose.tenant_id == tenant.id", "FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "FinanceStatementLine.tenant_id == tenant.id", 'FinanceStatementLine.status == "unmatched"', "FinanceAccountEntry.tenant_id == tenant.id", "FinanceJournalEntry.tenant_id == tenant.id", "unjournaled_count", "monthly_closed_count == 12", "unassigned_count == 0", "unjournaled_count == 0", "12か月の締め状況"):
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinancePeriodClose.tenant_id == tenant.id", "FinanceExpenseRequest.tenant_id == tenant.id", 'FinanceExpenseRequest.status == "pending"', "FinanceStatementLine.tenant_id == tenant.id", 'FinanceStatementLine.status == "unmatched"', "FinanceAccountEntry.tenant_id == tenant.id", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceYearCloseChecklist.tenant_id == tenant.id", "checklist_completed_count", "unjournaled_count", "monthly_closed_count == 12", "unassigned_count == 0", "unjournaled_count == 0", "12か月の締め状況"):
             self.assertIn(marker, segment)
 
     def test_fiscal_setting_is_validated_locked_after_year_close_and_audited(self):
@@ -1157,7 +1179,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_year_close_requires_all_months_and_no_open_items_then_snapshots(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_close")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "not confirmed", "finance_fiscal_period", "finance_fiscal_months", "FinancePeriodClose.tenant_id == tenant.id", "any(month not in monthly_closed", "pending", "unmatched", "entry_ids - assigned_ids", "FinanceJournalEntry.source_entry_id.in_(entry_ids)", "entry_ids - journaled_ids", "FinanceYearClose(", "income_total=sum", "expense_total=sum", "record_finance_audit", '"year_close"'):
+        for marker in ("require_tenant_admin", "not confirmed", "finance_fiscal_period", "finance_fiscal_months", "FinancePeriodClose.tenant_id == tenant.id", "any(month not in monthly_closed", "pending", "unmatched", "entry_ids - assigned_ids", "FinanceJournalEntry.source_entry_id.in_(entry_ids)", "entry_ids - journaled_ids", "finance_year_checklist_complete", "FinanceYearClose(", "income_total=sum", "expense_total=sum", "record_finance_audit", '"year_close"'):
             self.assertIn(marker, segment)
 
     def test_year_reopen_is_confirmed_locked_and_audited_without_reopening_months(self):
@@ -1185,6 +1207,14 @@ class Phase6StaticTests(unittest.TestCase):
         guide_source = ast.get_source_segment(SOURCE, guide)
         for marker in ("会計年度", "事業年度", "12か月", "月次締め", "年度締めを解除"):
             self.assertIn(marker, guide_source)
+
+    def test_year_checklist_has_module_navigation_guide_and_audit_action(self):
+        self.assertIn('"finance/year-end-checklist": ("決算前チェックリスト"', SOURCE)
+        self.assertIn('href="/modules/finance/year-end-checklist"', SOURCE)
+        self.assertIn('"year_checklist_update": "決算前チェック更新"', SOURCE)
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("決算前チェックリスト", "棚卸", "売掛", "買掛", "固定資産", "消費税", "証憑", "税理士"):
+            self.assertIn(marker, guide)
 
     def test_trial_balance_period_uses_fiscal_year_and_validates_month(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_trial_balance_period")

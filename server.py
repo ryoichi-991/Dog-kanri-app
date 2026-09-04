@@ -80,6 +80,7 @@ MODULES = {
     "finance/opening-balances": ("期首残高・年度繰越", "初年度の期首残高と締め済み年度から翌年度への残高繰越"),
     "finance/fixed-assets": ("固定資産台帳・減価償却", "設備・車両等の取得情報、耐用年数、年度償却の管理"),
     "finance/year-end": ("会計年度設定・年度締め", "事業年度の開始月、年度点検、年度確定の管理"),
+    "finance/year-end-checklist": ("決算前チェックリスト", "年度締め前の残高・証憑・税務確認と完了記録"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -705,6 +706,19 @@ class FinanceYearClose(Base):
     closed_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class FinanceYearCloseChecklist(Base):
+    __tablename__ = "finance_year_close_checklists"
+    __table_args__ = (UniqueConstraint("tenant_id", "start_year", "item_key", name="uq_finance_year_close_checklist_item"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    start_year: Mapped[int] = mapped_column(Integer, index=True)
+    item_key: Mapped[str] = mapped_column(String(40), index=True)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    checked_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class FinanceFixedAsset(Base):
@@ -1842,6 +1856,7 @@ def page_usage_guide(title: str) -> str:
         (("期首残高", "年度繰越", "残高繰越"), ["初年度の資産・負債残高を貸借一致の期首仕訳として登録できます。", "締め済み年度の資産・負債・純資産残高と当期損益を翌年度へ一度だけ繰り越せます。"], ["初年度は科目ごとの期首残高を登録します。", "12か月を締めて年度締めを完了します。", "繰越内容を確認し、翌年度の初日に期首仕訳を作成します。"], "年度繰越後は元年度の締めを解除できません。訂正が必要な場合は繰越前に行い、期首残高と税務上の扱いは税理士へ確認してください。"),
         (("固定資産", "減価償却"), ["設備、機器、車両などの取得価額、耐用年数、事業使用割合を台帳管理できます。", "終了した事業年度の償却額を重複なく経費台帳へ計上できます。"], ["固定資産の取得情報を登録します。", "対象事業年度の償却見込額を確認します。", "年度終了後に確認チェックを入れて経費計上します。"], "耐用年数、償却方法、少額資産の扱いは税務判断が必要です。計上前に税理士へ確認し、ここでは定額法の管理用概算として扱ってください。"),
         (("会計年度", "年度締め", "事業年度"), ["事業年度の開始月を設定し、12か月分の月次締めと年度内の未処理を確認できます。", "年度確定時の収支・件数・実行者・日時を保存できます。"], ["事業年度の開始月を設定します。", "12か月すべての月次締めと未処理0件を確認します。", "管理者が年度締めを実行します。"], "年度締めを解除しても各月の月次締めは解除されません。修正する月だけ月次締めを解除し、修正後に締め直してください。"),
+        (("決算前チェックリスト", "決算準備"), ["年度締め前に棚卸、売掛・買掛、固定資産、消費税、証憑、税理士確認の完了状況を記録できます。", "自動点検項目と担当者が確認する項目を一画面で照合できます。"], ["対象事業年度を選び、自動点検の未処理を解消します。", "原資料と残高を照合し、各項目を完了にします。", "全項目完了後に年度締めを実行します。"], "チェックだけで正式な決算・税務判断が完了するものではありません。根拠資料を保存し、必要な項目は税理士へ確認してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1891,7 +1906,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/chart-accounts"><span>⌘</span>勘定科目</a><a href="/modules/finance/journals"><span>⇆</span>複式仕訳</a><a href="/modules/finance/opening-balances"><span>↦</span>期首・繰越</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/chart-accounts"><span>⌘</span>勘定科目</a><a href="/modules/finance/journals"><span>⇆</span>複式仕訳</a><a href="/modules/finance/opening-balances"><span>↦</span>期首・繰越</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/year-end-checklist"><span>☑</span>決算前確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4810,6 +4825,7 @@ FINANCE_AUDIT_ACTIONS = {
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
     "journal_create": "複式仕訳登録", "journal_sync": "収支複式仕訳連携", "journal_reverse": "複式仕訳取消",
     "opening_balance_create": "期首残高登録", "year_carryforward": "年度残高繰越",
+    "year_checklist_update": "決算前チェック更新",
 }
 
 
@@ -5575,6 +5591,54 @@ def finance_fixed_asset_dispose(asset_id: int, disposed_on: str = Form(...), con
     return RedirectResponse("/modules/finance/fixed-assets", status_code=303)
 
 
+FINANCE_YEAR_CHECKLIST_ITEMS = {
+    "inventory": "期末在庫・棚卸資産を確認",
+    "receivables": "売掛金・未入金残高を確認",
+    "payables": "買掛金・未払金残高を確認",
+    "fixed_assets": "固定資産・除却・減価償却を確認",
+    "tax": "消費税区分・インボイス・納付見込を確認",
+    "documents": "請求書・領収書・証憑の保存を確認",
+    "accountant": "試算表・決算資料を税理士と確認",
+}
+
+
+def finance_year_checklist_complete(session: Session, tenant_id: int, start_year: int) -> bool:
+    completed_keys = set(session.scalars(select(FinanceYearCloseChecklist.item_key).where(FinanceYearCloseChecklist.tenant_id == tenant_id, FinanceYearCloseChecklist.start_year == start_year, FinanceYearCloseChecklist.completed.is_(True))).all())
+    return set(FINANCE_YEAR_CHECKLIST_ITEMS).issubset(completed_keys)
+
+
+@app.get("/modules/finance/year-end-checklist", response_class=HTMLResponse)
+def finance_year_checklist_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    try: selected_year = int(start_year) if start_year else (date.today().year if date.today().month >= start_month else date.today().year - 1)
+    except ValueError: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    if selected_year < 2000 or selected_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
+    period_start, period_end = finance_fiscal_period(selected_year, start_month)
+    records = session.scalars(select(FinanceYearCloseChecklist).where(FinanceYearCloseChecklist.tenant_id == tenant.id, FinanceYearCloseChecklist.start_year == selected_year).limit(100)).all(); record_by_key = {item.item_key: item for item in records}
+    year_closed = session.scalar(select(FinanceYearClose.id).where(FinanceYearClose.tenant_id == tenant.id, FinanceYearClose.start_year == selected_year))
+    rows = ""; completed_count = 0
+    for key, label in FINANCE_YEAR_CHECKLIST_ITEMS.items():
+        item = record_by_key.get(key); completed = bool(item and item.completed); completed_count += completed
+        form = '<span class="badge">年度締め済み</span>' if year_closed else f'''<form method="post" action="/modules/finance/year-end-checklist"><input type="hidden" name="start_year" value="{selected_year}"><input type="hidden" name="item_key" value="{key}"><label><input type="checkbox" name="completed" value="true" style="width:auto" {"checked" if completed else ""}> 完了</label><input name="notes" value="{html.escape(item.notes or "") if item else ""}" maxlength="500" placeholder="確認内容・根拠資料"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 更新確認</label><button>保存</button></form>'''
+        rows += f'<tr><td>{html.escape(label)}</td><td><span class="badge">{"完了" if completed else "未完了"}</span></td><td>{item.checked_at.strftime("%Y-%m-%d %H:%M") if item else "－"}</td><td>{form}</td></tr>'
+    body = f'''<h1>決算前チェックリスト</h1><p>{period_start}～{period_end}の決算準備を確認し、全項目の完了後に年度締めへ進みます。</p><form method="get"><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form><div class="grid"><div class="module"><h3>完了状況</h3><strong class="{'error' if completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end?start_year={selected_year}">年度締め</a><a class="button secondary" href="/modules/finance/export">決算資料ZIP</a><a class="button secondary" href="/modules/finance/tax/report?start_year={selected_year}">消費税年度集計</a></div><table><tr><th>確認項目</th><th>状態</th><th>最終確認</th><th>確認内容</th></tr>{rows}</table><p class="tenant">完了記録は年度締めの必須条件です。根拠資料を保存し、税務判断が必要な項目は税理士と確認してください。</p>'''
+    return layout("決算前チェックリスト", body, user)
+
+
+@app.post("/modules/finance/year-end-checklist")
+def finance_year_checklist_update(start_year: int = Form(...), item_key: str = Form(...), completed: bool = Form(False), notes: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    if not confirmed or start_year < 2000 or start_year > 2099 or item_key not in FINANCE_YEAR_CHECKLIST_ITEMS or len(notes) > 500: raise HTTPException(status_code=400, detail="チェック内容を確認してください")
+    if session.scalar(select(FinanceYearClose.id).where(FinanceYearClose.tenant_id == tenant.id, FinanceYearClose.start_year == start_year)): raise HTTPException(status_code=409, detail="年度締め済みのため変更できません")
+    item = session.scalar(select(FinanceYearCloseChecklist).where(FinanceYearCloseChecklist.tenant_id == tenant.id, FinanceYearCloseChecklist.start_year == start_year, FinanceYearCloseChecklist.item_key == item_key).with_for_update())
+    if item:
+        item.completed = completed; item.notes = notes.strip() or None; item.checked_by_id = user.id; item.checked_at = datetime.now(timezone.utc)
+    else:
+        item = FinanceYearCloseChecklist(tenant_id=tenant.id, start_year=start_year, item_key=item_key, completed=completed, notes=notes.strip() or None, checked_by_id=user.id); session.add(item)
+    session.flush(); record_finance_audit(session, tenant.id, user.id, "year_checklist_update", "finance_year_close_checklist", item.id, "決算前チェックを更新", f"year={start_year} item={item_key} completed={completed}")
+    session.commit(); return RedirectResponse(f"/modules/finance/year-end-checklist?start_year={start_year}", status_code=303)
+
+
 @app.get("/modules/finance/year-end", response_class=HTMLResponse)
 def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -5602,19 +5666,21 @@ def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_ad
     pending_count = session.scalar(select(func.count(FinanceExpenseRequest.id)).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.status == "pending", FinanceExpenseRequest.expense_on >= period_start, FinanceExpenseRequest.expense_on <= period_end)) or 0
     unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched", FinanceStatementLine.transacted_on >= period_start, FinanceStatementLine.transacted_on <= period_end)) or 0
     monthly_closed_count = sum((year, month) in closed_months for year, month in months)
+    checklist_records = session.scalars(select(FinanceYearCloseChecklist).where(FinanceYearCloseChecklist.tenant_id == tenant.id, FinanceYearCloseChecklist.start_year == selected_year, FinanceYearCloseChecklist.completed.is_(True))).all()
+    checklist_completed_count = len({item.item_key for item in checklist_records if item.item_key in FINANCE_YEAR_CHECKLIST_ITEMS})
     existing = session.scalar(select(FinanceYearClose).where(FinanceYearClose.tenant_id == tenant.id, FinanceYearClose.start_year == selected_year))
-    ready = monthly_closed_count == 12 and pending_count == 0 and unmatched_count == 0 and unassigned_count == 0 and unjournaled_count == 0
+    ready = monthly_closed_count == 12 and pending_count == 0 and unmatched_count == 0 and unassigned_count == 0 and unjournaled_count == 0 and checklist_completed_count == len(FINANCE_YEAR_CHECKLIST_ITEMS)
     if existing:
         action = f'''<div class="tenant"><strong>年度締め済み</strong><p>{existing.closed_at.strftime("%Y-%m-%d %H:%M")}／入金 ¥{existing.income_total:,}／経費 ¥{existing.expense_total:,}／{existing.entry_count}件</p></div><form method="post" action="/modules/finance/year-end/reopen"><input type="hidden" name="start_year" value="{selected_year}"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 年度締めを解除することを確認しました</label><button class="danger">年度締めを解除</button></form>'''
     elif ready:
         action = f'''<form method="post" action="/modules/finance/year-end/close"><input type="hidden" name="start_year" value="{selected_year}"><label>年度締めメモ</label><input name="notes" maxlength="500"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 12か月の月次締めと未処理0件を確認しました</label><button class="success">この事業年度を締める</button></form>'''
     else:
-        action = '<p class="error">12か月すべての月次締めと、承認待ち・銀行明細未処理・口座未割当・複式仕訳未連携の解消後に年度締めできます。</p>'
+        action = '<p class="error">12か月の月次締め、未処理項目の解消、決算前チェックリスト全項目の完了後に年度締めできます。</p>'
     month_options = "".join(f'<option value="{month}" {"selected" if month == start_month else ""}>{month}月</option>' for month in range(1, 13))
     body = f'''<h1>会計年度設定・年度締め</h1><p>事業年度の開始月を設定し、月次締めと未処理状況を確認して年度を確定します。</p>
     <form method="post" action="/modules/finance/year-end/setting"><label>事業年度の開始月</label><select name="start_month">{month_options}</select><button>開始月を保存</button></form>
     <form method="get"><label>表示する事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form>
-    <div class="grid"><div class="module"><h3>対象期間</h3><strong>{period_start}<br>～{period_end}</strong></div><div class="module"><h3>月次締め</h3><strong class="{'error' if monthly_closed_count < 12 else ''}">{monthly_closed_count}/12か月</strong></div><div class="module"><h3>承認待ち</h3><strong class="{'error' if pending_count else ''}">{pending_count}件</strong></div><div class="module"><h3>明細未処理</h3><strong class="{'error' if unmatched_count else ''}">{unmatched_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>複式仕訳未連携</h3><strong class="{'error' if unjournaled_count else ''}">{unjournaled_count}件</strong></div></div>
+    <div class="grid"><div class="module"><h3>対象期間</h3><strong>{period_start}<br>～{period_end}</strong></div><div class="module"><h3>月次締め</h3><strong class="{'error' if monthly_closed_count < 12 else ''}">{monthly_closed_count}/12か月</strong></div><div class="module"><h3>承認待ち</h3><strong class="{'error' if pending_count else ''}">{pending_count}件</strong></div><div class="module"><h3>明細未処理</h3><strong class="{'error' if unmatched_count else ''}">{unmatched_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>複式仕訳未連携</h3><strong class="{'error' if unjournaled_count else ''}">{unjournaled_count}件</strong></div><div class="module"><h3>決算前チェック</h3><strong class="{'error' if checklist_completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{checklist_completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end-checklist?start_year={selected_year}">決算前チェックリスト</a></div>
     {action}<h2>12か月の締め状況</h2><table><tr><th>対象月</th><th>状態</th><th>確認</th></tr>{month_rows}</table>'''
     return layout("会計年度設定・年度締め", body, user)
 
@@ -5658,7 +5724,7 @@ def finance_year_close(start_year: int = Form(...), notes: str = Form(""), confi
     non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, entry_ids)
     assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
     journaled_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entry_ids))).all()) if entry_ids else set()
-    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids - non_cash_ids or entry_ids - journaled_ids:
+    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids - non_cash_ids or entry_ids - journaled_ids or not finance_year_checklist_complete(session, tenant.id, start_year):
         raise HTTPException(status_code=409, detail="月次締めまたは未処理項目を確認してください")
     close_item = FinanceYearClose(tenant_id=tenant.id, start_year=start_year, period_start=period_start, period_end=period_end, income_total=sum(item.amount for item in entries if item.entry_type == "income"), expense_total=sum(item.amount for item in entries if item.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None)
     session.add(close_item); session.flush()
