@@ -71,6 +71,7 @@ MODULES = {
     "finance/receivables": ("売掛金・請求書入金消込", "未入金請求、期限超過、口座入金、銀行明細との消込"),
     "finance/corrections": ("仕訳訂正・取消履歴", "元記録を残す反対仕訳、訂正仕訳、理由と操作履歴"),
     "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、領収書添付、管理者承認、却下、台帳計上"),
+    "finance/audit": ("会計操作ログ・監査証跡", "会計操作の実行者、日時、対象、処理内容の追跡"),
     "finance/closing": ("月次締め・会計期間ロック", "月次点検、残高確定、締め後の誤登録防止"),
     "finance/export": ("会計・証憑一括出力", "税理士共有用CSV、証憑原本、整合性情報のZIP出力"),
     "invoices": ("請求書管理", "販売案件の請求書作成、入金管理、PDF出力"),
@@ -657,6 +658,19 @@ class FinanceExpenseDocument(Base):
     content_type: Mapped[str] = mapped_column(String(100))
     file_data: Mapped[bytes] = mapped_column(LargeBinary)
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class FinanceAuditEvent(Base):
+    __tablename__ = "finance_audit_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    actor_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), index=True)
+    action: Mapped[str] = mapped_column(String(40), index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    summary: Mapped[str] = mapped_column(String(300))
+    details: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
 
 
 class FinancePeriodClose(Base):
@@ -1520,6 +1534,15 @@ def record_operation(session: Session, category: str, status_value: str, summary
         summary=summary[:300], details=(details or "")[:1000] or None))
 
 
+def record_finance_audit(session: Session, tenant_id: int, actor_user_id: int, action: str,
+                         entity_type: str, entity_id: int | None, summary: str,
+                         details: str | None = None) -> None:
+    """会計操作を追記専用の監査証跡として保存する。"""
+    session.add(FinanceAuditEvent(tenant_id=tenant_id, actor_user_id=actor_user_id,
+        action=action[:40], entity_type=entity_type[:40], entity_id=entity_id,
+        summary=summary[:300], details=(details or "")[:1000] or None))
+
+
 def send_web_push(user_id: int, category: str, title: str, body: str, url: str, dedupe_key: str, session: Session) -> int:
     setting = session.scalar(select(FamilyNotificationSetting).where(FamilyNotificationSetting.user_id == user_id))
     if not setting or not setting.push_enabled or not getattr(setting, category, False) or not push_ready():
@@ -1648,6 +1671,7 @@ def page_usage_guide(title: str) -> str:
         (("売掛金", "入金消込"), ["発行済み請求書の未入金額、期限超過、入金履歴を確認できます。", "口座への直接入金または銀行明細の入金を、請求書と収支台帳へ一度だけ結び付けられます。"], ["請求書を発行済みにします。", "入金日・入金口座を確認するか、銀行明細の一致候補を選びます。", "確認欄を入れて請求書を入金済みにします。"], "同じ入金を手入力と銀行明細の両方から登録しないでください。金額が同じ請求書が複数ある場合は、請求番号とお客様名を必ず確認してください。"),
         (("仕訳訂正", "取消履歴", "反対仕訳"), ["誤った収支記録を削除せず、元記録・反対仕訳・訂正後の記録を一組で残せます。", "訂正理由、実行者、実行日時を記録し、会計データの変更経緯を確認できます。"], ["訂正対象と訂正日を選びます。", "取消のみ、または正しい内容へ訂正を選び、理由を入力します。", "確認欄を入れて管理者が実行します。"], "元記録は削除されません。請求書入金、買掛金支払、定期収支など他機能から作られた記録は、元機能との不整合を防ぐためこの画面では訂正できません。"),
         (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、領収書やレシートの原本を添付できます。", "管理者は証憑を確認して承認または却下し、承認者、承認日時、判断コメントを残せます。"], ["経費日・費目・内容・金額を入力して申請します。", "申請一覧からPDFまたは写真の証憑を登録します。", "管理者が証憑と支払口座を確認し、承認または却下します。"], "申請だけでは台帳へ計上されません。証憑がない申請は承認できず、承認後も手入力や銀行明細から重複登録しないでください。"),
+        (("会計操作ログ", "監査証跡", "会計監査"), ["月次締め、仕訳訂正、経費承認、入出金など重要な会計操作を追跡できます。", "実行者、日時、対象番号、処理内容を管理者だけが確認・CSV出力できます。"], ["期間や操作区分で検索します。", "対象番号と概要を確認します。", "監査や税理士共有が必要な場合はCSVを安全に保管します。"], "監査ログは追記専用です。個人情報と取引情報を含むため、CSVは権限管理された場所で保管してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
@@ -1697,7 +1721,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
-            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
+            <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
           </div></details>
           <details class="nav-group" data-nav-group="family-admin"><summary><span>♢</span>FAMILY管理</summary><div class="nav-group-links">
             <a href="/family/announcements/manage"><span>◇</span>FAMILYお知らせ</a><a href="/family/messages/manage"><span>✉</span>メッセージ管理</a><a href="/family/timeline/comments/manage"><span>💬</span>コメント管理</a><a href="/family/timeline/reports/manage"><span>!</span>タイムライン通報</a><a href="/family/safety/reports/manage"><span>⚑</span>プロフィール・メッセージ通報</a><a href="/family/restrictions/manage"><span>⊘</span>FAMILY利用停止</a><a href="/family/dashboard/manage"><span>▥</span>FAMILY集計</a><a href="/family/withdrawals/manage"><span>↪</span>退会申請</a><a href="/family/terms/manage"><span>✓</span>規約・同意管理</a><a href="/family/line/manage"><span>LINE</span>LINE公式設定</a><a href="/family/backups/manage"><span>⇩</span>データ出力</a>
@@ -4584,6 +4608,67 @@ def finance_account_balance_on(session: Session, tenant_id: int, account: Financ
     return balance
 
 
+FINANCE_AUDIT_ACTIONS = {
+    "period_close": "月次締め", "period_reopen": "締め解除", "expense_submit": "経費申請",
+    "expense_document": "経費証憑登録", "expense_approve": "経費承認", "expense_reject": "経費却下",
+    "expense_cancel": "経費申請取消", "entry_correction": "仕訳訂正・取消", "tax_update": "税区分更新",
+    "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
+    "statement_import": "銀行明細取込", "account_transfer": "口座振替", "finance_export": "会計一括出力",
+}
+
+
+def finance_audit_filters(action: str, from_date: str, to_date: str) -> tuple[str, date, date]:
+    if action and action not in FINANCE_AUDIT_ACTIONS:
+        raise HTTPException(status_code=400, detail="操作区分を確認してください")
+    try:
+        start = date.fromisoformat(from_date) if from_date else date.today() - timedelta(days=30)
+        end = date.fromisoformat(to_date) if to_date else date.today()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="表示期間を確認してください")
+    if start > end or end > date.today() or (end - start).days > 366:
+        raise HTTPException(status_code=400, detail="表示期間は本日までの366日以内で指定してください")
+    return action, start, end
+
+
+@app.get("/modules/finance/audit", response_class=HTMLResponse)
+def finance_audit_page(action: str = "", from_date: str = "", to_date: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    action, start, end = finance_audit_filters(action, from_date, to_date)
+    start_at = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_at = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    query = select(FinanceAuditEvent).where(FinanceAuditEvent.tenant_id == tenant.id, FinanceAuditEvent.created_at >= start_at, FinanceAuditEvent.created_at < end_at)
+    if action:
+        query = query.where(FinanceAuditEvent.action == action)
+    events = session.scalars(query.order_by(FinanceAuditEvent.created_at.desc(), FinanceAuditEvent.id.desc()).limit(1000)).all()
+    actor_ids = {item.actor_user_id for item in events}
+    actor_names = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    options = ''.join(f'<option value="{value}" {"selected" if action == value else ""}>{label}</option>' for value, label in FINANCE_AUDIT_ACTIONS.items())
+    rows = ''.join(f'<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M:%S")}</td><td>{html.escape(actor_names.get(item.actor_user_id, f"ユーザー#{item.actor_user_id}"))}</td><td>{html.escape(FINANCE_AUDIT_ACTIONS.get(item.action, item.action))}</td><td>{html.escape(item.entity_type)} #{item.entity_id or "－"}</td><td>{html.escape(item.summary)}</td><td>{html.escape(item.details or "－")}</td></tr>' for item in events)
+    cards = ''.join(f'<article class="calendar-mobile-card"><h3>{html.escape(FINANCE_AUDIT_ACTIONS.get(item.action, item.action))}／{item.entity_type} #{item.entity_id or "－"}</h3><p>{item.created_at.strftime("%Y-%m-%d %H:%M:%S")}／{html.escape(actor_names.get(item.actor_user_id, f"ユーザー#{item.actor_user_id}"))}</p><p>{html.escape(item.summary)}</p><p>{html.escape(item.details or "")}</p></article>' for item in events)
+    query_string = urlencode({"action": action, "from_date": start.isoformat(), "to_date": end.isoformat()})
+    body = f'''<h1>会計操作ログ・監査証跡</h1><p>重要な会計操作の実行者、日時、対象、処理内容を追跡します。監査ログは画面から変更・削除できません。</p>
+    <form method="get"><div class="grid"><div><label>操作区分</label><select name="action"><option value="">すべて</option>{options}</select></div><div><label>開始日</label><input type="date" name="from_date" value="{start}" required></div><div><label>終了日</label><input type="date" name="to_date" value="{end}" max="{date.today()}" required></div></div><button>表示</button> <a class="button secondary" href="/modules/finance/audit.csv?{query_string}">CSV出力</a></form>
+    <div class="grid"><div class="module"><h3>表示件数</h3><strong>{len(events)}件</strong></div><div class="module"><h3>実行者数</h3><strong>{len(actor_ids)}人</strong></div></div>
+    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日時</th><th>実行者</th><th>操作</th><th>対象</th><th>概要</th><th>詳細</th></tr>{rows or '<tr><td colspan="6">条件に一致する監査ログはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">条件に一致する監査ログはありません。</div>'}</section>'''
+    return layout("会計操作ログ・監査証跡", body, user)
+
+
+@app.get("/modules/finance/audit.csv")
+def finance_audit_csv(action: str = "", from_date: str = "", to_date: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    action, start, end = finance_audit_filters(action, from_date, to_date)
+    start_at = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    end_at = datetime.combine(end + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    query = select(FinanceAuditEvent).where(FinanceAuditEvent.tenant_id == tenant.id, FinanceAuditEvent.created_at >= start_at, FinanceAuditEvent.created_at < end_at)
+    if action:
+        query = query.where(FinanceAuditEvent.action == action)
+    events = session.scalars(query.order_by(FinanceAuditEvent.created_at, FinanceAuditEvent.id).limit(10000)).all()
+    actor_ids = {item.actor_user_id for item in events}
+    actor_names = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    content = finance_export_csv(["ID", "日時", "実行者ID", "実行者", "操作", "対象種別", "対象ID", "概要", "詳細"], [[item.id, item.created_at.isoformat(), item.actor_user_id, actor_names.get(item.actor_user_id, ""), FINANCE_AUDIT_ACTIONS.get(item.action, item.action), item.entity_type, item.entity_id or "", item.summary, item.details or ""] for item in events])
+    return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-audit-{start}-{end}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/modules/finance/closing", response_class=HTMLResponse)
 def finance_closing_page(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -4641,19 +4726,22 @@ def finance_close_period(year: int = Form(...), month: int = Form(...), notes: s
     if finance_period_close(session, tenant.id, first_day):
         raise HTTPException(status_code=409, detail="この月は締め済みです")
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end)).all()
-    session.add(FinancePeriodClose(tenant_id=tenant.id, year=year, month=month, income_total=sum(x.amount for x in entries if x.entry_type == "income"), expense_total=sum(x.amount for x in entries if x.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None))
+    close_item = FinancePeriodClose(tenant_id=tenant.id, year=year, month=month, income_total=sum(x.amount for x in entries if x.entry_type == "income"), expense_total=sum(x.amount for x in entries if x.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None)
+    session.add(close_item); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "period_close", "finance_period_close", close_item.id, f"{year:04d}-{month:02d}を月次締め", f"entries={len(entries)}")
     session.commit()
     return RedirectResponse(f"/modules/finance/closing?month={year:04d}-{month:02d}", status_code=303)
 
 
 @app.post("/modules/finance/closing/reopen")
 def finance_reopen_period(year: int = Form(...), month: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
-    _, tenant = access
+    user, tenant = access
     if year < 2000 or year > 2100 or month < 1 or month > 12 or not confirmed:
         raise HTTPException(status_code=400, detail="締め解除の内容を確認してください")
     closed = finance_period_close(session, tenant.id, date(year, month, 1))
     if not closed:
         raise HTTPException(status_code=404, detail="締め済みの月が見つかりません")
+    record_finance_audit(session, tenant.id, user.id, "period_reopen", "finance_period_close", closed.id, f"{year:04d}-{month:02d}の締めを解除")
     session.delete(closed); session.commit()
     return RedirectResponse(f"/modules/finance/closing?month={year:04d}-{month:02d}", status_code=303)
 
@@ -4787,7 +4875,9 @@ def finance_expense_request_create(expense_on: str = Form(...), category: str = 
     clean_description = description.strip()
     if expense_day < date(2000, 1, 1) or expense_day > date.today() or category not in FINANCE_CATEGORIES or amount <= 0 or amount > 999999999 or not clean_description or len(clean_description) > 200 or len(notes) > 500:
         raise HTTPException(status_code=400, detail="経費申請の内容を確認してください")
-    session.add(FinanceExpenseRequest(tenant_id=tenant.id, requested_by_id=user.id, expense_on=expense_day, category=category, description=clean_description, amount=amount, notes=notes.strip() or None, status="pending"))
+    item = FinanceExpenseRequest(tenant_id=tenant.id, requested_by_id=user.id, expense_on=expense_day, category=category, description=clean_description, amount=amount, notes=notes.strip() or None, status="pending")
+    session.add(item); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "expense_submit", "finance_expense_request", item.id, "経費申請を登録", f"date={expense_day} amount={amount} category={category}")
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -4807,6 +4897,7 @@ async def finance_expense_request_document_create(request_id: int, document_file
     if not item or item.status != "pending" or existing or document_file.content_type not in allowed_types or suffix not in allowed_extensions.get(document_file.content_type or "", set()) or not filename or not content or len(content) > 8 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="未承認の自分の申請へ、PDF・JPG・PNG・WebPの8MB以下を1件登録してください")
     session.add(FinanceExpenseDocument(tenant_id=tenant.id, expense_request_id=item.id, uploaded_by_id=user.id, filename=filename, content_type=document_file.content_type, file_data=content))
+    record_finance_audit(session, tenant.id, user.id, "expense_document", "finance_expense_request", item.id, "経費申請へ証憑を登録", f"filename={filename} bytes={len(content)}")
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -4838,6 +4929,7 @@ def finance_expense_request_approve(request_id: int, account_id: int = Form(...)
     session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
     session.add(FinanceDocument(tenant_id=tenant.id, financial_entry_id=entry.id, document_type="receipt", issued_by=item.description, filename=document.filename, content_type=document.content_type, file_data=document.file_data))
     item.status = "approved"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = review_comment.strip() or None; item.account_id = account.id; item.financial_entry_id = entry.id
+    record_finance_audit(session, tenant.id, user.id, "expense_approve", "finance_expense_request", item.id, "経費申請を承認して台帳計上", f"ledger={entry.id} account={account.id} amount={item.amount}")
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -4850,6 +4942,7 @@ def finance_expense_request_reject(request_id: int, review_comment: str = Form(.
     if not confirmed or not item or item.status != "pending" or item.financial_entry_id or not clean_comment or len(clean_comment) > 500:
         raise HTTPException(status_code=400, detail="却下内容を確認してください")
     item.status = "rejected"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = clean_comment
+    record_finance_audit(session, tenant.id, user.id, "expense_reject", "finance_expense_request", item.id, "経費申請を却下", clean_comment)
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -4861,6 +4954,7 @@ def finance_expense_request_cancel(request_id: int, confirmed: bool = Form(False
     if not confirmed or not item or item.status != "pending" or item.financial_entry_id:
         raise HTTPException(status_code=400, detail="取消対象を確認してください")
     item.status = "cancelled"
+    record_finance_audit(session, tenant.id, user.id, "expense_cancel", "finance_expense_request", item.id, "申請者が経費申請を取消")
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -4920,6 +5014,7 @@ def finance_correction_create(original_entry_id: int = Form(...), corrected_on: 
         if assignment:
             session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=assignment.account_id, financial_entry_id=replacement.id))
     session.add(FinanceEntryCorrection(tenant_id=tenant.id, original_entry_id=original.id, reversal_entry_id=reversal.id, replacement_entry_id=replacement.id if replacement else None, correction_type=correction_type, reason=clean_reason, corrected_by_id=user.id))
+    record_finance_audit(session, tenant.id, user.id, "entry_correction", "financial_entry", original.id, "仕訳を訂正" if replacement else "仕訳を取消", f"reversal={reversal.id} replacement={replacement.id if replacement else ''} reason={clean_reason}")
     session.commit()
     return RedirectResponse("/modules/finance/corrections", status_code=303)
 
@@ -5008,6 +5103,7 @@ def finance_tax_save(financial_entry_id: int = Form(...), tax_category: str = Fo
         item.tax_category = tax_category; item.tax_rate = tax_rate; item.invoice_status = invoice_status; item.invoice_registration_no = registration_no or None; item.checked_by_id = user.id; item.checked_at = datetime.now(timezone.utc)
     else:
         session.add(FinanceTaxClassification(tenant_id=tenant.id, financial_entry_id=entry.id, tax_category=tax_category, tax_rate=tax_rate, invoice_status=invoice_status, invoice_registration_no=registration_no or None, checked_by_id=user.id))
+    record_finance_audit(session, tenant.id, user.id, "tax_update", "financial_entry", entry.id, "消費税区分・インボイス情報を更新", f"category={tax_category} rate={tax_rate} invoice={invoice_status}")
     session.commit()
     return RedirectResponse(f"/modules/finance/tax?month={entry.occurred_on:%Y-%m}", status_code=303)
 
@@ -5106,7 +5202,7 @@ def finance_payable_create(vendor_id: int = Form(...), received_on: str = Form(.
 
 @app.post("/modules/finance/payables/{payable_id}/pay")
 def finance_payable_pay(payable_id: int, paid_on: str = Form(...), account_id: int = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
+    user, tenant = access
     payable = session.scalar(select(FinancePayable).where(FinancePayable.id == payable_id, FinancePayable.tenant_id == tenant.id))
     account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
     try:
@@ -5121,6 +5217,7 @@ def finance_payable_pay(payable_id: int, paid_on: str = Form(...), account_id: i
     session.add(entry); session.flush()
     session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
     payable.status = "paid"; payable.paid_on = payment_day; payable.account_id = account.id; payable.financial_entry_id = entry.id
+    record_finance_audit(session, tenant.id, user.id, "payable_payment", "finance_payable", payable.id, "買掛金を支払済みに更新", f"ledger={entry.id} account={account.id} amount={payable.amount}")
     session.commit()
     return RedirectResponse("/modules/finance/payables", status_code=303)
 
@@ -5208,7 +5305,8 @@ def finance_receivable_settle(invoice_id: int, received_on: str = Form(...), acc
     if not confirmed or not invoice or invoice.status != "issued" or invoice.ledger_entry_id or existing or not account or received_day < invoice.issued_on or received_day > date.today():
         raise HTTPException(status_code=400, detail="請求書・入金日・入金口座を確認してください")
     ensure_finance_period_open(session, tenant.id, received_day)
-    settle_invoice_receivable(session, tenant.id, user.id, invoice, account, received_day)
+    settlement = settle_invoice_receivable(session, tenant.id, user.id, invoice, account, received_day); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "receivable_settlement", "invoice", invoice.id, "請求書の入金を消込", f"settlement={settlement.id} account={account.id} amount={invoice.amount}")
     session.commit()
     return RedirectResponse("/modules/finance/receivables", status_code=303)
 
@@ -5738,7 +5836,9 @@ async def finance_statement_import(account_id: int = Form(...), statement_file: 
             settlement = session.scalar(select(FinanceReceivableSettlement).where(FinanceReceivableSettlement.tenant_id == tenant.id, FinanceReceivableSettlement.financial_entry_id == matched_entry.id, FinanceReceivableSettlement.statement_line_id.is_(None)))
             if settlement:
                 settlement.statement_line_id = statement_line.id
-    imported.matched_count = matched_count; session.commit()
+    imported.matched_count = matched_count
+    record_finance_audit(session, tenant.id, user.id, "statement_import", "finance_statement_import", imported.id, "銀行明細CSVを取込", f"account={account.id} rows={len(parsed_rows)} matched={matched_count} filename={filename}")
+    session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
 
@@ -5817,7 +5917,7 @@ def finance_account_assign(financial_entry_id: int = Form(...), account_id: int 
 
 @app.post("/modules/finance/accounts/transfer")
 def finance_account_transfer(transferred_on: str = Form(...), from_account_id: int = Form(...), to_account_id: int = Form(...), amount: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
+    user, tenant = access
     try: transfer_day = date.fromisoformat(transferred_on)
     except ValueError: raise HTTPException(status_code=400, detail="振替日を確認してください")
     ensure_finance_period_open(session, tenant.id, transfer_day)
@@ -5825,7 +5925,10 @@ def finance_account_transfer(transferred_on: str = Form(...), from_account_id: i
     destination = session.scalar(select(FinanceAccount).where(FinanceAccount.id == to_account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
     if not source or not destination or source.id == destination.id or amount <= 0 or amount > 999999999 or len(notes) > 500:
         raise HTTPException(status_code=400, detail="振替内容を確認してください")
-    session.add(FinanceAccountTransfer(tenant_id=tenant.id, transferred_on=transfer_day, from_account_id=source.id, to_account_id=destination.id, amount=amount, notes=notes.strip() or None)); session.commit()
+    transfer = FinanceAccountTransfer(tenant_id=tenant.id, transferred_on=transfer_day, from_account_id=source.id, to_account_id=destination.id, amount=amount, notes=notes.strip() or None)
+    session.add(transfer); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "account_transfer", "finance_account_transfer", transfer.id, "口座間振替を登録", f"from={source.id} to={destination.id} amount={amount} date={transfer_day}")
+    session.commit()
     return RedirectResponse("/modules/finance/accounts", status_code=303)
 
 
@@ -5891,6 +5994,7 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
         manifest = {"schema_version": 1, "tenant_id": tenant.id, "tenant_name": tenant.name, "year": year, "exported_at": datetime.now(timezone.utc).isoformat(), "counts": {"ledger": len(entries), "invoices": len(invoices), "expense_requests": len(expense_requests), "expense_request_documents": len(expense_documents), "corrections": len(corrections), "allocations": len(allocations), "documents": len(documents)}, "checksums": checksums}
         archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"))
     record_operation(session, "finance_export", "success", "会計・証憑一括出力", tenant.id, f"year={year} ledger={len(entries)} invoices={len(invoices)} documents={len(documents)}")
+    record_finance_audit(session, tenant.id, user.id, "finance_export", "finance_export", year, "会計・証憑一括出力を実行", f"ledger={len(entries)} invoices={len(invoices)} documents={len(documents)}")
     session.commit()
     return Response(content=output.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="finance-export-{tenant.id}-{year}.zip"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 

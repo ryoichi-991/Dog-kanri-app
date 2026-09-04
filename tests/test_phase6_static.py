@@ -1007,6 +1007,64 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("expense_documents", "expense-request-documents/request-", '"expense_request_documents": len(expense_documents)', "document_bytes", "expense_document_files", "checksums"):
             self.assertIn(marker, segment)
 
+    def test_finance_audit_model_records_actor_action_target_and_time(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceAuditEvent")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ('__tablename__ = "finance_audit_events"', "tenant_id", "actor_user_id", "action", "entity_type", "entity_id", "summary", "details", "created_at", "index=True"):
+            self.assertIn(marker, segment)
+
+    def test_finance_audit_helper_is_append_only_and_bounded(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "record_finance_audit")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("FinanceAuditEvent(", "actor_user_id=actor_user_id", "action=action[:40]", "entity_type=entity_type[:40]", "summary=summary[:300]", 'details=(details or "")[:1000]'):
+            self.assertIn(marker, segment)
+        self.assertNotIn("session.delete", segment)
+
+    def test_finance_audit_page_is_admin_tenant_scoped_filtered_and_mobile(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page")
+        segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("require_tenant_admin", "FinanceAuditEvent.tenant_id == tenant.id", "FinanceAuditEvent.created_at >= start_at", "FinanceAuditEvent.created_at < end_at", "FinanceAuditEvent.action == action", ".limit(1000)", "actor_user_id", "calendar-desktop-only", "calendar-mobile-card", "監査ログは画面から変更・削除できません"):
+            self.assertIn(marker, segment)
+
+    def test_finance_audit_csv_is_private_bounded_and_formula_safe(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_csv")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("require_tenant_admin", "FinanceAuditEvent.tenant_id == tenant.id", ".limit(10000)", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+            self.assertIn(marker, segment)
+        safe = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_csv")
+        self.assertIn('startswith(("=", "+", "-", "@"))', ast.get_source_segment(SOURCE, safe))
+
+    def test_finance_audit_filters_are_validated_and_year_bounded(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_filters")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("action not in FINANCE_AUDIT_ACTIONS", "date.fromisoformat", "start > end", "end > date.today()", "> 366"):
+            self.assertIn(marker, segment)
+
+    def test_critical_finance_actions_write_actor_audit_events(self):
+        expected = {
+            "finance_close_period": "period_close", "finance_reopen_period": "period_reopen",
+            "finance_expense_request_create": "expense_submit", "finance_expense_request_document_create": "expense_document",
+            "finance_expense_request_approve": "expense_approve", "finance_expense_request_reject": "expense_reject",
+            "finance_expense_request_cancel": "expense_cancel", "finance_correction_create": "entry_correction",
+            "finance_tax_save": "tax_update", "finance_payable_pay": "payable_payment",
+            "finance_receivable_settle": "receivable_settlement", "finance_account_transfer": "account_transfer",
+            "finance_statement_import": "statement_import", "finance_export_download": "finance_export",
+        }
+        functions = {node.name: node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for name, action in expected.items():
+            segment = ast.get_source_segment(SOURCE, functions[name])
+            self.assertIn("record_finance_audit", segment, name)
+            self.assertIn(f'"{action}"', segment, name)
+            self.assertIn("user.id", segment, name)
+
+    def test_finance_audit_has_module_navigation_and_guide(self):
+        self.assertIn('"finance/audit": ("会計操作ログ・監査証跡"', SOURCE)
+        self.assertIn('href="/modules/finance/audit"', SOURCE)
+        guide = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide")
+        guide_source = ast.get_source_segment(SOURCE, guide)
+        for marker in ("会計操作ログ", "監査証跡", "実行者", "CSV", "追記専用"):
+            self.assertIn(marker, guide_source)
+
 
 if __name__ == "__main__":
     unittest.main()
