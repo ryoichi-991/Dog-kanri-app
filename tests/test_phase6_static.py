@@ -736,6 +736,28 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinancialEntry.tenant_id == tenant.id", "ensure_finance_period_open", 'tax_rate not in {8, 10}', 'tax_rate != 0', 're.fullmatch(r"T\\d{13}"', 'invoice_status == "qualified" and not registration_no', "FinanceTaxClassification.tenant_id == tenant.id", "item.checked_at", "session.commit()"):
             self.assertIn(marker, segment)
 
+    def test_tax_journal_accounts_are_standard_and_backfilled_safely(self):
+        initialize = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_accounts_initialize"))
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_journal_accounts"))
+        for marker in ('"仮払消費税"', '"input_tax"', '"仮受消費税"', '"output_tax"'):
+            self.assertIn(marker, initialize)
+            self.assertIn(marker, helper)
+        for marker in ("FinanceChartAccount.tenant_id == tenant_id", "used_codes", "while str(code_number) in used_codes", "session.flush()"):
+            self.assertIn(marker, helper)
+
+    def test_tax_classification_posts_idempotent_balanced_reclassification(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_apply_tax_journal"))
+        for marker in ('f"消費税振替：台帳#{entry.id}"', 'FinanceJournalEntry.status == "posted"', "estimated_included_tax", "finance_input_tax_credit", "finance_category_account", 'entry.entry_type == "income"', '("debit", mapped.id, tax_amount)', '("credit", output_tax.id, tax_amount)', '("debit", input_tax.id, tax_amount)', '("credit", mapped.id, tax_amount)', "current_lines", "== desired", "finance_reverse_accrual_journal", 'finance_journal_voucher(session, tenant_id, "TX"', '"tax_journal"'):
+            self.assertIn(marker, helper)
+        save = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_save"))
+        for marker in ("finance_apply_tax_journal", "exc.status_code != 409", "消費税仕訳を保留"):
+            self.assertIn(marker, save)
+
+    def test_tax_page_exposes_double_entry_status_and_cautions(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_tax_page"))
+        for marker in ("tax_descriptions", "FinanceJournalEntry.tenant_id == tenant.id", 'FinanceJournalEntry.status == "posted"', "journaled_entry_ids", "複式仕訳済み", "振替なし", "仮受消費税・仮払消費税", "控除できない部分は費用に残します", "旧仕訳を取消仕訳"):
+            self.assertIn(marker, page)
+
     def test_finance_tax_is_in_close_checks_navigation_and_guide(self):
         closing = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
         closing_source = ast.get_source_segment(SOURCE, closing)
