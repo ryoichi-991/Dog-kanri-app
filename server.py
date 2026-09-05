@@ -6785,14 +6785,16 @@ def finance_cashflow_create(due_on: str = Form(...), entry_type: str = Form(...)
 
 @app.post("/modules/finance/cashflow/{plan_id}/complete")
 def finance_cashflow_complete(plan_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
-    plan = session.scalar(select(FinanceCashPlan).where(FinanceCashPlan.id == plan_id, FinanceCashPlan.tenant_id == tenant.id))
+    user, tenant = access
+    plan = session.scalar(select(FinanceCashPlan).where(FinanceCashPlan.id == plan_id, FinanceCashPlan.tenant_id == tenant.id).with_for_update())
     if not plan or plan.status != "planned" or plan.ledger_entry_id:
         raise HTTPException(status_code=400, detail="入出金予定を確認してください")
     ensure_finance_period_open(session, tenant.id, date.today())
     entry = FinancialEntry(tenant_id=tenant.id, occurred_on=date.today(), entry_type=plan.entry_type, category=plan.category, description=plan.description, amount=plan.amount, notes=f"資金繰り予定 #{plan.id}から反映")
     session.add(entry); session.flush()
+    journal = finance_create_cash_basis_journal(session, tenant.id, user.id, entry, f"資金繰り予定#{plan.id}", "CFP")
     plan.status = "completed"; plan.ledger_entry_id = entry.id
+    record_finance_audit(session, tenant.id, user.id, "cashflow_journal", "finance_cash_plan", plan.id, "入出金予定を台帳・複式仕訳へ反映", f"ledger={entry.id} journal={journal.id} amount={entry.amount}")
     session.commit()
     return RedirectResponse("/modules/finance/cashflow", status_code=303)
 
@@ -7169,14 +7171,14 @@ async def finance_statement_import(account_id: int = Form(...), statement_file: 
 
 @app.post("/modules/finance/statements/apply-suggestions")
 def finance_statement_apply_suggestions(confirmed: bool = Form(False), line_ids: list[int] = Form(default=[]), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
+    user, tenant = access
     selected_ids = set(line_ids)
     if not confirmed or not selected_ids or len(selected_ids) > 500:
         raise HTTPException(status_code=400, detail="一括登録する仕訳候補と確認欄を確認してください")
     rules = session.scalars(select(FinanceCategorizationRule).where(FinanceCategorizationRule.tenant_id == tenant.id, FinanceCategorizationRule.active.is_(True))).all()
     lines = session.scalars(select(FinanceStatementLine).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.id.in_(selected_ids), FinanceStatementLine.status == "unmatched").order_by(FinanceStatementLine.transacted_on, FinanceStatementLine.id).limit(500)).all()
     accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))).all()
-    active_accounts = {account.id: account for account in accounts}
+    active_accounts = {account.id: account for account in accounts}; posted_count = 0
     for line in lines:
         rule = finance_rule_suggestion(line, rules)
         if not rule or line.account_id not in active_accounts or finance_period_close(session, tenant.id, line.transacted_on):
@@ -7184,22 +7186,26 @@ def finance_statement_apply_suggestions(confirmed: bool = Form(False), line_ids:
         entry = FinancialEntry(tenant_id=tenant.id, occurred_on=line.transacted_on, entry_type=line.entry_type, category=rule.category, amount=line.amount, description=line.description, notes=f"摘要ルール #{rule.id}・銀行明細 #{line.import_id}・{line.row_no}行目から確認登録")
         session.add(entry); session.flush()
         session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=line.account_id, financial_entry_id=entry.id))
-        line.status = "matched"; line.financial_entry_id = entry.id
+        finance_create_cash_basis_journal(session, tenant.id, user.id, entry, f"銀行明細#{line.import_id}/{line.row_no}", "BST")
+        line.status = "matched"; line.financial_entry_id = entry.id; posted_count += 1
+    record_finance_audit(session, tenant.id, user.id, "statement_journal_batch", "finance_statement_line", None, "銀行明細の仕訳候補を複式仕訳へ一括登録", f"selected={len(selected_ids)} posted={posted_count}")
     session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
 
 @app.post("/modules/finance/statements/lines/{line_id}/post")
 def finance_statement_line_post(line_id: int, category: str = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
-    line = session.scalar(select(FinanceStatementLine).where(FinanceStatementLine.id == line_id, FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched"))
+    user, tenant = access
+    line = session.scalar(select(FinanceStatementLine).where(FinanceStatementLine.id == line_id, FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched").with_for_update())
     account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == line.account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))) if line else None
     if not line or not account or category not in FINANCE_CATEGORIES:
         raise HTTPException(status_code=400, detail="明細または費目を確認してください")
     ensure_finance_period_open(session, tenant.id, line.transacted_on)
     entry = FinancialEntry(tenant_id=tenant.id, occurred_on=line.transacted_on, entry_type=line.entry_type, category=category, amount=line.amount, description=line.description, notes=f"銀行明細取込 #{line.import_id}・{line.row_no}行目から登録")
     session.add(entry); session.flush(); session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
-    line.status = "matched"; line.financial_entry_id = entry.id; session.commit()
+    journal = finance_create_cash_basis_journal(session, tenant.id, user.id, entry, f"銀行明細#{line.import_id}/{line.row_no}", "BST")
+    line.status = "matched"; line.financial_entry_id = entry.id
+    record_finance_audit(session, tenant.id, user.id, "statement_journal", "finance_statement_line", line.id, "銀行明細を台帳・複式仕訳へ登録", f"ledger={entry.id} journal={journal.id} amount={entry.amount}"); session.commit()
     return RedirectResponse("/modules/finance/statements?statement_status=unmatched", status_code=303)
 
 
