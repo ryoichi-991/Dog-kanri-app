@@ -5283,6 +5283,15 @@ def finance_create_accrual_settlement_journal(session: Session, tenant_id: int, 
     return finance_create_journal(session, tenant_id, user_id, entry.occurred_on, description, f"{voucher_prefix}-{entry.id}", lines, source_entry_id=entry.id)
 
 
+def finance_create_cash_basis_journal(session: Session, tenant_id: int, user_id: int, entry: FinancialEntry, memo: str, voucher_prefix: str = "LG") -> FinanceJournalEntry:
+    existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.source_entry_id == entry.id))
+    if existing: return existing
+    cash = finance_system_account(session, tenant_id, "cash")
+    mapped = finance_category_account(session, tenant_id, entry.entry_type, entry.category)
+    lines = [("debit", cash.id, None, entry.amount, memo), ("credit", mapped.id, None, entry.amount, memo)] if entry.entry_type == "income" else [("debit", mapped.id, None, entry.amount, memo), ("credit", cash.id, None, entry.amount, memo)]
+    return finance_create_journal(session, tenant_id, user_id, entry.occurred_on, entry.description, f"{voucher_prefix}-{entry.id}", lines, source_entry_id=entry.id)
+
+
 def finance_reverse_accrual_journal(session: Session, tenant_id: int, user_id: int, original: FinanceJournalEntry, reversed_on: date, description: str) -> FinanceJournalEntry:
     existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.reversal_of_id == original.id))
     if existing: return existing
@@ -6151,8 +6160,9 @@ def finance_expense_request_approve(request_id: int, account_id: int = Form(...)
     session.add(entry); session.flush()
     session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id))
     session.add(FinanceDocument(tenant_id=tenant.id, financial_entry_id=entry.id, document_type="receipt", issued_by=item.description, filename=document.filename, content_type=document.content_type, file_data=document.file_data))
+    journal = finance_create_cash_basis_journal(session, tenant.id, user.id, entry, f"経費申請#{item.id}", "EX")
     item.status = "approved"; item.reviewed_by_id = user.id; item.reviewed_at = datetime.now(timezone.utc); item.review_comment = review_comment.strip() or None; item.account_id = account.id; item.financial_entry_id = entry.id
-    record_finance_audit(session, tenant.id, user.id, "expense_approve", "finance_expense_request", item.id, "経費申請を承認して台帳計上", f"ledger={entry.id} account={account.id} amount={item.amount}")
+    record_finance_audit(session, tenant.id, user.id, "expense_approve", "finance_expense_request", item.id, "経費申請を承認して台帳・複式仕訳へ計上", f"ledger={entry.id} journal={journal.id} account={account.id} amount={item.amount}")
     session.commit()
     return RedirectResponse("/modules/finance/expense-requests", status_code=303)
 
@@ -6802,7 +6812,15 @@ def generate_due_finance_recurring(session: Session, target_day: date) -> int:
             continue
         entry = FinancialEntry(tenant_id=rule.tenant_id, occurred_on=posting_day, entry_type=rule.entry_type, category=rule.category, description=rule.description, amount=rule.amount, notes=f"定期収支ルール #{rule.id}から自動登録")
         session.add(entry); session.flush()
-        session.add(FinanceRecurringPosting(tenant_id=rule.tenant_id, rule_id=rule.id, period=period, financial_entry_id=entry.id)); created += 1
+        session.add(FinanceRecurringPosting(tenant_id=rule.tenant_id, rule_id=rule.id, period=period, financial_entry_id=entry.id))
+        actor_id = session.scalar(select(Membership.user_id).where(Membership.tenant_id == rule.tenant_id, Membership.role == Role.admin).order_by(Membership.id).limit(1))
+        if actor_id:
+            try:
+                journal = finance_create_cash_basis_journal(session, rule.tenant_id, actor_id, entry, f"定期収支ルール#{rule.id}", "RC")
+                record_finance_audit(session, rule.tenant_id, actor_id, "recurring_journal", "finance_recurring_posting", rule.id, "定期収支を複式仕訳へ自動計上", f"ledger={entry.id} journal={journal.id} period={period}")
+            except HTTPException as exc:
+                if exc.status_code != 409: raise
+        created += 1
     session.commit()
     return created
 
@@ -6812,19 +6830,21 @@ def finance_recurring_page(access=Depends(require_tenant_user), session: Session
     user, tenant = access
     rules = session.scalars(select(FinanceRecurringRule).where(FinanceRecurringRule.tenant_id == tenant.id).order_by(FinanceRecurringRule.active.desc(), FinanceRecurringRule.id.desc())).all()
     postings = session.execute(select(FinanceRecurringPosting, FinanceRecurringRule, FinancialEntry).join(FinanceRecurringRule, FinanceRecurringRule.id == FinanceRecurringPosting.rule_id).join(FinancialEntry, FinancialEntry.id == FinanceRecurringPosting.financial_entry_id).where(FinanceRecurringPosting.tenant_id == tenant.id).order_by(FinanceRecurringPosting.id.desc()).limit(50)).all()
+    posting_entry_ids = [entry.id for _, _, entry in postings]
+    journaled_entry_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(posting_entry_ids))).all()) if posting_entry_ids else set()
     rule_rows = ""; mobile_cards = ""
     for item in rules:
         action = f'<form method="post" action="/modules/finance/recurring/{item.id}/stop"><button class="secondary">停止する</button></form>' if item.active else '<span class="badge">停止済み</span>'
         period_text = f'{item.start_on}〜{item.end_on or "終了日なし"}'
         rule_rows += f'<tr><td>{item.day_of_month}日</td><td>{"入金" if item.entry_type == "income" else "経費"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{period_text}</td><td>{action}</td></tr>'
         mobile_cards += f'<article class="calendar-mobile-card"><h3>{html.escape(item.description)}</h3><p>毎月{item.day_of_month}日／{"入金" if item.entry_type == "income" else "経費"}／<strong>¥{item.amount:,}</strong></p><p>{period_text}</p><div class="health-toolbar">{action}</div></article>'
-    history_rows = "".join(f'<tr><td>{posting.period}</td><td>{entry.occurred_on}</td><td>{html.escape(rule.description)}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>¥{entry.amount:,}</td></tr>' for posting, rule, entry in postings)
+    history_rows = "".join(f'<tr><td>{posting.period}</td><td>{entry.occurred_on}</td><td>{html.escape(rule.description)}</td><td>{"入金" if entry.entry_type == "income" else "経費"}</td><td>¥{entry.amount:,}</td><td><span class="badge">{"複式仕訳済み" if entry.id in journaled_entry_ids else "仕訳未連携"}</span></td></tr>' for posting, rule, entry in postings)
     categories = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
     body = f'''<h1>定期収支・自動登録</h1><p>毎月発生する入金・経費を指定日に収支台帳へ自動登録します。</p>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
     <h2>定期ルールを登録</h2><form method="post" action="/modules/finance/recurring"><div class="grid"><div><label>毎月の登録日</label><input type="number" name="day_of_month" min="1" max="31" value="1" required></div><div><label>区分</label><select name="entry_type"><option value="expense">経費</option><option value="income">入金</option></select></div><div><label>費目</label><select name="category">{categories}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div><div><label>開始日</label><input type="date" name="start_on" value="{date.today()}" required></div><div><label>終了日（任意）</label><input type="date" name="end_on"></div></div><label>内容</label><input name="description" maxlength="200" required><button>定期ルールを登録</button></form>
     <h2>登録済みルール</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>登録日</th><th>区分</th><th>費目</th><th>内容</th><th>金額</th><th>期間</th><th>操作</th></tr>{rule_rows or '<tr><td colspan="7">定期ルールはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">定期ルールはありません。</div>'}</section>
-    <h2>直近の自動登録履歴</h2><div style="overflow-x:auto"><table><tr><th>対象月</th><th>台帳日付</th><th>内容</th><th>区分</th><th>金額</th></tr>{history_rows or '<tr><td colspan="5">自動登録履歴はありません。</td></tr>'}</table></div>'''
+    <p class="tenant">標準勘定科目と費目対応を設定済みの場合、自動登録と同時に借方・貸方が一致する複式仕訳も作成します。未連携分は複式簿記仕訳画面から補完できます。</p><h2>直近の自動登録履歴</h2><div style="overflow-x:auto"><table><tr><th>対象月</th><th>台帳日付</th><th>内容</th><th>区分</th><th>金額</th><th>仕訳状態</th></tr>{history_rows or '<tr><td colspan="6">自動登録履歴はありません。</td></tr>'}</table></div>'''
     return layout("定期収支・自動登録", body, user)
 
 
