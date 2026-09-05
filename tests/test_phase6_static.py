@@ -1296,16 +1296,27 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinanceAccount.tenant_id == tenant_id", "FinanceAccountEntry.tenant_id == tenant_id", "FinancialEntry.tenant_id == tenant_id", "FinancialEntry.occurred_on >= first_day", "FinancialEntry.occurred_on <= last_day", "FinanceAccountTransfer.tenant_id == tenant_id", "FinanceAccountTransfer.from_account_id == account_id", "FinanceAccountTransfer.to_account_id == account_id", ".limit(10000)", "account_by_entry"):
             self.assertIn(marker, segment)
 
+    def test_double_entry_book_data_uses_journals_accounts_and_subaccounts(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_double_entry_book_data")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("finance_double_entry_data", "account_by_id", "subaccount_by_id", "journal_by_id", "FinanceCategoryAccountMap.tenant_id == tenant_id", '"revenue" if entry_type == "income"', '"expense" if entry_type == "expense"', "filtered_lines", "line.account_id == account_id"):
+            self.assertIn(marker, segment)
+
+    def test_double_entry_book_rejects_cross_tenant_account_filter(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_double_entry_book_data"))
+        self.assertIn("account_id not in account_by_id", helper)
+        self.assertIn("対象勘定科目を確認してください", helper)
+
     def test_finance_books_page_is_admin_only_and_has_ledgers_mobile_and_totals(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_books_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("require_tenant_admin", "finance_book_filters", "finance_book_data", "income_total", "expense_total", "category_totals", "仕訳帳", "科目別元帳", "口座間振替", "calendar-desktop-only", "calendar-mobile-card", "/modules/finance/books.csv"):
+        for marker in ("require_tenant_admin", "finance_book_filters", "finance_double_entry_book_data", "debit_total", "credit_total", "account_totals", "仕訳帳", "科目別元帳集計", "勘定科目", "補助科目", "calendar-desktop-only", "calendar-mobile-card", "/modules/finance/books.csv"):
             self.assertIn(marker, segment)
 
     def test_finance_books_csv_is_private_formula_safe_and_includes_transfers(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_books_csv")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "finance_book_filters", "finance_book_data", "book_rows.extend", '"口座振替"', "book_rows.sort", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
+        for marker in ("require_tenant_admin", "finance_book_filters", "finance_double_entry_book_data", "journal_by_id", "account_by_id", "subaccount_by_id", '"借方金額"', '"貸方金額"', "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
             self.assertIn(marker, segment)
 
     def test_finance_books_have_module_navigation_and_guide(self):

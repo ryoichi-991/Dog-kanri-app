@@ -72,7 +72,7 @@ MODULES = {
     "finance/corrections": ("仕訳訂正・取消履歴", "元記録を残す反対仕訳、訂正仕訳、理由と操作履歴"),
     "finance/expense-requests": ("経費申請・承認管理", "従業員の経費申請、領収書添付、管理者承認、却下、台帳計上"),
     "finance/audit": ("会計操作ログ・監査証跡", "会計操作の実行者、日時、対象、処理内容の追跡"),
-    "finance/books": ("仕訳帳・科目別元帳", "日付順、費目別、口座別の会計帳簿とCSV出力"),
+    "finance/books": ("仕訳帳・科目別元帳", "複式仕訳の借方・貸方、勘定科目・補助科目別帳簿とCSV出力"),
     "finance/trial-balance": ("月次・年度複式試算表", "複式仕訳による期首・当期・期末の借方貸方残高確認"),
     "finance/statements-report": ("損益計算書・貸借対照表", "複式仕訳による収益・費用・資産・負債・純資産の確認"),
     "finance/chart-accounts": ("勘定科目・補助科目管理", "複式簿記で使用する勘定科目、補助科目、既存費目との対応管理"),
@@ -1862,7 +1862,7 @@ def page_usage_guide(title: str) -> str:
         (("仕訳訂正", "取消履歴", "反対仕訳"), ["誤った収支記録を削除せず、元記録・反対仕訳・訂正後の記録を一組で残せます。", "訂正理由、実行者、実行日時を記録し、会計データの変更経緯を確認できます。"], ["訂正対象と訂正日を選びます。", "取消のみ、または正しい内容へ訂正を選び、理由を入力します。", "確認欄を入れて管理者が実行します。"], "元記録は削除されません。請求書入金、買掛金支払、定期収支など他機能から作られた記録は、元機能との不整合を防ぐためこの画面では訂正できません。"),
         (("経費申請", "承認管理"), ["従業員が立替・支払経費を申請し、領収書やレシートの原本を添付できます。", "管理者は証憑を確認して承認または却下し、承認者、承認日時、判断コメントを残せます。"], ["経費日・費目・内容・金額を入力して申請します。", "申請一覧からPDFまたは写真の証憑を登録します。", "管理者が証憑と支払口座を確認し、承認または却下します。"], "申請だけでは台帳へ計上されません。証憑がない申請は承認できず、承認後も手入力や銀行明細から重複登録しないでください。"),
         (("会計操作ログ", "監査証跡", "会計監査"), ["月次締め、仕訳訂正、経費承認、入出金など重要な会計操作を追跡できます。", "実行者、日時、対象番号、処理内容を管理者だけが確認・CSV出力できます。"], ["期間や操作区分で検索します。", "対象番号と概要を確認します。", "監査や税理士共有が必要な場合はCSVを安全に保管します。"], "監査ログは追記専用です。個人情報と取引情報を含むため、CSVは権限管理された場所で保管してください。"),
-        (("仕訳帳", "科目別元帳", "会計帳簿"), ["収支台帳を日付順の仕訳帳と費目別集計で確認できます。", "口座を指定すると、その口座の取引と口座間振替だけを抽出できます。"], ["対象年・月、区分、費目、口座を選びます。", "合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "この帳簿は収支台帳を基礎にした管理帳簿です。法定帳簿や複式簿記として利用する場合は、税理士と勘定科目・期首残高を確認してください。"),
+        (("仕訳帳", "科目別元帳", "会計帳簿"), ["複式仕訳を伝票番号順の仕訳帳と勘定科目別集計で確認できます。", "借方・貸方、補助科目、期首残高、発生主義、取消仕訳を一体で確認できます。"], ["対象年・月、損益区分、費目対応、勘定科目を選びます。", "借方合計・貸方合計と明細を照合します。", "税理士共有や保管が必要な場合はCSVを出力します。"], "複式仕訳を基礎にした会計帳簿です。正式な決算・税務申告では税理士と勘定科目・補助科目・期首残高を確認してください。"),
         (("月次・年度複式試算表", "残高試算表"), ["事業年度の開始から指定月末までの複式仕訳を勘定科目別に確認できます。", "期首残高、当期増減、期末残高を借方・貸方の6欄で照合できます。"], ["事業年度と集計月を選びます。", "当期と期末の貸借差額がゼロであることを確認します。", "税理士共有や月次保管にはCSVを出力します。"], "期首残高・年度繰越・取消仕訳を含む管理用の複式試算表です。正式な決算・税務申告は税理士へ確認してください。"),
         (("損益計算書", "貸借対照表", "財務諸表"), ["複式仕訳の勘定科目残高から、収益・費用・当期利益を損益計算書形式で確認できます。", "資産・負債・純資産と当期利益を貸借対照表形式で確認し、貸借差額を検査できます。"], ["事業年度と集計月を選びます。", "損益計算書、貸借対照表、総勘定元帳の残高を照合します。", "税理士共有や月次保管にはCSVを出力します。"], "期首残高、年度繰越、取消仕訳を含む登録済み複式仕訳を集計します。正式な決算書・税務申告は税理士と確認してください。"),
         (("勘定科目", "補助科目", "科目マスター"), ["資産、負債、純資産、収益、費用の勘定科目と借方・貸方の通常残高を管理できます。", "既存の入金・経費費目を勘定科目へ対応付け、次段階の複式簿記へ引き継げます。"], ["初回は標準科目を一括作成します。", "必要な勘定科目・補助科目を追加します。", "既存費目の対応科目を確認・変更します。"], "使用済み科目の削除は行わず、停止して履歴を保持してください。科目区分や税務上の扱いは税理士に確認してください。"),
@@ -4959,34 +4959,42 @@ def finance_book_data(session: Session, tenant_id: int, year: int, month: int, e
     return first_day, last_day, accounts, account_by_entry, entries, transfers
 
 
+def finance_double_entry_book_data(session: Session, tenant_id: int, year: int, month: int, entry_type: str, category: str, account_id: int):
+    first_day = date(year, month or 1, 1)
+    last_day = ((first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)) if month else date(year, 12, 31)
+    accounts, subaccounts, journals, lines = finance_double_entry_data(session, tenant_id, first_day, last_day)
+    account_by_id = {item.id: item for item in accounts}; subaccount_by_id = {item.id: item for item in subaccounts}; journal_by_id = {item.id: item for item in journals}
+    if account_id and account_id not in account_by_id:
+        raise HTTPException(status_code=400, detail="対象勘定科目を確認してください")
+    mapped_account_ids = set(session.scalars(select(FinanceCategoryAccountMap.account_id).where(FinanceCategoryAccountMap.tenant_id == tenant_id, FinanceCategoryAccountMap.category == category)).all()) if category else set()
+    account_type = "revenue" if entry_type == "income" else ("expense" if entry_type == "expense" else "")
+    filtered_lines = [line for line in lines if line.account_id in account_by_id and (not account_id or line.account_id == account_id) and (not account_type or account_by_id[line.account_id].account_type == account_type) and (not category or line.account_id in mapped_account_ids)]
+    return first_day, last_day, accounts, account_by_id, subaccount_by_id, journal_by_id, filtered_lines
+
+
 @app.get("/modules/finance/books", response_class=HTMLResponse)
 def finance_books_page(year: str = "", month: str = "", entry_type: str = "", category: str = "", account_id: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
     selected_year, selected_month, entry_type, category, selected_account_id = finance_book_filters(year, month, entry_type, category, account_id)
-    first_day, last_day, accounts, account_by_entry, entries, transfers = finance_book_data(session, tenant.id, selected_year, selected_month, entry_type, category, selected_account_id)
-    account_names = {item.id: item.name for item in accounts}
-    income_total = sum(item.amount for item in entries if item.entry_type == "income")
-    expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
-    category_totals: dict[str, int] = {}
-    for item in entries:
-        signed = item.amount if item.entry_type == "income" else -item.amount
-        category_totals[item.category] = category_totals.get(item.category, 0) + signed
-    rows = "".join(f'<tr><td>{item.occurred_on}</td><td>#{item.id}</td><td>{"入金" if item.entry_type == "income" else "経費"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>{html.escape(item.description)}</td><td>{html.escape(account_names.get(account_by_entry.get(item.id), "未割当"))}</td><td class="{"error" if item.entry_type == "expense" else ""}">{"-" if item.entry_type == "expense" else ""}¥{item.amount:,}</td></tr>' for item in entries)
-    cards = "".join(f'<article class="calendar-mobile-card"><h3>#{item.id}／{html.escape(item.description)}</h3><p>{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</p><p>{html.escape(account_names.get(account_by_entry.get(item.id), "口座未割当"))}／<strong class="{"error" if item.entry_type == "expense" else ""}">{"-" if item.entry_type == "expense" else ""}¥{item.amount:,}</strong></p></article>' for item in entries)
-    category_rows = "".join(f'<tr><td>{html.escape(FINANCE_CATEGORIES.get(key, key))}</td><td class="{"error" if amount < 0 else ""}">{"-" if amount < 0 else ""}¥{abs(amount):,}</td></tr>' for key, amount in sorted(category_totals.items(), key=lambda pair: pair[0]))
-    transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>振替 #{item.id}</td><td>{html.escape(account_names.get(item.from_account_id, "口座不明"))}</td><td>{html.escape(account_names.get(item.to_account_id, "口座不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in transfers)
+    first_day, last_day, accounts, account_by_id, subaccount_by_id, journal_by_id, lines = finance_double_entry_book_data(session, tenant.id, selected_year, selected_month, entry_type, category, selected_account_id)
+    debit_total = sum(item.amount for item in lines if item.side == "debit"); credit_total = sum(item.amount for item in lines if item.side == "credit")
+    account_totals: dict[int, dict[str, int]] = {}
+    for line in lines:
+        totals = account_totals.setdefault(line.account_id, {"debit": 0, "credit": 0}); totals[line.side] += line.amount
+    rows = "".join(f'<tr><td>{journal_by_id[line.journal_entry_id].entry_date}</td><td>{html.escape(journal_by_id[line.journal_entry_id].voucher_no)}</td><td>{line.line_no}</td><td>{html.escape(account_by_id[line.account_id].code)} {html.escape(account_by_id[line.account_id].name)}</td><td>{html.escape(subaccount_by_id[line.subaccount_id].name) if line.subaccount_id in subaccount_by_id else "－"}</td><td>{html.escape(journal_by_id[line.journal_entry_id].description)}</td><td>{f"¥{line.amount:,}" if line.side == "debit" else "－"}</td><td>{f"¥{line.amount:,}" if line.side == "credit" else "－"}</td><td>{html.escape(line.memo or "－")}</td></tr>' for line in lines)
+    cards = "".join(f'<article class="calendar-mobile-card"><h3>{html.escape(journal_by_id[line.journal_entry_id].voucher_no)}／{html.escape(account_by_id[line.account_id].name)}</h3><p>{journal_by_id[line.journal_entry_id].entry_date}／{line.line_no}行／{html.escape(subaccount_by_id[line.subaccount_id].name) if line.subaccount_id in subaccount_by_id else "補助科目なし"}</p><p>{"借方" if line.side == "debit" else "貸方"} <strong>¥{line.amount:,}</strong>／{html.escape(journal_by_id[line.journal_entry_id].description)}</p></article>' for line in lines)
+    ledger_rows = "".join(f'<tr><td>{html.escape(account_by_id[key].code)}</td><td>{html.escape(account_by_id[key].name)}</td><td>¥{value["debit"]:,}</td><td>¥{value["credit"]:,}</td><td class="{"error" if value["debit"] - value["credit"] < 0 else ""}">{value["debit"] - value["credit"]:,}</td></tr>' for key, value in sorted(account_totals.items(), key=lambda pair: account_by_id[pair[0]].code))
     month_options = "".join(f'<option value="{value}" {"selected" if selected_month == value else ""}>{"通年" if value == 0 else f"{value}月"}</option>' for value in range(13))
     type_options = "".join(f'<option value="{value}" {"selected" if entry_type == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("income", "入金"), ("expense", "経費")))
     category_options = "".join(f'<option value="{value}" {"selected" if category == value else ""}>{label}</option>' for value, label in (("", "すべて"), *FINANCE_CATEGORIES.items()))
-    account_options = "".join(f'<option value="{item.id}" {"selected" if selected_account_id == item.id else ""}>{html.escape(item.name)}</option>' for item in accounts)
+    account_options = "".join(f'<option value="{item.id}" {"selected" if selected_account_id == item.id else ""}>{html.escape(item.code)} {html.escape(item.name)}</option>' for item in accounts)
     query_string = urlencode({"year": selected_year, "month": selected_month, "entry_type": entry_type, "category": category, "account_id": selected_account_id or ""})
-    body = f'''<h1>仕訳帳・科目別元帳</h1><p>収支台帳を日付順、費目別、口座別に確認し、税理士共有用CSVを出力します。</p>
-    <form method="get"><div class="grid"><div><label>年</label><input type="number" name="year" min="2000" max="2100" value="{selected_year}" required></div><div><label>月</label><select name="month">{month_options}</select></div><div><label>区分</label><select name="entry_type">{type_options}</select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>口座</label><select name="account_id"><option value="">すべて・未割当を含む</option>{account_options}</select></div></div><button>帳簿を表示</button> <a class="button secondary" href="/modules/finance/books.csv?{query_string}">CSV出力</a></form>
-    <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>差引</h3><strong class="{'error' if income_total - expense_total < 0 else ''}">{"-" if income_total - expense_total < 0 else ""}¥{abs(income_total - expense_total):,}</strong></div><div class="module"><h3>仕訳件数</h3><strong>{len(entries)}件</strong></div></div>
-    <p class="tenant">管理用の収支帳簿です。複式簿記の法定帳簿として利用する場合は、税理士と勘定科目・期首残高をご確認ください。</p>
-    <h2>仕訳帳（{first_day}～{last_day}）</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>伝票番号</th><th>区分</th><th>費目</th><th>摘要</th><th>口座</th><th>金額</th></tr>{rows or '<tr><td colspan="7">条件に一致する仕訳はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">条件に一致する仕訳はありません。</div>'}</section>
-    <h2>科目別元帳</h2><table><tr><th>費目</th><th>差引金額</th></tr>{category_rows or '<tr><td colspan="2">条件に一致する仕訳はありません。</td></tr>'}</table>
-    <h2>口座間振替</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>番号</th><th>振替元</th><th>振替先</th><th>金額</th><th>メモ</th></tr>{transfer_rows or '<tr><td colspan="6">対象期間の口座振替はありません。</td></tr>'}</table></div>'''
+    body = f'''<h1>仕訳帳・科目別元帳</h1><p>複式仕訳を日付・伝票番号・借方・貸方・勘定科目・補助科目別に確認し、税理士共有用CSVを出力します。</p>
+    <form method="get"><div class="grid"><div><label>年</label><input type="number" name="year" min="2000" max="2100" value="{selected_year}" required></div><div><label>月</label><select name="month">{month_options}</select></div><div><label>損益区分</label><select name="entry_type">{type_options}</select></div><div><label>費目対応</label><select name="category">{category_options}</select></div><div><label>勘定科目</label><select name="account_id"><option value="">すべて</option>{account_options}</select></div></div><button>帳簿を表示</button> <a class="button secondary" href="/modules/finance/books.csv?{query_string}">CSV出力</a></form>
+    <div class="grid"><div class="module"><h3>借方合計</h3><strong>¥{debit_total:,}</strong></div><div class="module"><h3>貸方合計</h3><strong>¥{credit_total:,}</strong></div><div class="module"><h3>貸借差額</h3><strong class="{'error' if debit_total != credit_total and not selected_account_id and not entry_type and not category else ''}">¥{debit_total-credit_total:,}</strong></div><div class="module"><h3>仕訳明細</h3><strong>{len(lines)}件</strong></div></div>
+    <p class="tenant">期首残高・年度繰越・発生主義・決済・取消仕訳を含む複式仕訳帳です。正式な決算・税務申告は税理士へご確認ください。</p>
+    <h2>仕訳帳（{first_day}～{last_day}）</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>伝票番号</th><th>行</th><th>勘定科目</th><th>補助科目</th><th>摘要</th><th>借方</th><th>貸方</th><th>メモ</th></tr>{rows or '<tr><td colspan="9">条件に一致する複式仕訳はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">条件に一致する複式仕訳はありません。</div>'}</section>
+    <h2>科目別元帳集計</h2><table><tr><th>コード</th><th>勘定科目</th><th>借方合計</th><th>貸方合計</th><th>差額</th></tr>{ledger_rows or '<tr><td colspan="5">条件に一致する複式仕訳はありません。</td></tr>'}</table><div class="health-toolbar"><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳・複式試算表</a><a class="button secondary" href="/modules/finance/journals">複式仕訳を登録</a></div>'''
     return layout("仕訳帳・科目別元帳", body, user)
 
 
@@ -4994,12 +5002,9 @@ def finance_books_page(year: str = "", month: str = "", entry_type: str = "", ca
 def finance_books_csv(year: str = "", month: str = "", entry_type: str = "", category: str = "", account_id: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     _, tenant = access
     selected_year, selected_month, entry_type, category, selected_account_id = finance_book_filters(year, month, entry_type, category, account_id)
-    first_day, last_day, accounts, account_by_entry, entries, transfers = finance_book_data(session, tenant.id, selected_year, selected_month, entry_type, category, selected_account_id)
-    account_names = {item.id: item.name for item in accounts}
-    book_rows = [[item.occurred_on, f"仕訳-{item.id}", "入金" if item.entry_type == "income" else "経費", FINANCE_CATEGORIES.get(item.category, item.category), item.description, account_names.get(account_by_entry.get(item.id), "未割当"), item.amount if item.entry_type == "income" else -item.amount, item.notes or ""] for item in entries]
-    book_rows.extend([[item.transferred_on, f"振替-{item.id}", "口座振替", "口座振替", f"{account_names.get(item.from_account_id, '口座不明')} → {account_names.get(item.to_account_id, '口座不明')}", account_names.get(item.from_account_id, "口座不明"), item.amount, item.notes or ""] for item in transfers])
-    book_rows.sort(key=lambda row: (str(row[0]), str(row[1])))
-    content = finance_export_csv(["日付", "伝票番号", "区分", "費目", "摘要", "口座", "金額", "メモ"], book_rows)
+    _, _, _, account_by_id, subaccount_by_id, journal_by_id, lines = finance_double_entry_book_data(session, tenant.id, selected_year, selected_month, entry_type, category, selected_account_id)
+    book_rows = [[journal_by_id[line.journal_entry_id].entry_date, journal_by_id[line.journal_entry_id].voucher_no, line.line_no, account_by_id[line.account_id].code, account_by_id[line.account_id].name, subaccount_by_id[line.subaccount_id].code if line.subaccount_id in subaccount_by_id else "", subaccount_by_id[line.subaccount_id].name if line.subaccount_id in subaccount_by_id else "", journal_by_id[line.journal_entry_id].description, line.amount if line.side == "debit" else "", line.amount if line.side == "credit" else "", line.memo or "", journal_by_id[line.journal_entry_id].status] for line in lines]
+    content = finance_export_csv(["日付", "伝票番号", "行番号", "勘定科目コード", "勘定科目", "補助科目コード", "補助科目", "摘要", "借方金額", "貸方金額", "メモ", "状態"], book_rows)
     suffix = f"{selected_year}-{selected_month:02d}" if selected_month else str(selected_year)
     return Response(content=content, media_type="text/csv; charset=utf-8", headers={"Content-Disposition": f'attachment; filename="finance-books-{suffix}.csv"', "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
 
