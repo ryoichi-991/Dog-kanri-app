@@ -1839,7 +1839,7 @@ def page_usage_guide(title: str) -> str:
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
-        (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。"], "口座間振替は収益・経費へ計上されません。台帳記録を誤った口座へ割り当てないよう、日付・内容・金額を確認してください。"),
+        (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。", "各口座は現金・預金の補助科目となり、割当と振替を複式仕訳へ連携します。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。", "仕訳未連携がある場合は補完ボタンを実行します。"], "口座間振替は収益・経費へ計上されません。開始残高は期首残高画面でも対応する補助科目へ登録し、台帳記録を誤った口座へ割り当てないよう日付・内容・金額を確認してください。"),
         (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を修正してください。"),
         (("銀行明細CSV", "明細取込", "自動照合"), ["銀行や決済サービスから出力したCSVを口座へ取り込めます。", "日付・区分・金額が一致する台帳記録を自動照合し、未処理明細を抽出できます。"], ["取込先口座とCSVファイルを選びます。", "自動照合結果と未処理件数を確認します。", "未処理明細だけ費目を選んで台帳へ登録します。"], "同じCSVは重複取込できません。取込前に口座と明細期間を確認してください。"),
         (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
@@ -4821,7 +4821,7 @@ FINANCE_AUDIT_ACTIONS = {
     "expense_document": "経費証憑登録", "expense_approve": "経費承認", "expense_reject": "経費却下",
     "expense_cancel": "経費申請取消", "entry_correction": "仕訳訂正・取消", "tax_update": "税区分更新", "tax_journal": "消費税仕訳連携",
     "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
-    "statement_import": "銀行明細取込", "account_transfer": "口座振替", "finance_export": "会計一括出力",
+    "statement_import": "銀行明細取込", "account_transfer": "口座振替", "account_journal_sync": "口座補助科目仕訳連携", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
     "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上", "depreciation_journal_sync": "減価償却仕訳連携",
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
@@ -5344,6 +5344,41 @@ def finance_apply_tax_journal(session: Session, tenant_id: int, user_id: int, en
     journal = finance_create_journal(session, tenant_id, user_id, entry.occurred_on, description, finance_journal_voucher(session, tenant_id, "TX", entry.occurred_on), [(side, account_id, None, amount, memo) for side, account_id, amount in desired])
     record_finance_audit(session, tenant_id, user_id, "tax_journal", "finance_journal_entry", journal.id, "消費税区分を複式仕訳へ連携", f"entry={entry.id} tax={tax_amount} rate={tax_rate}")
     return journal
+
+
+def finance_account_subaccount(session: Session, tenant_id: int, user_id: int, account: FinanceAccount) -> tuple[FinanceChartAccount, FinanceSubaccount]:
+    cash = finance_system_account(session, tenant_id, "cash")
+    code = f"FA-{account.id}"
+    subaccount = session.scalar(select(FinanceSubaccount).where(FinanceSubaccount.tenant_id == tenant_id, FinanceSubaccount.account_id == cash.id, FinanceSubaccount.code == code))
+    if not subaccount:
+        subaccount = FinanceSubaccount(tenant_id=tenant_id, account_id=cash.id, code=code, name=account.name[:100], active=True, created_by_id=user_id)
+        session.add(subaccount); session.flush()
+    else:
+        subaccount.name = account.name[:100]; subaccount.active = True
+    return cash, subaccount
+
+
+def finance_create_account_assignment_journal(session: Session, tenant_id: int, user_id: int, assignment: FinanceAccountEntry, account: FinanceAccount, entry: FinancialEntry) -> FinanceJournalEntry:
+    existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.voucher_no == f"AA-{assignment.id}"))
+    if existing:
+        return existing
+    source_journal = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.source_entry_id == entry.id, FinanceJournalEntry.status == "posted"))
+    if not source_journal:
+        raise HTTPException(status_code=409, detail="収支の複式仕訳を先に連携してください")
+    cash, subaccount = finance_account_subaccount(session, tenant_id, user_id, account)
+    memo = f"台帳#{entry.id}／口座={account.name}"
+    lines = [("debit", cash.id, subaccount.id, entry.amount, memo), ("credit", cash.id, None, entry.amount, memo)] if entry.entry_type == "income" else [("debit", cash.id, None, entry.amount, memo), ("credit", cash.id, subaccount.id, entry.amount, memo)]
+    return finance_create_journal(session, tenant_id, user_id, entry.occurred_on, f"口座割当：{entry.description}"[:200], f"AA-{assignment.id}", lines)
+
+
+def finance_create_account_transfer_journal(session: Session, tenant_id: int, user_id: int, transfer: FinanceAccountTransfer, source: FinanceAccount, destination: FinanceAccount) -> FinanceJournalEntry:
+    existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.voucher_no == f"AT-{transfer.id}"))
+    if existing:
+        return existing
+    cash, source_subaccount = finance_account_subaccount(session, tenant_id, user_id, source)
+    _, destination_subaccount = finance_account_subaccount(session, tenant_id, user_id, destination)
+    memo = f"{source.name}→{destination.name}" + (f"／{transfer.notes}" if transfer.notes else "")
+    return finance_create_journal(session, tenant_id, user_id, transfer.transferred_on, "口座間振替", f"AT-{transfer.id}", [("debit", cash.id, destination_subaccount.id, transfer.amount, memo), ("credit", cash.id, source_subaccount.id, transfer.amount, memo)])
 
 
 @app.get("/modules/finance/journals", response_class=HTMLResponse)
@@ -6946,6 +6981,10 @@ def finance_accounts_page(access=Depends(require_tenant_user), session: Session 
     entries_by_id = {item.id: item for item in entries}; assigned_ids = set(entry_ids)
     non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, list(entries_by_id))
     transfers = session.scalars(select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant.id).order_by(FinanceAccountTransfer.transferred_on.desc(), FinanceAccountTransfer.id.desc())).all()
+    account_journals = session.scalars(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant.id, ((FinanceJournalEntry.voucher_no.like("AA-%")) | (FinanceJournalEntry.voucher_no.like("AT-%")))).limit(20000)).all()
+    assignment_journal_ids = {int(item.voucher_no[3:]) for item in account_journals if item.voucher_no.startswith("AA-") and item.voucher_no[3:].isdigit()}
+    transfer_journal_ids = {int(item.voucher_no[3:]) for item in account_journals if item.voucher_no.startswith("AT-") and item.voucher_no[3:].isdigit()}
+    unjournaled_count = sum(item.id not in assignment_journal_ids for item in assignments) + sum(item.id not in transfer_journal_ids for item in transfers)
     balances = {item.id: item.opening_balance for item in accounts}
     for assignment in assignments:
         entry = entries_by_id.get(assignment.financial_entry_id)
@@ -6958,14 +6997,15 @@ def finance_accounts_page(access=Depends(require_tenant_user), session: Session 
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}</option>' for item in active_accounts)
     unassigned = [item for item in sorted(entries, key=lambda value: (value.occurred_on, value.id), reverse=True) if item.id not in assigned_ids and item.id not in non_cash_ids][:100]
     unassigned_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(item.description)}／¥{item.amount:,}</option>' for item in unassigned)
-    transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.from_account_id), "不明"))}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.to_account_id), "不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>' for item in transfers[:50])
+    transfer_rows = "".join(f'<tr><td>{item.transferred_on}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.from_account_id), "不明"))}</td><td>{html.escape(next((a.name for a in accounts if a.id == item.to_account_id), "不明"))}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td><td><span class="badge">{"複式仕訳済み" if item.id in transfer_journal_ids else "仕訳未連携"}</span></td></tr>' for item in transfers[:50])
     type_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_ACCOUNT_TYPES.items())
-    body = f'''<h1>口座・現金残高管理</h1><p>銀行口座・現金・決済口座ごとに台帳記録と振替を反映し、現在残高を確認します。</p><div class="grid">{account_cards or '<div class="tenant">口座を登録してください。</div>'}</div>
+    body = f'''<h1>口座・現金残高管理</h1><p>銀行口座・現金・決済口座ごとに台帳記録と振替を反映し、現在残高を確認します。各口座は「現金・預金」の補助科目として複式仕訳へ連携します。</p><div class="grid">{account_cards or '<div class="tenant">口座を登録してください。</div>'}</div>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/finance/statements">銀行明細取込</a><a class="button secondary" href="/modules/finance/reconciliation">口座残高照合</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
     <h2>口座を登録</h2><form method="post" action="/modules/finance/accounts"><div class="grid"><div><label>口座名</label><input name="name" maxlength="100" required></div><div><label>種類</label><select name="account_type">{type_options}</select></div><div><label>開始残高</label><input type="number" name="opening_balance" min="-999999999" max="999999999" value="0" required></div></div><button>口座を登録</button></form>
+    <div class="tenant"><strong>補助科目仕訳の未連携：{unjournaled_count}件</strong><form method="post" action="/modules/finance/accounts/journals/sync"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 開いている会計期間の未連携分を最大100件補完する</label><button>未連携仕訳を補完</button></form></div>
     <h2>台帳記録を口座へ割り当て</h2>{f'<form method="post" action="/modules/finance/accounts/assign"><div class="grid"><div><label>未割当の台帳記録</label><select name="financial_entry_id">{unassigned_options}</select></div><div><label>口座</label><select name="account_id">{account_options}</select></div></div><button>口座へ割り当て</button></form>' if unassigned and active_accounts else '<p class="tenant">割り当て可能な台帳記録または口座がありません。</p>'}
     <h2>口座間振替</h2>{f'<form method="post" action="/modules/finance/accounts/transfer"><div class="grid"><div><label>振替日</label><input type="date" name="transferred_on" value="{date.today()}" required></div><div><label>振替元</label><select name="from_account_id">{account_options}</select></div><div><label>振替先</label><select name="to_account_id">{account_options}</select></div><div><label>金額</label><input type="number" name="amount" min="1" max="999999999" required></div></div><label>メモ</label><input name="notes" maxlength="500"><button>振替を登録</button></form>' if len(active_accounts) >= 2 else '<p class="tenant">振替には有効な口座が2つ以上必要です。</p>'}
-    <h2>直近の振替履歴</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>振替元</th><th>振替先</th><th>金額</th><th>メモ</th></tr>{transfer_rows or '<tr><td colspan="5">振替履歴はありません。</td></tr>'}</table></div>'''
+    <h2>直近の振替履歴</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>振替元</th><th>振替先</th><th>金額</th><th>メモ</th><th>仕訳状態</th></tr>{transfer_rows or '<tr><td colspan="6">振替履歴はありません。</td></tr>'}</table></div>'''
     return layout("口座・現金残高管理", body, user)
 
 
@@ -7284,23 +7324,37 @@ def finance_statement_settle_invoice(line_id: int, invoice_id: int = Form(...), 
 
 @app.post("/modules/finance/accounts")
 def finance_account_create(name: str = Form(...), account_type: str = Form(...), opening_balance: int = Form(0), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access; clean_name = name.strip()
+    user, tenant = access; clean_name = name.strip()
     if not clean_name or len(clean_name) > 100 or account_type not in FINANCE_ACCOUNT_TYPES or opening_balance < -999999999 or opening_balance > 999999999:
         raise HTTPException(status_code=400, detail="口座情報を確認してください")
-    session.add(FinanceAccount(tenant_id=tenant.id, name=clean_name, account_type=account_type, opening_balance=opening_balance)); session.commit()
+    account = FinanceAccount(tenant_id=tenant.id, name=clean_name, account_type=account_type, opening_balance=opening_balance); session.add(account); session.flush()
+    try:
+        finance_account_subaccount(session, tenant.id, user.id, account)
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+    session.commit()
     return RedirectResponse("/modules/finance/accounts", status_code=303)
 
 
 @app.post("/modules/finance/accounts/assign")
 def finance_account_assign(financial_entry_id: int = Form(...), account_id: int = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    _, tenant = access
+    user, tenant = access
     entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == financial_entry_id, FinancialEntry.tenant_id == tenant.id))
     account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
     exists = session.scalar(select(FinanceAccountEntry.id).where(FinanceAccountEntry.financial_entry_id == financial_entry_id))
     if not entry or not account or exists:
         raise HTTPException(status_code=400, detail="台帳記録または口座を確認してください")
     ensure_finance_period_open(session, tenant.id, entry.occurred_on)
-    session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id)); session.commit()
+    assignment = FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id); session.add(assignment); session.flush()
+    try:
+        journal = finance_create_account_assignment_journal(session, tenant.id, user.id, assignment, account, entry)
+        record_finance_audit(session, tenant.id, user.id, "account_journal_sync", "finance_journal_entry", journal.id, "台帳の口座割当を補助科目仕訳へ連携", f"assignment={assignment.id} account={account.id}")
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        record_finance_audit(session, tenant.id, user.id, "account_journal_sync", "finance_account_entry", assignment.id, "口座割当仕訳を保留", exc.detail)
+    session.commit()
     return RedirectResponse("/modules/finance/accounts", status_code=303)
 
 
@@ -7316,7 +7370,47 @@ def finance_account_transfer(transferred_on: str = Form(...), from_account_id: i
         raise HTTPException(status_code=400, detail="振替内容を確認してください")
     transfer = FinanceAccountTransfer(tenant_id=tenant.id, transferred_on=transfer_day, from_account_id=source.id, to_account_id=destination.id, amount=amount, notes=notes.strip() or None)
     session.add(transfer); session.flush()
-    record_finance_audit(session, tenant.id, user.id, "account_transfer", "finance_account_transfer", transfer.id, "口座間振替を登録", f"from={source.id} to={destination.id} amount={amount} date={transfer_day}")
+    try:
+        journal = finance_create_account_transfer_journal(session, tenant.id, user.id, transfer, source, destination)
+        journal_detail = f" journal={journal.id}"
+    except HTTPException as exc:
+        if exc.status_code != 409:
+            raise
+        journal_detail = f" journal=deferred:{exc.detail}"
+    record_finance_audit(session, tenant.id, user.id, "account_transfer", "finance_account_transfer", transfer.id, "口座間振替を登録", f"from={source.id} to={destination.id} amount={amount} date={transfer_day}{journal_detail}")
+    session.commit()
+    return RedirectResponse("/modules/finance/accounts", status_code=303)
+
+
+@app.post("/modules/finance/accounts/journals/sync")
+def finance_account_journals_sync(confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    if not confirmed:
+        raise HTTPException(status_code=400, detail="未連携仕訳の補完確認が必要です")
+    accounts = {item.id: item for item in session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id)).all()}
+    entries = {item.id: item for item in session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id)).all()}
+    journals = session.scalars(select(FinanceJournalEntry.voucher_no).where(FinanceJournalEntry.tenant_id == tenant.id, ((FinanceJournalEntry.voucher_no.like("AA-%")) | (FinanceJournalEntry.voucher_no.like("AT-%")))).limit(20000)).all()
+    vouchers = set(journals); created = deferred = 0
+    assignment_ids = [int(value[3:]) for value in vouchers if value.startswith("AA-") and value[3:].isdigit()]
+    transfer_ids = [int(value[3:]) for value in vouchers if value.startswith("AT-") and value[3:].isdigit()]
+    assignment_query = select(FinanceAccountEntry).where(FinanceAccountEntry.tenant_id == tenant.id)
+    transfer_query = select(FinanceAccountTransfer).where(FinanceAccountTransfer.tenant_id == tenant.id)
+    if assignment_ids: assignment_query = assignment_query.where(FinanceAccountEntry.id.not_in(assignment_ids))
+    if transfer_ids: transfer_query = transfer_query.where(FinanceAccountTransfer.id.not_in(transfer_ids))
+    assignments = session.scalars(assignment_query.order_by(FinanceAccountEntry.id).limit(100)).all()
+    transfers = session.scalars(transfer_query.order_by(FinanceAccountTransfer.id).limit(100)).all()
+    work = [("assignment", item) for item in assignments if f"AA-{item.id}" not in vouchers] + [("transfer", item) for item in transfers if f"AT-{item.id}" not in vouchers]
+    for kind, item in work[:100]:
+        try:
+            ensure_finance_period_open(session, tenant.id, item.transferred_on if kind == "transfer" else entries[item.financial_entry_id].occurred_on)
+            if kind == "assignment":
+                finance_create_account_assignment_journal(session, tenant.id, user.id, item, accounts[item.account_id], entries[item.financial_entry_id])
+            else:
+                finance_create_account_transfer_journal(session, tenant.id, user.id, item, accounts[item.from_account_id], accounts[item.to_account_id])
+            created += 1
+        except (HTTPException, KeyError):
+            deferred += 1
+    record_finance_audit(session, tenant.id, user.id, "account_journal_sync", "finance_account", None, "口座補助科目の未連携仕訳を補完", f"created={created} deferred={deferred}")
     session.commit()
     return RedirectResponse("/modules/finance/accounts", status_code=303)
 

@@ -537,6 +537,40 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("source.id == destination.id", "amount <= 0", "amount > 999999999", "len(notes) > 500", "FinanceAccountTransfer"):
             self.assertIn(marker, transfer_source)
 
+    def test_finance_accounts_map_to_cash_subaccounts_idempotently(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_subaccount"))
+        for marker in ('finance_system_account(session, tenant_id, "cash")', 'f"FA-{account.id}"', "FinanceSubaccount.tenant_id == tenant_id", "FinanceSubaccount.account_id == cash.id", "FinanceSubaccount.code == code", "name=account.name[:100]", "subaccount.active = True"):
+            self.assertIn(marker, helper)
+        create = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_create"))
+        for marker in ("session.flush()", "finance_account_subaccount", "exc.status_code != 409"):
+            self.assertIn(marker, create)
+
+    def test_account_assignment_posts_balanced_subaccount_reclassification(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_account_assignment_journal"))
+        for marker in ('f"AA-{assignment.id}"', "FinanceJournalEntry.source_entry_id == entry.id", 'FinanceJournalEntry.status == "posted"', "finance_account_subaccount", 'entry.entry_type == "income"', '("debit", cash.id, subaccount.id', '("credit", cash.id, None', '("debit", cash.id, None', '("credit", cash.id, subaccount.id'):
+            self.assertIn(marker, helper)
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_assign"))
+        for marker in ("session.flush()", "finance_create_account_assignment_journal", '"account_journal_sync"', "口座割当仕訳を保留"):
+            self.assertIn(marker, route)
+
+    def test_account_transfer_posts_between_cash_subaccounts_once(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_account_transfer_journal"))
+        for marker in ('f"AT-{transfer.id}"', "source_subaccount", "destination_subaccount", '("debit", cash.id, destination_subaccount.id', '("credit", cash.id, source_subaccount.id', "transfer.amount"):
+            self.assertIn(marker, helper)
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_transfer"))
+        for marker in ("session.flush()", "finance_create_account_transfer_journal", 'journal_detail = f" journal={journal.id}"', "journal=deferred"):
+            self.assertIn(marker, route)
+
+    def test_account_journal_sync_is_confirmed_bounded_and_recoverable(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_account_journals_sync"))
+        for marker in ("if not confirmed", "FinanceAccount.tenant_id == tenant.id", "FinancialEntry.tenant_id == tenant.id", 'FinanceJournalEntry.voucher_no.like("AA-%")', 'FinanceJournalEntry.voucher_no.like("AT-%")', "FinanceAccountEntry.id.not_in", "FinanceAccountTransfer.id.not_in", "work[:100]", "ensure_finance_period_open", "created", "deferred", '"account_journal_sync"'):
+            self.assertIn(marker, route)
+
+    def test_account_page_shows_journal_status_and_sync_path(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_accounts_page"))
+        for marker in ("account_journals", "assignment_journal_ids", "transfer_journal_ids", "unjournaled_count", "現金・預金", "補助科目", "複式仕訳済み", "仕訳未連携", "/modules/finance/accounts/journals/sync"):
+            self.assertIn(marker, page)
+
     def test_finance_accounts_have_guide_and_navigation(self):
         self.assertIn('href="/modules/finance/accounts"', SOURCE)
         self.assertIn('"finance/accounts": ("口座・現金残高管理"', SOURCE)
@@ -544,6 +578,8 @@ class Phase6StaticTests(unittest.TestCase):
         guide_source = ast.get_source_segment(SOURCE, guide)
         self.assertIn("口座・現金", guide_source)
         self.assertIn("収益・経費へ計上されません", guide_source)
+        for marker in ("現金・預金の補助科目", "割当と振替を複式仕訳", "期首残高画面"):
+            self.assertIn(marker, guide_source)
 
     def test_finance_period_close_model_and_admin_routes(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinancePeriodClose")
