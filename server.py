@@ -548,6 +548,19 @@ class FinanceAccountReconciliation(Base):
     notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class FinanceReconciliationAdjustment(Base):
+    __tablename__ = "finance_reconciliation_adjustments"
+    __table_args__ = (UniqueConstraint("reconciliation_id", name="uq_finance_reconciliation_adjustment"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    reconciliation_id: Mapped[int] = mapped_column(ForeignKey("finance_account_reconciliations.id", ondelete="RESTRICT"), index=True)
+    financial_entry_id: Mapped[int] = mapped_column(ForeignKey("financial_entries.id", ondelete="RESTRICT"), unique=True)
+    journal_entry_id: Mapped[int] = mapped_column(ForeignKey("finance_journal_entries.id", ondelete="RESTRICT"), unique=True)
+    reason: Mapped[str] = mapped_column(String(500))
+    adjusted_by_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    adjusted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class FinanceStatementImport(Base):
     __tablename__ = "finance_statement_imports"
     __table_args__ = (UniqueConstraint("tenant_id", "account_id", "content_hash", name="uq_finance_statement_import_hash"),)
@@ -1840,7 +1853,7 @@ def page_usage_guide(title: str) -> str:
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
         (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。", "各口座は現金・預金の補助科目となり、割当と振替を複式仕訳へ連携します。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。", "仕訳未連携がある場合は補完ボタンを実行します。"], "口座間振替は収益・経費へ計上されません。開始残高は期首残高画面でも対応する補助科目へ登録し、台帳記録を誤った口座へ割り当てないよう日付・内容・金額を確認してください。"),
-        (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を修正してください。"),
+        (("口座残高照合", "差額チェック"), ["指定日時点の帳簿残高と、通帳・現金・決済サービスの実残高を比較できます。", "差額ゼロの確認履歴を残し、月次締め前の入力漏れや二重計上を見つけられます。", "原因が確定した差額は管理者が収支台帳と複式仕訳へ一度だけ調整計上できます。"], ["照合日と口座を選びます。", "通帳などで確認した実残高を入力します。", "差額がある場合は未割当記録・振替・開始残高を確認します。", "原資料で原因を確定し、費目と理由を選んで調整します。"], "差額を消すためだけの架空取引は登録せず、原因となった原記録を優先して修正してください。調整後も元の照合差額は監査履歴として保持されます。"),
         (("銀行明細CSV", "明細取込", "自動照合"), ["銀行や決済サービスから出力したCSVを口座へ取り込めます。", "日付・区分・金額が一致する台帳記録を自動照合し、未処理明細を抽出できます。"], ["取込先口座とCSVファイルを選びます。", "自動照合結果と未処理件数を確認します。", "未処理明細だけ費目を選んで台帳へ登録します。"], "同じCSVは重複取込できません。取込前に口座と明細期間を確認してください。"),
         (("摘要ルール", "自動仕訳候補"), ["摘要に含まれるキーワードから費目候補を自動表示できます。", "候補を確認した明細だけ個別または一括で台帳へ登録できます。"], ["キーワード・入出金区分・費目・優先度を登録します。", "銀行明細画面で候補と適用ルールを確認します。", "内容が正しい候補だけ確認操作で台帳へ反映します。"], "ルールは候補判定だけに使われ、確認なしに自動計上されません。優先度が高いルールから適用されます。"),
         (("消費税区分", "インボイス確認"), ["台帳記録ごとに課税・非課税等の区分と税率を記録できます。", "経費の適格請求書確認状況と登録番号を月別に点検できます。"], ["対象月を選び、未分類の取引を確認します。", "税区分・税率・適格請求書の状態を原資料と照合して登録します。", "月次締め前に未分類件数と未確認件数をゼロに近づけます。"], "税額は税込金額から求めた管理上の概算です。登録番号は形式だけを確認し、実在・有効性は自動照会しません。申告区分・仕入税額控除・経過措置は税理士と原資料を確認してください。"),
@@ -4821,7 +4834,7 @@ FINANCE_AUDIT_ACTIONS = {
     "expense_document": "経費証憑登録", "expense_approve": "経費承認", "expense_reject": "経費却下",
     "expense_cancel": "経費申請取消", "entry_correction": "仕訳訂正・取消", "tax_update": "税区分更新", "tax_journal": "消費税仕訳連携",
     "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
-    "statement_import": "銀行明細取込", "account_transfer": "口座振替", "account_journal_sync": "口座補助科目仕訳連携", "finance_export": "会計一括出力",
+    "statement_import": "銀行明細取込", "account_transfer": "口座振替", "account_journal_sync": "口座補助科目仕訳連携", "reconciliation_adjustment": "残高差額調整仕訳", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
     "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上", "depreciation_journal_sync": "減価償却仕訳連携",
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
@@ -6009,7 +6022,9 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     pending_expense_request_count = session.scalar(select(func.count(FinanceExpenseRequest.id)).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.status == "pending", FinanceExpenseRequest.expense_on >= first_day, FinanceExpenseRequest.expense_on <= month_end)) or 0
     reconciliations = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.statement_on == reconciliation_day)).all()
     reconciled_by_account = {item.account_id: item for item in reconciliations}
-    unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or reconciled_by_account[account.id].difference != 0)
+    reconciliation_ids = [item.id for item in reconciliations]
+    adjusted_reconciliation_ids = set(session.scalars(select(FinanceReconciliationAdjustment.reconciliation_id).where(FinanceReconciliationAdjustment.tenant_id == tenant.id, FinanceReconciliationAdjustment.reconciliation_id.in_(reconciliation_ids))).all()) if reconciliation_ids else set()
+    unreconciled_count = sum(1 for account in active_accounts if account.id not in reconciled_by_account or (reconciled_by_account[account.id].difference != 0 and reconciled_by_account[account.id].id not in adjusted_reconciliation_ids))
     closed = finance_period_close(session, tenant.id, first_day)
     role_is_admin = tenant_role(user, tenant, session) == Role.admin
     status_card = (f'<div class="tenant"><h2>締め済み</h2><p><strong>{closed.closed_at.strftime("%Y-%m-%d %H:%M")}に確定</strong></p><p>確定時：入金 ¥{closed.income_total:,}／経費 ¥{closed.expense_total:,}／{closed.entry_count}件</p><p>{html.escape(closed.notes or "")}</p></div>' if closed else '<div class="tenant"><h2>未締め</h2><p>点検後、管理者がこの月を確定してください。</p></div>')
@@ -7021,7 +7036,11 @@ def finance_reconciliation_page(as_of: str = "", access=Depends(require_tenant_u
     accounts = session.scalars(select(FinanceAccount).where(FinanceAccount.tenant_id == tenant.id).order_by(FinanceAccount.active.desc(), FinanceAccount.id)).all()
     active_accounts = [item for item in accounts if item.active]
     balances = {item.id: finance_account_balance_on(session, tenant.id, item, target_day) for item in accounts}
-    histories = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id).order_by(FinanceAccountReconciliation.statement_on.desc(), FinanceAccountReconciliation.id.desc())).all()
+    histories = session.scalars(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id).order_by(FinanceAccountReconciliation.statement_on.desc(), FinanceAccountReconciliation.id.desc()).limit(1000)).all()
+    history_ids = [item.id for item in histories]
+    adjustments = session.scalars(select(FinanceReconciliationAdjustment).where(FinanceReconciliationAdjustment.tenant_id == tenant.id, FinanceReconciliationAdjustment.reconciliation_id.in_(history_ids))).all() if history_ids else []
+    adjustment_by_reconciliation = {item.reconciliation_id: item for item in adjustments}
+    role_is_admin = tenant_role(user, tenant, session) == Role.admin
     account_names = {item.id: item.name for item in accounts}
     latest_by_account: dict[int, FinanceAccountReconciliation] = {}
     for item in histories:
@@ -7029,19 +7048,23 @@ def finance_reconciliation_page(as_of: str = "", access=Depends(require_tenant_u
     summary_cards = ""
     for account in accounts:
         latest = latest_by_account.get(account.id)
-        state = "未照合" if not latest else ("一致" if latest.difference == 0 else f"差額 ¥{latest.difference:,}")
-        summary_cards += f'''<div class="module"><h3>{html.escape(account.name)}</h3><p>{FINANCE_ACCOUNT_TYPES.get(account.account_type, account.account_type)}</p><p><strong>帳簿 ¥{balances[account.id]:,}</strong></p><p><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if not latest or latest.difference else ''}">{state}</span></p><small>{f'最終照合 {latest.statement_on}' if latest else '照合履歴なし'}</small></div>'''
+        latest_adjusted = latest and latest.id in adjustment_by_reconciliation
+        state = "未照合" if not latest else ("調整仕訳済み" if latest_adjusted else ("一致" if latest.difference == 0 else f"差額 ¥{latest.difference:,}"))
+        summary_cards += f'''<div class="module"><h3>{html.escape(account.name)}</h3><p>{FINANCE_ACCOUNT_TYPES.get(account.account_type, account.account_type)}</p><p><strong>帳簿 ¥{balances[account.id]:,}</strong></p><p><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if not latest or (latest.difference and not latest_adjusted) else ''}">{state}</span></p><small>{f'最終照合 {latest.statement_on}' if latest else '照合履歴なし'}</small></div>'''
     account_options = "".join(f'<option value="{item.id}">{html.escape(item.name)}／帳簿残高 ¥{balances[item.id]:,}</option>' for item in active_accounts)
     rows = ""; mobile_cards = ""
     for item in histories[:100]:
         difference_label = "一致" if item.difference == 0 else f"¥{item.difference:,}"
-        rows += f'<tr><td>{item.statement_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>¥{item.ledger_balance:,}</td><td>¥{item.actual_balance:,}</td><td class="{"error" if item.difference else ""}">{difference_label}</td><td>{html.escape(item.notes or "－")}</td></tr>'
-        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(account_names.get(item.account_id, "口座未登録"))}／{item.statement_on}</h3><p>帳簿 ¥{item.ledger_balance:,}／実残高 ¥{item.actual_balance:,}</p><p>差額 <strong class="{'error' if item.difference else ''}">{difference_label}</strong></p><p>{html.escape(item.notes or '')}</p></article>'''
+        adjustment = adjustment_by_reconciliation.get(item.id)
+        category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
+        adjust_form = f'''<form method="post" action="/modules/finance/reconciliation/{item.id}/adjust"><label>原因に対応する費目</label><select name="category">{category_options}</select><label>調整理由</label><input name="reason" maxlength="500" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 原資料と差額を確認し、収支・複式仕訳へ計上する</label><button class="danger">差額を調整計上</button></form>''' if role_is_admin and item.difference and not adjustment else ('<span class="badge">調整仕訳済み</span>' if adjustment else ('<span class="badge">一致</span>' if not item.difference else '<span class="badge">管理者が原因確認後に調整</span>'))
+        rows += f'<tr><td>{item.statement_on}</td><td>{html.escape(account_names.get(item.account_id, "口座未登録"))}</td><td>¥{item.ledger_balance:,}</td><td>¥{item.actual_balance:,}</td><td class="{"error" if item.difference and not adjustment else ""}">{difference_label}</td><td>{html.escape(item.notes or "－")}</td><td>{adjust_form}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(account_names.get(item.account_id, "口座未登録"))}／{item.statement_on}</h3><p>帳簿 ¥{item.ledger_balance:,}／実残高 ¥{item.actual_balance:,}</p><p>差額 <strong class="{'error' if item.difference and not adjustment else ''}">{difference_label}</strong></p><p>{html.escape(item.notes or '')}</p>{adjust_form}</article>'''
     form = f'''<form method="post" action="/modules/finance/reconciliation"><div class="grid"><div><label>照合日</label><input type="date" name="statement_on" value="{target_day}" max="{date.today()}" required></div><div><label>口座</label><select name="account_id">{account_options}</select></div><div><label>通帳・現金の実残高</label><input type="number" name="actual_balance" min="-999999999" max="999999999" required></div></div><label>確認メモ（差額がある場合は必須）</label><input name="notes" maxlength="500" placeholder="例：未記帳の振込を確認中"><button>残高を照合する</button></form>''' if active_accounts else '<p class="tenant">先に口座・現金を登録してください。</p>'
-    body = f'''<h1>口座残高照合・差額チェック</h1><p>帳簿残高と、通帳・現金・決済サービスで確認した実残高を比較します。</p>
+    body = f'''<h1>口座残高照合・差額チェック</h1><p>帳簿残高と、通帳・現金・決済サービスで確認した実残高を比較します。原因が確定した差額だけ、管理者が収支台帳と複式仕訳へ調整計上できます。</p>
     <form method="get"><div class="grid"><div><label>帳簿残高の基準日</label><input type="date" name="as_of" value="{target_day}" max="{date.today()}" required></div></div><button>基準日を変更</button></form><div class="grid">{summary_cards or '<div class="tenant">口座が登録されていません。</div>'}</div>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements">銀行明細取込</a><a class="button secondary" href="/modules/finance/closing?month={target_day:%Y-%m}">月次締め</a></div><h2>実残高を入力して照合</h2>{form}
-    <h2>照合履歴</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>照合日</th><th>口座</th><th>帳簿残高</th><th>実残高</th><th>差額</th><th>メモ</th></tr>{rows or '<tr><td colspan="6">照合履歴はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">照合履歴はありません。</div>'}</section>'''
+    <p class="tenant">差額を自動的に消す機能ではありません。銀行明細・領収書・振替漏れを先に確認し、原因を特定できた場合だけ調整してください。元の照合差額は監査履歴として保持されます。</p><h2>照合履歴</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>照合日</th><th>口座</th><th>帳簿残高</th><th>実残高</th><th>差額</th><th>メモ</th><th>調整仕訳</th></tr>{rows or '<tr><td colspan="7">照合履歴はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">照合履歴はありません。</div>'}</section>'''
     return layout("口座残高照合・差額チェック", body, user)
 
 
@@ -7060,12 +7083,38 @@ def finance_reconciliation_save(statement_on: str = Form(...), account_id: int =
     if difference and not notes.strip():
         raise HTTPException(status_code=400, detail="差額がある場合は確認状況をメモへ入力してください")
     item = session.scalar(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.tenant_id == tenant.id, FinanceAccountReconciliation.account_id == account.id, FinanceAccountReconciliation.statement_on == target_day))
+    adjusted = session.scalar(select(FinanceReconciliationAdjustment.id).where(FinanceReconciliationAdjustment.tenant_id == tenant.id, FinanceReconciliationAdjustment.reconciliation_id == item.id)) if item else None
+    if adjusted:
+        raise HTTPException(status_code=409, detail="調整仕訳済みの照合履歴は変更できません")
     if item:
         item.ledger_balance = ledger_balance; item.actual_balance = actual_balance; item.difference = difference; item.checked_by_id = user.id; item.checked_at = datetime.now(timezone.utc); item.notes = notes.strip() or None
     else:
         session.add(FinanceAccountReconciliation(tenant_id=tenant.id, account_id=account.id, statement_on=target_day, ledger_balance=ledger_balance, actual_balance=actual_balance, difference=difference, checked_by_id=user.id, notes=notes.strip() or None))
     session.commit()
     return RedirectResponse(f"/modules/finance/reconciliation?as_of={target_day}", status_code=303)
+
+
+@app.post("/modules/finance/reconciliation/{reconciliation_id}/adjust")
+def finance_reconciliation_adjust(reconciliation_id: int, category: str = Form(...), reason: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access; clean_reason = reason.strip()
+    item = session.scalar(select(FinanceAccountReconciliation).where(FinanceAccountReconciliation.id == reconciliation_id, FinanceAccountReconciliation.tenant_id == tenant.id).with_for_update())
+    account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == item.account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True))) if item else None
+    existing = session.scalar(select(FinanceReconciliationAdjustment.id).where(FinanceReconciliationAdjustment.tenant_id == tenant.id, FinanceReconciliationAdjustment.reconciliation_id == reconciliation_id))
+    if not confirmed or not item or not account or not item.difference or existing or category not in FINANCE_CATEGORIES or not clean_reason or len(clean_reason) > 500:
+        raise HTTPException(status_code=400, detail="残高差額の調整内容を確認してください")
+    ensure_finance_period_open(session, tenant.id, item.statement_on)
+    entry_type = "income" if item.difference > 0 else "expense"; amount = abs(item.difference)
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=item.statement_on, entry_type=entry_type, category=category, amount=amount, description=f"口座残高差額調整：{account.name}"[:200], notes=f"照合#{item.id}／理由：{clean_reason}")
+    session.add(entry); session.flush()
+    assignment = FinanceAccountEntry(tenant_id=tenant.id, account_id=account.id, financial_entry_id=entry.id); session.add(assignment); session.flush()
+    journal = finance_create_cash_basis_journal(session, tenant.id, user.id, entry, f"残高照合#{item.id}", "RA")
+    finance_create_account_assignment_journal(session, tenant.id, user.id, assignment, account, entry)
+    session.add(FinanceTaxClassification(tenant_id=tenant.id, financial_entry_id=entry.id, tax_category="out_of_scope", tax_rate=0, invoice_status="not_required", checked_by_id=user.id))
+    adjustment = FinanceReconciliationAdjustment(tenant_id=tenant.id, reconciliation_id=item.id, financial_entry_id=entry.id, journal_entry_id=journal.id, reason=clean_reason, adjusted_by_id=user.id)
+    session.add(adjustment); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "reconciliation_adjustment", "finance_reconciliation_adjustment", adjustment.id, "口座残高差額を収支・複式仕訳へ調整計上", f"reconciliation={item.id} entry={entry.id} journal={journal.id} difference={item.difference}")
+    session.commit()
+    return RedirectResponse(f"/modules/finance/reconciliation?as_of={item.statement_on}", status_code=303)
 
 
 def parse_statement_date(value: str) -> date:

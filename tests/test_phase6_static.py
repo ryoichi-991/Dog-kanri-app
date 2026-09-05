@@ -636,6 +636,30 @@ class Phase6StaticTests(unittest.TestCase):
         for label in ("口座残高照合・差額チェック", "通帳・現金の実残高", "照合履歴", "差額がある場合は必須"):
             self.assertIn(label, SOURCE)
 
+    def test_reconciliation_adjustment_model_is_tenant_scoped_and_one_to_one(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceReconciliationAdjustment")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ('__tablename__ = "finance_reconciliation_adjustments"', 'UniqueConstraint("reconciliation_id"', "tenant_id", "reconciliation_id", "financial_entry_id", "journal_entry_id", "unique=True", "reason", "adjusted_by_id", "adjusted_at"):
+            self.assertIn(marker, segment)
+
+    def test_reconciliation_adjustment_is_admin_confirmed_and_posts_once(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reconciliation_adjust"))
+        for marker in ("require_tenant_admin", "with_for_update", "FinanceAccountReconciliation.tenant_id == tenant.id", "FinanceAccount.tenant_id == tenant.id", "FinanceReconciliationAdjustment.reconciliation_id == reconciliation_id", "not confirmed", "not item.difference", "category not in FINANCE_CATEGORIES", "ensure_finance_period_open", 'entry_type = "income" if item.difference > 0 else "expense"', "abs(item.difference)", "FinancialEntry(", "FinanceAccountEntry(", "finance_create_cash_basis_journal", "finance_create_account_assignment_journal", 'tax_category="out_of_scope"', 'invoice_status="not_required"', "FinanceReconciliationAdjustment(", '"reconciliation_adjustment"'):
+            self.assertIn(marker, route)
+
+    def test_reconciliation_page_preserves_original_difference_and_shows_adjustment(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reconciliation_page"))
+        for marker in ("FinanceReconciliationAdjustment.tenant_id == tenant.id", "adjustment_by_reconciliation", "latest_adjusted", "role_is_admin", "/modules/finance/reconciliation/{item.id}/adjust", "原因に対応する費目", "原資料と差額を確認", "調整仕訳済み", "差額を自動的に消す機能ではありません", "元の照合差額は監査履歴として保持"):
+            self.assertIn(marker, page)
+        save = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reconciliation_save"))
+        for marker in ("FinanceReconciliationAdjustment.id", "if adjusted", "調整仕訳済みの照合履歴は変更できません"):
+            self.assertIn(marker, save)
+
+    def test_month_close_accepts_adjusted_reconciliation_without_erasing_history(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page"))
+        for marker in ("reconciliation_ids", "FinanceReconciliationAdjustment.reconciliation_id", "adjusted_reconciliation_ids", "reconciled_by_account[account.id].id not in adjusted_reconciliation_ids"):
+            self.assertIn(marker, page)
+
     def test_monthly_close_surfaces_unreconciled_accounts(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page")
         segment = ast.get_source_segment(SOURCE, page)
@@ -649,6 +673,8 @@ class Phase6StaticTests(unittest.TestCase):
         guide_source = ast.get_source_segment(SOURCE, guide)
         self.assertIn("口座残高照合", guide_source)
         self.assertIn("架空取引", guide_source)
+        for marker in ("管理者が収支台帳と複式仕訳へ一度だけ調整計上", "原資料で原因を確定", "元の照合差額は監査履歴として保持"):
+            self.assertIn(marker, guide_source)
 
     def test_finance_statement_models_are_tenant_scoped_and_deduplicated(self):
         imported = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceStatementImport")
