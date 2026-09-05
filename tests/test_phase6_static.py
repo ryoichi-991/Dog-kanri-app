@@ -1835,6 +1835,29 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("固定資産", "減価償却", "取得価額", "耐用年数", "減価償却累計額", "複式仕訳", "税理士", "定額法"):
             self.assertIn(marker, guide_source)
 
+    def test_journal_integrity_summarizes_balanced_vouchers(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_journal_integrity"))
+        for marker in ("finance_double_entry_data", '"debit": 0', '"credit": 0', "line.side in", "debit_total", "credit_total", "unbalanced_count", 'item["debit"] <= 0', 'item["debit"] != item["credit"]'):
+            self.assertIn(marker, helper)
+
+    def test_month_close_blocks_unlinked_or_unbalanced_double_entry(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_close_period"))
+        for marker in ("FinanceJournalEntry.source_entry_id", "finance_journal_integrity", "entry_ids - journaled_ids", 'journal_integrity["unbalanced_count"]', 'journal_integrity["debit_total"] != journal_integrity["credit_total"]', "複式仕訳の未連携または貸借不一致", "journals=", "debit=", "credit="):
+            self.assertIn(marker, route)
+
+    def test_closing_page_displays_double_entry_integrity(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_closing_page"))
+        for marker in ("finance_journal_integrity", "FinanceJournalEntry.source_entry_id", "unjournaled_count", "複式仕訳伝票", "借方合計", "貸方合計", "仕訳未連携・貸借不一致"):
+            self.assertIn(marker, page)
+
+    def test_year_close_requires_balanced_double_entry_and_reports_it(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_end_page"))
+        close = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_close"))
+        for marker in ("finance_journal_integrity", "複式仕訳伝票", "借方・貸方合計", "貸借不一致", "/modules/finance/trial-balance"):
+            self.assertIn(marker, page)
+        for marker in ("finance_journal_integrity", 'journal_integrity["unbalanced_count"]', 'journal_integrity["debit_total"] != journal_integrity["credit_total"]', "journals=", "debit=", "credit="):
+            self.assertIn(marker, close)
+
 
 if __name__ == "__main__":
     unittest.main()

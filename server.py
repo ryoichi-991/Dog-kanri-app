@@ -5598,6 +5598,18 @@ def finance_double_entry_data(session: Session, tenant_id: int, period_start: da
     return accounts, subaccounts, journals, lines
 
 
+def finance_journal_integrity(session: Session, tenant_id: int, period_start: date, period_end: date) -> dict[str, int]:
+    _, _, journals, lines = finance_double_entry_data(session, tenant_id, period_start, period_end)
+    totals = {item.id: {"debit": 0, "credit": 0} for item in journals}
+    for line in lines:
+        if line.journal_entry_id in totals and line.side in {"debit", "credit"}:
+            totals[line.journal_entry_id][line.side] += line.amount
+    debit_total = sum(item["debit"] for item in totals.values())
+    credit_total = sum(item["credit"] for item in totals.values())
+    unbalanced_count = sum(1 for item in totals.values() if item["debit"] <= 0 or item["debit"] != item["credit"])
+    return {"journal_count": len(journals), "line_count": len(lines), "debit_total": debit_total, "credit_total": credit_total, "unbalanced_count": unbalanced_count}
+
+
 def finance_budget_journal_actuals(session: Session, tenant_id: int, period_start: date, period_end: date):
     accounts, _, journals, lines = finance_double_entry_data(session, tenant_id, period_start, period_end)
     account_by_id = {item.id: item for item in accounts}; journal_by_id = {item.id: item for item in journals}
@@ -5925,13 +5937,14 @@ def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_ad
     unassigned_count = len(entry_ids - assigned_ids - non_cash_ids)
     journaled_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entry_ids))).all()) if entry_ids else set()
     unjournaled_count = len(entry_ids - journaled_ids)
+    journal_integrity = finance_journal_integrity(session, tenant.id, period_start, period_end)
     pending_count = session.scalar(select(func.count(FinanceExpenseRequest.id)).where(FinanceExpenseRequest.tenant_id == tenant.id, FinanceExpenseRequest.status == "pending", FinanceExpenseRequest.expense_on >= period_start, FinanceExpenseRequest.expense_on <= period_end)) or 0
     unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.status == "unmatched", FinanceStatementLine.transacted_on >= period_start, FinanceStatementLine.transacted_on <= period_end)) or 0
     monthly_closed_count = sum((year, month) in closed_months for year, month in months)
     checklist_records = session.scalars(select(FinanceYearCloseChecklist).where(FinanceYearCloseChecklist.tenant_id == tenant.id, FinanceYearCloseChecklist.start_year == selected_year, FinanceYearCloseChecklist.completed.is_(True))).all()
     checklist_completed_count = len({item.item_key for item in checklist_records if item.item_key in FINANCE_YEAR_CHECKLIST_ITEMS})
     existing = session.scalar(select(FinanceYearClose).where(FinanceYearClose.tenant_id == tenant.id, FinanceYearClose.start_year == selected_year))
-    ready = monthly_closed_count == 12 and pending_count == 0 and unmatched_count == 0 and unassigned_count == 0 and unjournaled_count == 0 and checklist_completed_count == len(FINANCE_YEAR_CHECKLIST_ITEMS)
+    ready = monthly_closed_count == 12 and pending_count == 0 and unmatched_count == 0 and unassigned_count == 0 and unjournaled_count == 0 and journal_integrity["unbalanced_count"] == 0 and journal_integrity["debit_total"] == journal_integrity["credit_total"] and checklist_completed_count == len(FINANCE_YEAR_CHECKLIST_ITEMS)
     if existing:
         action = f'''<div class="tenant"><strong>年度締め済み</strong><p>{existing.closed_at.strftime("%Y-%m-%d %H:%M")}／入金 ¥{existing.income_total:,}／経費 ¥{existing.expense_total:,}／{existing.entry_count}件</p></div><form method="post" action="/modules/finance/year-end/reopen"><input type="hidden" name="start_year" value="{selected_year}"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 年度締めを解除することを確認しました</label><button class="danger">年度締めを解除</button></form>'''
     elif ready:
@@ -5942,7 +5955,7 @@ def finance_year_end_page(start_year: str = "", access=Depends(require_tenant_ad
     body = f'''<h1>会計年度設定・年度締め</h1><p>事業年度の開始月を設定し、月次締めと未処理状況を確認して年度を確定します。</p>
     <form method="post" action="/modules/finance/year-end/setting"><label>事業年度の開始月</label><select name="start_month">{month_options}</select><button>開始月を保存</button></form>
     <form method="get"><label>表示する事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form>
-    <div class="grid"><div class="module"><h3>対象期間</h3><strong>{period_start}<br>～{period_end}</strong></div><div class="module"><h3>月次締め</h3><strong class="{'error' if monthly_closed_count < 12 else ''}">{monthly_closed_count}/12か月</strong></div><div class="module"><h3>承認待ち</h3><strong class="{'error' if pending_count else ''}">{pending_count}件</strong></div><div class="module"><h3>明細未処理</h3><strong class="{'error' if unmatched_count else ''}">{unmatched_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>複式仕訳未連携</h3><strong class="{'error' if unjournaled_count else ''}">{unjournaled_count}件</strong></div><div class="module"><h3>決算前チェック</h3><strong class="{'error' if checklist_completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{checklist_completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end-checklist?start_year={selected_year}">決算前チェックリスト</a></div>
+    <div class="grid"><div class="module"><h3>対象期間</h3><strong>{period_start}<br>～{period_end}</strong></div><div class="module"><h3>月次締め</h3><strong class="{'error' if monthly_closed_count < 12 else ''}">{monthly_closed_count}/12か月</strong></div><div class="module"><h3>承認待ち</h3><strong class="{'error' if pending_count else ''}">{pending_count}件</strong></div><div class="module"><h3>明細未処理</h3><strong class="{'error' if unmatched_count else ''}">{unmatched_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>複式仕訳未連携</h3><strong class="{'error' if unjournaled_count else ''}">{unjournaled_count}件</strong></div><div class="module"><h3>複式仕訳伝票</h3><strong>{journal_integrity['journal_count']}件</strong><p>{journal_integrity['line_count']}明細</p></div><div class="module"><h3>借方・貸方合計</h3><strong>¥{journal_integrity['debit_total']:,}<br>¥{journal_integrity['credit_total']:,}</strong></div><div class="module"><h3>貸借不一致</h3><strong class="{'error' if journal_integrity['unbalanced_count'] else ''}">{journal_integrity['unbalanced_count']}伝票</strong></div><div class="module"><h3>決算前チェック</h3><strong class="{'error' if checklist_completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{checklist_completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end-checklist?start_year={selected_year}">決算前チェックリスト</a><a class="button secondary" href="/modules/finance/trial-balance?start_year={selected_year}">複式試算表</a></div>
     {action}<h2>12か月の締め状況</h2><table><tr><th>対象月</th><th>状態</th><th>確認</th></tr>{month_rows}</table>'''
     return layout("会計年度設定・年度締め", body, user)
 
@@ -5986,11 +5999,12 @@ def finance_year_close(start_year: int = Form(...), notes: str = Form(""), confi
     non_cash_ids = finance_non_cash_entry_ids(session, tenant.id, entry_ids)
     assigned_ids = set(session.scalars(select(FinanceAccountEntry.financial_entry_id).where(FinanceAccountEntry.tenant_id == tenant.id, FinanceAccountEntry.financial_entry_id.in_(entry_ids))).all()) if entry_ids else set()
     journaled_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entry_ids))).all()) if entry_ids else set()
-    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids - non_cash_ids or entry_ids - journaled_ids or not finance_year_checklist_complete(session, tenant.id, start_year):
+    journal_integrity = finance_journal_integrity(session, tenant.id, period_start, period_end)
+    if any(month not in monthly_closed for month in months) or pending or unmatched or entry_ids - assigned_ids - non_cash_ids or entry_ids - journaled_ids or journal_integrity["unbalanced_count"] or journal_integrity["debit_total"] != journal_integrity["credit_total"] or not finance_year_checklist_complete(session, tenant.id, start_year):
         raise HTTPException(status_code=409, detail="月次締めまたは未処理項目を確認してください")
     close_item = FinanceYearClose(tenant_id=tenant.id, start_year=start_year, period_start=period_start, period_end=period_end, income_total=sum(item.amount for item in entries if item.entry_type == "income"), expense_total=sum(item.amount for item in entries if item.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None)
     session.add(close_item); session.flush()
-    record_finance_audit(session, tenant.id, user.id, "year_close", "finance_year_close", close_item.id, "事業年度を締め", f"period={period_start}/{period_end} entries={len(entries)}")
+    record_finance_audit(session, tenant.id, user.id, "year_close", "finance_year_close", close_item.id, "事業年度を締め", f"period={period_start}/{period_end} entries={len(entries)} journals={journal_integrity['journal_count']} debit={journal_integrity['debit_total']} credit={journal_integrity['credit_total']}")
     session.commit()
     return RedirectResponse(f"/modules/finance/year-end?start_year={start_year}", status_code=303)
 
@@ -6025,6 +6039,9 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
     documented_ids = set(session.scalars(select(FinanceDocument.financial_entry_id).where(FinanceDocument.tenant_id == tenant.id, FinanceDocument.financial_entry_id.in_(expense_ids))).all()) if expense_ids else set()
     income_total = sum(item.amount for item in entries if item.entry_type == "income")
     expense_total = sum(item.amount for item in entries if item.entry_type == "expense")
+    journal_integrity = finance_journal_integrity(session, tenant.id, first_day, month_end)
+    journaled_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entry_ids))).all()) if entry_ids else set()
+    unjournaled_count = len(set(entry_ids) - journaled_ids)
     unassigned_count = len(set(entry_ids) - assigned_ids - non_cash_ids)
     missing_document_count = len(set(expense_ids) - documented_ids)
     statement_unmatched_count = session.scalar(select(func.count(FinanceStatementLine.id)).where(FinanceStatementLine.tenant_id == tenant.id, FinanceStatementLine.transacted_on >= first_day, FinanceStatementLine.transacted_on <= month_end, FinanceStatementLine.status == "unmatched")) or 0
@@ -6053,6 +6070,7 @@ def finance_closing_page(month: str = "", access=Depends(require_tenant_user), s
         action = f'''<form method="post" action="/modules/finance/closing"><input type="hidden" name="year" value="{first_day.year}"><input type="hidden" name="month" value="{first_day.month}"><label>締めメモ</label><input name="notes" maxlength="500" placeholder="例：通帳・領収書照合済み"><label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 集計と未処理件数を確認しました</label><button>この月を締める</button></form>'''
     body = f'''<h1>月次締め・会計期間ロック</h1><p>月次の記録を点検して確定し、締め済み期間への誤登録を防ぎます。</p>
     <form method="get"><div class="grid"><div><label>対象月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div></div><button>対象月を表示</button></form>{status_card}
+    <div class="grid"><div class="module"><h3>複式仕訳伝票</h3><strong>{journal_integrity['journal_count']}件</strong><p>{journal_integrity['line_count']}明細</p></div><div class="module"><h3>借方合計</h3><strong>¥{journal_integrity['debit_total']:,}</strong></div><div class="module"><h3>貸方合計</h3><strong>¥{journal_integrity['credit_total']:,}</strong></div><div class="module"><h3>仕訳未連携・貸借不一致</h3><strong class="{'error' if unjournaled_count or journal_integrity['unbalanced_count'] else ''}">{unjournaled_count}件・{journal_integrity['unbalanced_count']}伝票</strong></div></div>
     <div class="grid"><div class="module"><h3>入金</h3><strong>¥{income_total:,}</strong></div><div class="module"><h3>経費</h3><strong>¥{expense_total:,}</strong></div><div class="module"><h3>収支</h3><strong class="{'error' if income_total-expense_total < 0 else ''}">¥{income_total-expense_total:,}</strong></div><div class="module"><h3>台帳件数</h3><strong>{len(entries)}件</strong></div><div class="module"><h3>当月訂正・取消</h3><strong>{correction_count}件</strong></div><div class="module"><h3>経費申請の承認待ち</h3><strong class="{'error' if pending_expense_request_count else ''}">{pending_expense_request_count}件</strong></div><div class="module"><h3>口座未割当</h3><strong class="{'error' if unassigned_count else ''}">{unassigned_count}件</strong></div><div class="module"><h3>経費証憑未保管</h3><strong class="{'error' if missing_document_count else ''}">{missing_document_count}件</strong></div><div class="module"><h3>銀行明細未処理</h3><strong class="{'error' if statement_unmatched_count else ''}">{statement_unmatched_count}件</strong></div><div class="module"><h3>期限到来未入金</h3><strong class="{'error' if due_receivable_count else ''}">{due_receivable_count}件</strong></div><div class="module"><h3>期限到来未払</h3><strong class="{'error' if due_payable_count else ''}">{due_payable_count}件</strong></div><div class="module"><h3>消費税区分未分類</h3><strong class="{'error' if tax_unclassified_count else ''}">{tax_unclassified_count}件</strong></div><div class="module"><h3>インボイス未確認</h3><strong class="{'error' if invoice_unconfirmed_count else ''}">{invoice_unconfirmed_count}件</strong></div><div class="module"><h3>月末残高未照合・差額あり</h3><strong class="{'error' if unreconciled_count else ''}">{unreconciled_count}口座</strong></div></div>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance?month={first_day:%Y-%m}">収支・経費台帳</a><a class="button secondary" href="/modules/finance/expense-requests">経費申請の承認待ち</a><a class="button secondary" href="/modules/finance/corrections">仕訳訂正・取消履歴</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/statements?statement_status=unmatched">銀行明細の未処理</a><a class="button secondary" href="/modules/finance/receivables">売掛・未入金確認</a><a class="button secondary" href="/modules/finance/payables?payable_status=unpaid">買掛・未払確認</a><a class="button secondary" href="/modules/finance/tax?month={first_day:%Y-%m}">消費税・インボイス確認</a><a class="button secondary" href="/modules/finance/reconciliation?as_of={reconciliation_day}">口座残高を照合</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a></div>{action or '<p class="tenant">月次締めと解除は管理者のみ実行できます。</p>'}'''
     return layout("月次締め・会計期間ロック", body, user)
@@ -6067,9 +6085,14 @@ def finance_close_period(year: int = Form(...), month: int = Form(...), notes: s
     if finance_period_close(session, tenant.id, first_day):
         raise HTTPException(status_code=409, detail="この月は締め済みです")
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= first_day, FinancialEntry.occurred_on <= month_end)).all()
+    entry_ids = {item.id for item in entries}
+    journaled_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entry_ids))).all()) if entry_ids else set()
+    journal_integrity = finance_journal_integrity(session, tenant.id, first_day, month_end)
+    if entry_ids - journaled_ids or journal_integrity["unbalanced_count"] or journal_integrity["debit_total"] != journal_integrity["credit_total"]:
+        raise HTTPException(status_code=409, detail="複式仕訳の未連携または貸借不一致を解消してください")
     close_item = FinancePeriodClose(tenant_id=tenant.id, year=year, month=month, income_total=sum(x.amount for x in entries if x.entry_type == "income"), expense_total=sum(x.amount for x in entries if x.entry_type == "expense"), entry_count=len(entries), closed_by_id=user.id, notes=notes.strip() or None)
     session.add(close_item); session.flush()
-    record_finance_audit(session, tenant.id, user.id, "period_close", "finance_period_close", close_item.id, f"{year:04d}-{month:02d}を月次締め", f"entries={len(entries)}")
+    record_finance_audit(session, tenant.id, user.id, "period_close", "finance_period_close", close_item.id, f"{year:04d}-{month:02d}を月次締め", f"entries={len(entries)} journals={journal_integrity['journal_count']} debit={journal_integrity['debit_total']} credit={journal_integrity['credit_total']}")
     session.commit()
     return RedirectResponse(f"/modules/finance/closing?month={year:04d}-{month:02d}", status_code=303)
 
