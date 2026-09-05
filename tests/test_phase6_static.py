@@ -278,6 +278,31 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
 
+    def test_invoice_journal_status_is_tenant_scoped_and_complete(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_invoice_journal_status"))
+        for marker in ("FinanceJournalEntry.tenant_id == tenant_id", 'f"AR-{invoice.id}"', "invoice.ledger_entry_id", "FinanceJournalEntry.source_entry_id == invoice.ledger_entry_id", "FinanceJournalEntry.reversal_of_id == accrual.id", "return accrual, payment, reversal"):
+            self.assertIn(marker, helper)
+
+    def test_invoice_page_shows_accrual_payment_and_reversal_vouchers(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoices_page"))
+        for marker in ("finance_invoice_journal_status", "発生 {accrual_journal.voucher_no}", "入金 {payment_journal.voucher_no}", "取消 {reversal_journal.voucher_no}", "複式仕訳伝票", "/modules/finance/double-entry", "/modules/finance/general-ledger"):
+            self.assertIn(marker, page)
+
+    def test_invoice_pdf_contains_double_entry_voucher_summary(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "build_invoice_pdf"))
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoice_pdf"))
+        for marker in ('journal_summary: str = "未計上（下書き）"', "会計伝票：{journal_summary}"):
+            self.assertIn(marker, helper)
+        for marker in ("finance_invoice_journal_status", '" / ".join(journal_parts)', "build_invoice_pdf(invoice, sale, customer, dog, tenant"):
+            self.assertIn(marker, route)
+
+    def test_invoice_guide_and_audit_labels_explain_accrual_accounting(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("売掛金仕訳", "消込仕訳", "反対仕訳", "売掛金／売上の複式仕訳", "請求書の発行は売上計上を伴います"):
+            self.assertIn(marker, guide)
+        for marker in ('"receivable_accrual": "売掛金発生仕訳"', '"receivable_accrual_reverse": "売掛金取消仕訳"'):
+            self.assertIn(marker, SOURCE)
+
     def test_cost_allocation_model_and_routes_are_tenant_scoped(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "CostAllocation")
         model_source = ast.get_source_segment(SOURCE, model)

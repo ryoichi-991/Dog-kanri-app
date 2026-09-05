@@ -1847,7 +1847,7 @@ def page_usage_guide(title: str) -> str:
         (("健康", "体重", "ワクチン", "健診", "投薬", "病歴", "フード"), ["愛犬の健康記録、予定、共有データを確認・登録できます。", "検索、実施済み管理、カレンダー表示、帳票出力ができます。"], ["対象犬と健康カテゴリーを確認します。", "日付と内容を入力して記録します。", "必要な記録だけブリーダーまたはオーナーへ共有します。"], "健康記録は診断書ではありません。緊急時や判断に迷う場合は獣医師へ相談してください。"),
         (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
-        (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
+        (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "発行時の売掛金仕訳、入金時の消込仕訳、取消時の反対仕訳と伝票番号を確認できます。", "会計伝票番号を記載した請求書PDFを保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して下書きを作成します。", "発行済みに変更し、売掛金／売上の複式仕訳が計上されたことを確認します。", "PDFの会計伝票番号を確認し、入金後は売掛金・請求書入金消込から処理します。"], "請求書の発行は売上計上を伴います。発行日・金額・取引先を確認し、誤りは削除せず取消処理で反対仕訳を残してください。正式な税務処理は税理士へ確認してください。"),
         (("経営収益", "収益ダッシュボード"), ["複式仕訳の収益・費用・利益を月別に比較できます。", "勘定科目別の費用構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "発生主義の年間サマリーと月別推移を確認します。", "総勘定元帳で内訳を照合し、要確認項目から請求書・証憑・原価管理へ移動します。"], "売掛・買掛、減価償却、消費税振替、取消仕訳を含む登録済み複式仕訳から集計します。正式な決算・税務申告では税理士と原資料を確認してください。"),
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。", "実績は複式仕訳の収益・費用から発生主義で集計し、勘定科目別にも比較できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "月別と勘定科目別の予実一覧で未達や超過を確認します。", "対応未設定額がある場合は費目対応を設定します。"], "予算は経営判断用の目安です。仕訳実績には売掛・買掛、減価償却、消費税振替、取消仕訳などが反映されるため、収支台帳の入出金額とは一致しない場合があります。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
@@ -4833,7 +4833,7 @@ FINANCE_AUDIT_ACTIONS = {
     "period_close": "月次締め", "period_reopen": "締め解除", "expense_submit": "経費申請",
     "expense_document": "経費証憑登録", "expense_approve": "経費承認", "expense_reject": "経費却下",
     "expense_cancel": "経費申請取消", "entry_correction": "仕訳訂正・取消", "tax_update": "税区分更新", "tax_journal": "消費税仕訳連携",
-    "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込",
+    "payable_payment": "買掛金支払", "receivable_settlement": "売掛金入金消込", "receivable_accrual": "売掛金発生仕訳", "receivable_accrual_reverse": "売掛金取消仕訳",
     "statement_import": "銀行明細取込", "account_transfer": "口座振替", "account_journal_sync": "口座補助科目仕訳連携", "reconciliation_adjustment": "残高差額調整仕訳", "finance_export": "会計一括出力",
     "fiscal_setting": "会計年度設定", "year_close": "年度締め", "year_reopen": "年度締め解除",
     "fixed_asset_create": "固定資産登録", "fixed_asset_dispose": "固定資産除却", "depreciation_post": "減価償却計上", "depreciation_journal_sync": "減価償却仕訳連携",
@@ -7577,6 +7577,13 @@ def finance_export_download(year: int = Form(...), admin_password: str = Form(..
 INVOICE_STATUSES = {"draft": "下書き", "issued": "発行済み", "paid": "入金済み", "cancelled": "取消"}
 
 
+def finance_invoice_journal_status(session: Session, tenant_id: int, invoice: Invoice) -> tuple[FinanceJournalEntry | None, FinanceJournalEntry | None, FinanceJournalEntry | None]:
+    accrual = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.voucher_no == f"AR-{invoice.id}").limit(1))
+    payment = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.source_entry_id == invoice.ledger_entry_id).limit(1)) if invoice.ledger_entry_id else None
+    reversal = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.reversal_of_id == accrual.id).limit(1)) if accrual else None
+    return accrual, payment, reversal
+
+
 @app.get("/modules/invoices", response_class=HTMLResponse)
 def invoices_page(invoice_status: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -7594,16 +7601,21 @@ def invoices_page(invoice_status: str = "", access=Depends(require_tenant_user),
     for invoice in invoices:
         sale = session.scalar(select(PuppySale).where(PuppySale.id == invoice.puppy_sale_id, PuppySale.tenant_id == tenant.id))
         customer_name = sale.customer_name if sale else "販売案件未登録"
+        accrual_journal, payment_journal, reversal_journal = finance_invoice_journal_status(session, tenant.id, invoice)
+        journal_parts = ([f"発生 {accrual_journal.voucher_no}"] if accrual_journal else ["未計上（下書き）"])
+        if payment_journal: journal_parts.append(f"入金 {payment_journal.voucher_no}")
+        if reversal_journal: journal_parts.append(f"取消 {reversal_journal.voucher_no}")
+        journal_label = "／".join(journal_parts)
         editable_statuses = INVOICE_STATUSES.items() if invoice.status == "paid" else ((key, label) for key, label in INVOICE_STATUSES.items() if key != "paid")
         update_options = "".join(f'<option value="{key}" {"selected" if invoice.status == key else ""}>{label}</option>' for key, label in editable_statuses)
         action = f'''<a class="button secondary" href="/modules/invoices/{invoice.id}.pdf">PDF</a><form method="post" action="/modules/invoices/{invoice.id}/status" style="display:inline"><select name="status" style="width:auto">{update_options}</select><button>更新</button></form>'''
-        rows += f'<tr><td>{html.escape(invoice.invoice_no)}</td><td>{invoice.issued_on}</td><td>{html.escape(customer_name)}</td><td>¥{invoice.amount:,}</td><td>{invoice.due_on or "－"}</td><td>{INVOICE_STATUSES[invoice.status]}</td><td>{action}</td></tr>'
-        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>{invoice.issued_on}　<span class="badge">{INVOICE_STATUSES[invoice.status]}</span></p><p><strong>¥{invoice.amount:,}</strong>／期限 {invoice.due_on or "未設定"}</p><div class="health-toolbar">{action}</div></article>'''
-    body = f'''<h1>請求書管理</h1><p>販売案件から請求書を作成し、PDF出力と入金状況を管理します。</p>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/sales">販売管理</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
+        rows += f'<tr><td>{html.escape(invoice.invoice_no)}</td><td>{invoice.issued_on}</td><td>{html.escape(customer_name)}</td><td>¥{invoice.amount:,}</td><td>{invoice.due_on or "－"}</td><td>{INVOICE_STATUSES[invoice.status]}</td><td>{html.escape(journal_label)}</td><td>{action}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(invoice.invoice_no)}／{html.escape(customer_name)}</h3><p>{invoice.issued_on}　<span class="badge">{INVOICE_STATUSES[invoice.status]}</span></p><p><strong>¥{invoice.amount:,}</strong>／期限 {invoice.due_on or "未設定"}</p><p><strong>複式仕訳：</strong>{html.escape(journal_label)}</p><div class="health-toolbar">{action}</div></article>'''
+    body = f'''<h1>請求書管理</h1><p>請求書の発行・入金・取消と、売掛金の複式仕訳を一体で管理します。</p>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/sales">販売管理</a><a class="button secondary" href="/modules/finance/receivables">売掛・入金消込</a><a class="button secondary" href="/modules/finance/double-entry">複式簿記仕訳</a><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
     <h2>請求書を作成</h2>{f'<form method="post" action="/modules/invoices"><div class="grid"><div><label>販売案件</label><select name="sale_id">{sale_options}</select></div><div><label>発行日</label><input type="date" name="issued_on" value="{date.today()}" required></div><div><label>支払期限</label><input type="date" name="due_on"></div><div><label>請求額（税込）</label><input type="number" name="amount" min="1" required></div></div><label>お支払い案内・備考</label><textarea name="notes" maxlength="2000" placeholder="振込先、支払方法、連絡事項など"></textarea><button>請求書を作成</button></form>' if sales else '<p class="error">請求書を作成するには販売案件を登録してください。</p>'}
     <h2>請求書一覧</h2><form method="get" action="/modules/invoices"><label>状態</label><select name="invoice_status">{status_options}</select><button>絞り込む</button> <a class="button secondary" href="/modules/invoices">解除</a></form>
-    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>請求番号</th><th>発行日</th><th>お客様</th><th>請求額</th><th>期限</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="7">請求書はまだありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">請求書はまだありません。</div>'}</section>'''
+    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>請求番号</th><th>発行日</th><th>お客様</th><th>請求額</th><th>期限</th><th>状態</th><th>複式仕訳伝票</th><th>操作</th></tr>{rows or '<tr><td colspan="8">請求書はまだありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">請求書はまだありません。</div>'}</section>'''
     return layout("請求書管理", body, user)
 
 
@@ -7656,7 +7668,7 @@ def invoice_pdf_font() -> str:
     return "HeiseiKakuGo-W5"
 
 
-def build_invoice_pdf(invoice: Invoice, sale: PuppySale, customer: Customer | None, dog: Dog | None, tenant: Tenant) -> bytes:
+def build_invoice_pdf(invoice: Invoice, sale: PuppySale, customer: Customer | None, dog: Dog | None, tenant: Tenant, journal_summary: str = "未計上（下書き）") -> bytes:
     output = io.BytesIO(); font_name = invoice_pdf_font(); pdf = canvas.Canvas(output, pagesize=A4); width, height = A4
     pdf.setTitle(f"請求書 {invoice.invoice_no}"); pdf.setAuthor(tenant.name)
     pdf.setFont(font_name, 22); pdf.drawCentredString(width / 2, height - 55, "請 求 書")
@@ -7677,7 +7689,7 @@ def build_invoice_pdf(invoice: Invoice, sale: PuppySale, customer: Customer | No
     notes = (invoice.notes or "お支払い方法については発行者へご確認ください。").replace("\r", " ").split("\n")
     y = height - 374; pdf.setFont(font_name, 9)
     for line in notes[:6]: pdf.drawString(55, y, line[:65]); y -= 17
-    pdf.setFillColorRGB(.35, .3, .32); pdf.setFont(font_name, 8); pdf.drawCentredString(width / 2, 35, f"{tenant.name} / {invoice.invoice_no}")
+    pdf.setFillColorRGB(.35, .3, .32); pdf.setFont(font_name, 8); pdf.drawCentredString(width / 2, 48, f"会計伝票：{journal_summary}"); pdf.drawCentredString(width / 2, 35, f"{tenant.name} / {invoice.invoice_no}")
     pdf.save(); return output.getvalue()
 
 
@@ -7690,7 +7702,11 @@ def invoice_pdf(invoice_id: int, access=Depends(require_tenant_user), session: S
     if not sale: raise HTTPException(status_code=404)
     customer = session.scalar(select(Customer).where(Customer.id == sale.customer_id, Customer.tenant_id == tenant.id)) if sale.customer_id else None
     dog = session.scalar(select(Dog).where(Dog.id == sale.dog_id, Dog.tenant_id == tenant.id))
-    content = build_invoice_pdf(invoice, sale, customer, dog, tenant)
+    accrual_journal, payment_journal, reversal_journal = finance_invoice_journal_status(session, tenant.id, invoice)
+    journal_parts = ([f"発生 {accrual_journal.voucher_no}"] if accrual_journal else ["未計上（下書き）"])
+    if payment_journal: journal_parts.append(f"入金 {payment_journal.voucher_no}")
+    if reversal_journal: journal_parts.append(f"取消 {reversal_journal.voucher_no}")
+    content = build_invoice_pdf(invoice, sale, customer, dog, tenant, " / ".join(journal_parts))
     return Response(content=content, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="invoice-{invoice.invoice_no}.pdf"', "Cache-Control": "private, no-store"})
 
 
