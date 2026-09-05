@@ -291,7 +291,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_cost_allocation_rejects_cross_tenant_and_over_allocation(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "cost_allocate")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("FinancialEntry.tenant_id == tenant.id", 'FinancialEntry.entry_type == "expense"', "Dog.tenant_id == tenant.id", "Litter.tenant_id == tenant.id", "CostAllocation.tenant_id == tenant.id", "bool(dog) == bool(litter)", "allocated + amount >", "amount <= 0"):
+        for marker in ("FinancialEntry.tenant_id == tenant.id", 'FinancialEntry.entry_type == "expense"', "Dog.tenant_id == tenant.id", "Litter.tenant_id == tenant.id", "CostAllocation.tenant_id == tenant.id", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id == financial_entry_id", 'FinanceJournalEntry.status == "posted"', "not journal", "bool(dog) == bool(litter)", "allocated + amount >", "amount <= 0", '"cost_allocation"'):
             self.assertIn(marker, segment)
 
     def test_costs_page_calculates_litter_revenue_cost_and_profit(self):
@@ -311,6 +311,16 @@ class Phase6StaticTests(unittest.TestCase):
         page_source = ast.get_source_segment(SOURCE, page)
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
+
+    def test_costs_page_integrates_double_entry_profit_and_journaled_allocations(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "costs_page"))
+        for marker in ("journaled_entry_ids", "unjournaled_expense_count", 'FinanceJournalEntry.status == "posted"', "item.id in journaled_entry_ids", "finance_fiscal_period", "finance_budget_journal_actuals", "accounting_revenue", "accounting_expense", "accounting_profit", "period_allocated", "当期の複式仕訳実績", "会計収益", "会計費用", "会計利益", "複式仕訳未連携の経費", "/modules/finance/general-ledger", "/modules/finance/statements-report", "売掛・買掛", "減価償却", "消費税振替", "取消仕訳"):
+            self.assertIn(marker, page)
+
+    def test_costs_guide_distinguishes_accounting_profit_from_management_profit(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("複式仕訳済みの経費", "会計利益", "予定利益・入金基準利益", "売掛・買掛", "減価償却", "消費税振替", "取消仕訳", "一致しない場合があります"):
+            self.assertIn(marker, guide)
 
     def test_finance_document_model_and_routes_are_tenant_scoped(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceDocument")

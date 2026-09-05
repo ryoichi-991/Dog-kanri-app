@@ -1875,7 +1875,7 @@ def page_usage_guide(title: str) -> str:
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と改ざん確認用の整合性情報をZIPにまとめられます。"], ["出力する年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロードしたZIPを権限管理された場所へ保存します。"], "ZIPには個人情報・取引情報・証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
         (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
-        (("原価", "利益", "採算"), ["経費を特定の犬または出産回へ配賦し、売上・原価・利益を確認できます。", "出産回ごとの販売予定額、入金額、未入金額、原価を比較できます。"], ["未配賦の経費から対象記録を選びます。", "対象の犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の利益と未配賦経費を確認します。"], "利益は登録済みの販売価格・入金額・配賦済み経費から算出した管理上の概算です。税務上の利益は税理士へ確認してください。"),
+        (("原価", "利益", "採算"), ["複式仕訳済みの経費を特定の犬または出産回へ配賦し、販売管理上の採算を確認できます。", "当期の複式仕訳による収益・費用・会計利益と、出産回ごとの販売予定・入金・原価を比較できます。"], ["当期の会計利益と配賦状況を確認します。", "複式仕訳済みの未配賦経費から、犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の予定利益・入金基準利益と総勘定元帳を照合します。"], "出産回別利益は販売価格・入金額・配賦額による管理指標です。会計利益は売掛・買掛、減価償却、消費税振替、取消仕訳を含むため一致しない場合があります。正式な決算は税理士へ確認してください。"),
         (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
         (("犬・血統書", "犬一覧", "在籍犬", "親犬", "販売犬", "譲渡済", "外部犬"), ["犬の基本情報、在籍区分、写真、血統書を管理できます。", "親犬・仔犬・販売犬・譲渡済犬などの状態を確認できます。"], ["対象犬を検索または一覧から選びます。", "登録・編集画面で必要項目を入力します。", "保存後に名前、性別、生年月日、在籍状態を確認します。"], "販売・譲渡・死亡などの状態変更は、一覧表示や帳票に影響します。対象犬を確認して操作してください。"),
         (("販売", "顧客", "商談", "契約", "引渡"), ["顧客、商談、契約、販売・引渡し状況を管理できます。", "進捗確認と必要書類の作成・出力に利用できます。"], ["顧客と対象犬を確認します。", "商談や契約の進捗を入力します。", "引渡し前に契約内容と必要書類を確認します。"], "個人情報を含むため、閲覧・出力したデータの取扱いに注意してください。"),
@@ -4840,7 +4840,7 @@ FINANCE_AUDIT_ACTIONS = {
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
     "journal_create": "複式仕訳登録", "journal_sync": "収支複式仕訳連携", "journal_reverse": "複式仕訳取消",
     "opening_balance_create": "期首残高登録", "year_carryforward": "年度残高繰越",
-    "year_checklist_update": "決算前チェック更新",
+    "year_checklist_update": "決算前チェック更新", "cost_allocation": "原価配賦",
 }
 
 
@@ -7690,13 +7690,16 @@ def invoice_pdf(invoice_id: int, access=Depends(require_tenant_user), session: S
 def costs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     expenses = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.entry_type == "expense").order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
+    expense_ids = [item.id for item in expenses]
+    journaled_entry_ids = set(session.scalars(select(FinanceJournalEntry.source_entry_id).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(expense_ids), FinanceJournalEntry.status == "posted").limit(20000)).all()) if expense_ids else set()
+    unjournaled_expense_count = len(set(expense_ids) - journaled_entry_ids)
     allocations = session.scalars(select(CostAllocation).where(CostAllocation.tenant_id == tenant.id).order_by(CostAllocation.id.desc())).all()
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
     litters = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id).order_by(Litter.birth_date.desc(), Litter.id.desc())).all()
     dogs_by_id = {item.id: item for item in dogs}; litters_by_id = {item.id: item for item in litters}
     allocated_by_entry: dict[int, int] = {}
     for item in allocations: allocated_by_entry[item.financial_entry_id] = allocated_by_entry.get(item.financial_entry_id, 0) + item.amount
-    remaining_expenses = [(item, item.amount - allocated_by_entry.get(item.id, 0)) for item in expenses if item.amount - allocated_by_entry.get(item.id, 0) > 0]
+    remaining_expenses = [(item, item.amount - allocated_by_entry.get(item.id, 0)) for item in expenses if item.id in journaled_entry_ids and item.amount - allocated_by_entry.get(item.id, 0) > 0]
     expense_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{html.escape(item.description)}／未配賦 ¥{remaining:,}</option>' for item, remaining in remaining_expenses)
     dog_options = '<option value="">犬へ配賦しない</option>' + "".join(f'<option value="{item.id}">{html.escape(item.call_name)}／{html.escape(item.registered_name or "血統名未登録")}</option>' for item in dogs)
     litter_options = '<option value="">出産回へ配賦しない</option>'
@@ -7720,6 +7723,13 @@ def costs_page(access=Depends(require_tenant_user), session: Session = Depends(d
         rows += f'<tr><td>{html.escape(title)}</td><td>{len(puppies)}頭</td><td>¥{planned:,}</td><td>¥{received:,}</td><td>¥{unpaid:,}</td><td>¥{cost:,}</td><td class="{"error" if profit < 0 else ""}">¥{profit:,}</td><td class="{"error" if realized_profit < 0 else ""}">¥{realized_profit:,}</td></tr>'
         mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(title)}／{len(puppies)}頭</h3><p>販売予定 <strong>¥{planned:,}</strong>／入金 <strong>¥{received:,}</strong></p><p>原価 <strong>¥{cost:,}</strong>／予定利益 <strong class="{'error' if profit < 0 else ''}">¥{profit:,}</strong></p><p>入金基準利益 <strong class="{'error' if realized_profit < 0 else ''}">¥{realized_profit:,}</strong></p></article>'''
     unallocated_total = sum(remaining for _, remaining in remaining_expenses)
+    setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
+    selected_year = date.today().year if date.today().month >= start_month else date.today().year - 1
+    period_start, period_end = finance_fiscal_period(selected_year, start_month)
+    journal_monthly, _, _ = finance_budget_journal_actuals(session, tenant.id, period_start, period_end)
+    accounting_revenue = sum(value["income"] for value in journal_monthly.values()); accounting_expense = sum(value["expense"] for value in journal_monthly.values()); accounting_profit = accounting_revenue - accounting_expense
+    period_expense_ids = {item.id for item in expenses if period_start <= item.occurred_on <= period_end}
+    period_allocated = sum(item.amount for item in allocations if item.financial_entry_id in period_expense_ids)
     allocation_rows = ""
     for item in allocations[:50]:
         entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == item.financial_entry_id, FinancialEntry.tenant_id == tenant.id))
@@ -7728,9 +7738,12 @@ def costs_page(access=Depends(require_tenant_user), session: Session = Depends(d
             litter = litters_by_id[item.litter_id]; dam = dogs_by_id.get(litter.dam_id) or session.get(Dog, litter.dam_id); target = f"{dam.call_name if dam else '母犬未登録'} {litter.birth_date}出産"
         allocation_rows += f'<tr><td>{html.escape(entry.description if entry else "経費未登録")}</td><td>{html.escape(target or "対象未登録")}</td><td>¥{item.amount:,}</td><td>{html.escape(item.notes or "－")}</td></tr>'
     profit_total = planned_total - cost_total; realized_total = received_total - cost_total
-    body = f'''<h1>原価・利益管理</h1><p>収支台帳の経費を犬・出産回へ配賦し、販売売上と比較して採算を確認します。</p>
+    body = f'''<h1>原価・利益管理</h1><p>複式仕訳済みの経費を犬・出産回へ配賦し、販売管理上の採算と会計上の利益を比較します。</p>
+    <h2>当期の複式仕訳実績</h2><div class="grid"><div class="module"><h3>会計収益</h3><p><strong style="font-size:24px">¥{accounting_revenue:,}</strong></p></div><div class="module"><h3>会計費用</h3><p><strong style="font-size:24px">¥{accounting_expense:,}</strong></p></div><div class="module"><h3>会計利益</h3><p><strong class="{'error' if accounting_profit < 0 else ''}" style="font-size:24px">{"-" if accounting_profit < 0 else ""}¥{abs(accounting_profit):,}</strong></p></div><div class="module"><h3>台帳経費の配賦済み</h3><p><strong style="font-size:24px">¥{period_allocated:,}</strong></p></div></div><p class="tenant">対象事業年度：{period_start}～{period_end}。会計実績は売掛・買掛、減価償却、消費税振替、取消仕訳を含みます。配賦額は収支台帳由来の管理指標のため、会計費用とは一致しない場合があります。</p>
+    <h2>出産回別の販売・原価</h2>
     <div class="grid"><div class="module"><h3>販売予定額</h3><p><strong style="font-size:24px">¥{planned_total:,}</strong></p></div><div class="module"><h3>配賦済み原価</h3><p><strong style="font-size:24px">¥{cost_total:,}</strong></p></div><div class="module"><h3>予定利益</h3><p><strong class="{'error' if profit_total < 0 else ''}" style="font-size:24px">¥{profit_total:,}</strong></p></div><div class="module"><h3>入金基準利益</h3><p><strong class="{'error' if realized_total < 0 else ''}" style="font-size:24px">¥{realized_total:,}</strong></p></div><div class="module"><h3>未配賦経費</h3><p><strong style="font-size:24px">¥{unallocated_total:,}</strong></p></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/sales">販売管理</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/general-ledger?start_year={selected_year}">総勘定元帳</a><a class="button secondary" href="/modules/finance/statements-report?start_year={selected_year}">財務諸表</a><a class="button secondary" href="/modules/finance/journals">複式簿記仕訳</a><a class="button secondary" href="/modules/sales">販売管理</a></div>
+    {'<p class="tenant"><strong>複式仕訳未連携の経費：' + str(unjournaled_expense_count) + '件</strong>。複式簿記仕訳画面で未連携分を補完すると配賦対象になります。</p>' if unjournaled_expense_count else ''}
     <h2>経費を配賦</h2>{f'<form method="post" action="/modules/costs"><div class="grid"><div><label>経費記録</label><select name="financial_entry_id">{expense_options}</select></div><div><label>対象犬（どちらか一方）</label><select name="dog_id">{dog_options}</select></div><div><label>対象出産回（どちらか一方）</label><select name="litter_id">{litter_options}</select></div><div><label>配賦額</label><input type="number" name="amount" min="1" required></div></div><label>配賦メモ</label><input name="notes" maxlength="500"><button>原価へ配賦する</button></form>' if remaining_expenses else '<p class="tenant">未配賦の経費はありません。収支・経費台帳で経費を登録してください。</p>'}
     <h2>出産回別の採算</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>出産回</th><th>仔犬</th><th>販売予定</th><th>入金</th><th>未入金</th><th>原価</th><th>予定利益</th><th>入金基準利益</th></tr>{rows or '<tr><td colspan="8">出産記録はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">出産記録はありません。</div>'}</section>
     <h2>配賦履歴</h2><table><tr><th>経費</th><th>配賦先</th><th>金額</th><th>メモ</th></tr>{allocation_rows or '<tr><td colspan="4">配賦履歴はありません。</td></tr>'}</table>'''
@@ -7744,10 +7757,12 @@ def cost_allocate(financial_entry_id: int = Form(...), amount: int = Form(...), 
     dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant.id)) if dog_id else None
     litter = session.scalar(select(Litter).where(Litter.id == litter_id, Litter.tenant_id == tenant.id)) if litter_id else None
     allocated = session.scalar(select(func.coalesce(func.sum(CostAllocation.amount), 0)).where(CostAllocation.tenant_id == tenant.id, CostAllocation.financial_entry_id == financial_entry_id)) or 0
-    if not expense or bool(dog) == bool(litter) or amount <= 0 or allocated + amount > (expense.amount if expense else 0) or len(notes) > 500:
+    journal = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id == financial_entry_id, FinanceJournalEntry.status == "posted"))
+    if not expense or not journal or bool(dog) == bool(litter) or amount <= 0 or allocated + amount > (expense.amount if expense else 0) or len(notes) > 500:
         raise HTTPException(status_code=400, detail="原価配賦の内容を確認してください")
     ensure_finance_period_open(session, tenant.id, expense.occurred_on)
-    session.add(CostAllocation(tenant_id=tenant.id, financial_entry_id=expense.id, dog_id=dog.id if dog else None, litter_id=litter.id if litter else None, amount=amount, notes=notes.strip() or None))
+    item = CostAllocation(tenant_id=tenant.id, financial_entry_id=expense.id, dog_id=dog.id if dog else None, litter_id=litter.id if litter else None, amount=amount, notes=notes.strip() or None); session.add(item); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "cost_allocation", "cost_allocation", item.id, "複式仕訳済み経費を原価配賦", f"entry={expense.id} journal={journal.id} amount={amount} dog={dog.id if dog else ''} litter={litter.id if litter else ''}")
     session.commit()
     return RedirectResponse("/modules/costs", status_code=303)
 
