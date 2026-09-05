@@ -5913,6 +5913,27 @@ def finance_year_checklist_complete(session: Session, tenant_id: int, start_year
     return set(FINANCE_YEAR_CHECKLIST_ITEMS).issubset(completed_keys)
 
 
+def finance_year_checklist_auto_checks(session: Session, tenant_id: int, start_year: int, start_month: int) -> dict[str, object]:
+    period_start, period_end = finance_fiscal_period(start_year, start_month)
+    accounts, _, journals, lines = finance_double_entry_data(session, tenant_id, period_start, period_end)
+    integrity = finance_journal_integrity(session, tenant_id, period_start, period_end)
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end).limit(10000)).all()
+    entry_ids = {item.id for item in entries}
+    journaled_ids = {item.source_entry_id for item in journals if item.source_entry_id is not None}
+    unlinked_count = len(entry_ids - journaled_ids)
+    account_ids = {item.id for item in accounts}
+    invalid_account_count = sum(1 for line in lines if line.account_id not in account_ids)
+    opening_count = session.scalar(select(func.count(FinanceOpeningBalance.id)).where(FinanceOpeningBalance.tenant_id == tenant_id, FinanceOpeningBalance.start_year == start_year)) or 0
+    carryforward_count = session.scalar(select(func.count(FinanceYearCarryforward.id)).where(FinanceYearCarryforward.tenant_id == tenant_id, FinanceYearCarryforward.target_start_year == start_year)) or 0
+    checks = [
+        ("収支台帳の複式仕訳連携", unlinked_count == 0, f"未連携 {unlinked_count}件", True),
+        ("仕訳伝票の貸借一致", integrity["unbalanced_count"] == 0 and integrity["debit_total"] == integrity["credit_total"], f"借方 ¥{integrity['debit_total']:,}／貸方 ¥{integrity['credit_total']:,}／不一致 {integrity['unbalanced_count']}伝票", True),
+        ("勘定科目の参照整合性", invalid_account_count == 0, f"不正な科目参照 {invalid_account_count}明細", True),
+        ("期首残高・年度繰越", opening_count > 0 or carryforward_count > 0, f"期首残高 {opening_count}件／年度繰越 {carryforward_count}件（初年度で残高0の場合は未登録でも可）", False),
+    ]
+    return {**integrity, "unlinked_count": unlinked_count, "invalid_account_count": invalid_account_count, "checks": checks, "blocking_count": sum(1 for _, ok, _, blocking in checks if blocking and not ok)}
+
+
 @app.get("/modules/finance/year-end-checklist", response_class=HTMLResponse)
 def finance_year_checklist_page(start_year: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
@@ -5920,6 +5941,7 @@ def finance_year_checklist_page(start_year: str = "", access=Depends(require_ten
     except ValueError: raise HTTPException(status_code=400, detail="事業年度を確認してください")
     if selected_year < 2000 or selected_year > 2099: raise HTTPException(status_code=400, detail="事業年度を確認してください")
     period_start, period_end = finance_fiscal_period(selected_year, start_month)
+    auto_checks = finance_year_checklist_auto_checks(session, tenant.id, selected_year, start_month)
     records = session.scalars(select(FinanceYearCloseChecklist).where(FinanceYearCloseChecklist.tenant_id == tenant.id, FinanceYearCloseChecklist.start_year == selected_year).limit(100)).all(); record_by_key = {item.item_key: item for item in records}
     year_closed = session.scalar(select(FinanceYearClose.id).where(FinanceYearClose.tenant_id == tenant.id, FinanceYearClose.start_year == selected_year))
     rows = ""; completed_count = 0
@@ -5927,7 +5949,8 @@ def finance_year_checklist_page(start_year: str = "", access=Depends(require_ten
         item = record_by_key.get(key); completed = bool(item and item.completed); completed_count += completed
         form = '<span class="badge">年度締め済み</span>' if year_closed else f'''<form method="post" action="/modules/finance/year-end-checklist"><input type="hidden" name="start_year" value="{selected_year}"><input type="hidden" name="item_key" value="{key}"><label><input type="checkbox" name="completed" value="true" style="width:auto" {"checked" if completed else ""}> 完了</label><input name="notes" value="{html.escape(item.notes or "") if item else ""}" maxlength="500" placeholder="確認内容・根拠資料"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 更新確認</label><button>保存</button></form>'''
         rows += f'<tr><td>{html.escape(label)}</td><td><span class="badge">{"完了" if completed else "未完了"}</span></td><td>{item.checked_at.strftime("%Y-%m-%d %H:%M") if item else "－"}</td><td>{form}</td></tr>'
-    body = f'''<h1>決算前チェックリスト</h1><p>{period_start}～{period_end}の決算準備を確認し、全項目の完了後に年度締めへ進みます。</p><form method="get"><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form><div class="grid"><div class="module"><h3>完了状況</h3><strong class="{'error' if completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end?start_year={selected_year}">年度締め</a><a class="button secondary" href="/modules/finance/export">決算資料ZIP</a><a class="button secondary" href="/modules/finance/tax/report?start_year={selected_year}">消費税年度集計</a></div><table><tr><th>確認項目</th><th>状態</th><th>最終確認</th><th>確認内容</th></tr>{rows}</table><p class="tenant">完了記録は年度締めの必須条件です。根拠資料を保存し、税務判断が必要な項目は税理士と確認してください。</p>'''
+    auto_rows = ''.join(f'<tr><td>{html.escape(label)}</td><td><span class="badge">{"正常" if ok else ("要修正" if blocking else "要確認")}</span></td><td class="{"error" if not ok else ""}">{html.escape(detail)}</td></tr>' for label, ok, detail, blocking in auto_checks["checks"])
+    body = f'''<h1>決算前チェックリスト</h1><p>{period_start}～{period_end}の決算準備を確認し、全項目の完了後に年度締めへ進みます。</p><form method="get"><label>事業年度（開始年）</label><input type="number" name="start_year" min="2000" max="2099" value="{selected_year}" required><button>表示</button></form><div class="grid"><div class="module"><h3>手動確認</h3><strong class="{'error' if completed_count < len(FINANCE_YEAR_CHECKLIST_ITEMS) else ''}">{completed_count}/{len(FINANCE_YEAR_CHECKLIST_ITEMS)}項目</strong></div><div class="module"><h3>複式仕訳の要修正</h3><strong class="{'error' if auto_checks['blocking_count'] else ''}">{auto_checks['blocking_count']}項目</strong></div><div class="module"><h3>仕訳伝票</h3><strong>{auto_checks['journal_count']}件</strong><p>{auto_checks['line_count']}明細</p></div></div><div class="health-toolbar"><a class="button secondary" href="/modules/finance/year-end?start_year={selected_year}">年度締め</a><a class="button secondary" href="/modules/finance/trial-balance?start_year={selected_year}">複式試算表</a><a class="button secondary" href="/modules/finance/export">決算資料ZIP</a><a class="button secondary" href="/modules/finance/tax/report?start_year={selected_year}">消費税年度集計</a></div><h2>複式仕訳の自動チェック</h2><table><tr><th>確認項目</th><th>判定</th><th>内容</th></tr>{auto_rows}</table><h2>決算準備の手動チェック</h2><table><tr><th>確認項目</th><th>状態</th><th>最終確認</th><th>確認内容</th></tr>{rows}</table><p class="tenant">自動チェックの要修正を解消し、手動確認をすべて完了してから年度締めへ進んでください。税務判断が必要な項目は税理士と確認してください。</p>'''
     return layout("決算前チェックリスト", body, user)
 
 

@@ -1351,8 +1351,18 @@ class Phase6StaticTests(unittest.TestCase):
 
     def test_year_checklist_page_is_admin_scoped_bounded_and_links_reports(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_page"))
-        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "FinanceYearCloseChecklist.tenant_id == tenant.id", ".limit(100)", "FinanceYearClose.tenant_id == tenant.id", "completed_count", "/modules/finance/export", "/modules/finance/tax/report", "年度締め済み"):
+        for marker in ("require_tenant_admin", "FinanceFiscalSetting.tenant_id == tenant.id", "finance_year_checklist_auto_checks", "FinanceYearCloseChecklist.tenant_id == tenant.id", ".limit(100)", "FinanceYearClose.tenant_id == tenant.id", "completed_count", "複式仕訳の自動チェック", "決算準備の手動チェック", "/modules/finance/trial-balance", "/modules/finance/export", "/modules/finance/tax/report", "年度締め済み"):
             self.assertIn(marker, page)
+
+    def test_year_checklist_auto_checks_double_entry_integrity(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_auto_checks"))
+        for marker in ("finance_fiscal_period", "finance_double_entry_data", "finance_journal_integrity", "FinancialEntry.tenant_id == tenant_id", ".limit(10000)", "journaled_ids", "unlinked_count", "invalid_account_count", "収支台帳の複式仕訳連携", "仕訳伝票の貸借一致", "勘定科目の参照整合性"):
+            self.assertIn(marker, helper)
+
+    def test_year_checklist_auto_checks_opening_and_carryforward(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_auto_checks"))
+        for marker in ("FinanceOpeningBalance.tenant_id == tenant_id", "FinanceOpeningBalance.start_year == start_year", "FinanceYearCarryforward.tenant_id == tenant_id", "FinanceYearCarryforward.target_start_year == start_year", "期首残高・年度繰越", "初年度で残高0の場合は未登録でも可", '"blocking_count"'):
+            self.assertIn(marker, helper)
 
     def test_year_checklist_update_validates_locks_upserts_and_audits(self):
         route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_update"))
