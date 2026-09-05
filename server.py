@@ -5292,13 +5292,13 @@ def finance_create_cash_basis_journal(session: Session, tenant_id: int, user_id:
     return finance_create_journal(session, tenant_id, user_id, entry.occurred_on, entry.description, f"{voucher_prefix}-{entry.id}", lines, source_entry_id=entry.id)
 
 
-def finance_reverse_accrual_journal(session: Session, tenant_id: int, user_id: int, original: FinanceJournalEntry, reversed_on: date, description: str) -> FinanceJournalEntry:
+def finance_reverse_accrual_journal(session: Session, tenant_id: int, user_id: int, original: FinanceJournalEntry, reversed_on: date, description: str, source_entry_id: int | None = None) -> FinanceJournalEntry:
     existing = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.reversal_of_id == original.id))
     if existing: return existing
     ensure_finance_period_open(session, tenant_id, reversed_on)
     original_lines = session.scalars(select(FinanceJournalLine).where(FinanceJournalLine.tenant_id == tenant_id, FinanceJournalLine.journal_entry_id == original.id).order_by(FinanceJournalLine.line_no)).all()
     reversed_lines = [("credit" if line.side == "debit" else "debit", line.account_id, line.subaccount_id, line.amount, description) for line in original_lines]
-    reversal = finance_create_journal(session, tenant_id, user_id, reversed_on, description, finance_journal_voucher(session, tenant_id, "RV", reversed_on), reversed_lines, reversal_of_id=original.id)
+    reversal = finance_create_journal(session, tenant_id, user_id, reversed_on, description, finance_journal_voucher(session, tenant_id, "RV", reversed_on), reversed_lines, source_entry_id=source_entry_id, reversal_of_id=original.id)
     original.status = "reversed"
     return reversal
 
@@ -6027,14 +6027,16 @@ def finance_create(occurred_on: str = Form(...), entry_type: str = Form(...), ca
     clean_description = description.strip()
     if entry_type not in {"income", "expense"} or category not in FINANCE_CATEGORIES or amount <= 0 or not clean_description or len(clean_description) > 200 or len(notes) > 2000:
         raise HTTPException(status_code=400, detail="収支情報を確認してください")
-    session.add(FinancialEntry(tenant_id=tenant.id, occurred_on=entry_day, entry_type=entry_type, category=category, amount=amount, description=clean_description, notes=notes.strip() or None))
+    entry = FinancialEntry(tenant_id=tenant.id, occurred_on=entry_day, entry_type=entry_type, category=category, amount=amount, description=clean_description, notes=notes.strip() or None)
+    session.add(entry); session.flush(); journal = finance_create_cash_basis_journal(session, tenant.id, user.id, entry, "収支台帳直接入力", "LG")
+    record_finance_audit(session, tenant.id, user.id, "ledger_journal", "financial_entry", entry.id, "収支台帳を複式仕訳へ登録", f"journal={journal.id} amount={entry.amount}")
     session.commit()
     return RedirectResponse(f"/modules/finance?month={entry_day:%Y-%m}", status_code=303)
 
 
 def finance_source_entry_ids(session: Session, tenant_id: int) -> set[int]:
     source_ids: set[int] = set()
-    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (FinanceExpenseRequest, FinanceExpenseRequest.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id), (FinanceDepreciationPosting, FinanceDepreciationPosting.financial_entry_id), (FinanceJournalEntry, FinanceJournalEntry.source_entry_id)):
+    for model, column in ((FinanceCashPlan, FinanceCashPlan.ledger_entry_id), (FinanceRecurringPosting, FinanceRecurringPosting.financial_entry_id), (FinancePayable, FinancePayable.financial_entry_id), (FinanceExpenseRequest, FinanceExpenseRequest.financial_entry_id), (Invoice, Invoice.ledger_entry_id), (FinanceReceivableSettlement, FinanceReceivableSettlement.financial_entry_id), (FinanceDepreciationPosting, FinanceDepreciationPosting.financial_entry_id)):
         source_ids.update(value for value in session.scalars(select(column).where(model.tenant_id == tenant_id, column.is_not(None))).all() if value)
     return source_ids
 
@@ -6223,7 +6225,7 @@ def finance_corrections_page(access=Depends(require_tenant_user), session: Sessi
 @app.post("/modules/finance/corrections")
 def finance_correction_create(original_entry_id: int = Form(...), corrected_on: str = Form(...), correction_type: str = Form(...), replacement_type: str = Form(""), replacement_category: str = Form(""), replacement_amount: int = Form(0), replacement_description: str = Form(""), reason: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
-    original = session.scalar(select(FinancialEntry).where(FinancialEntry.id == original_entry_id, FinancialEntry.tenant_id == tenant.id))
+    original = session.scalar(select(FinancialEntry).where(FinancialEntry.id == original_entry_id, FinancialEntry.tenant_id == tenant.id).with_for_update())
     existing = session.scalar(select(FinanceEntryCorrection.id).where(FinanceEntryCorrection.tenant_id == tenant.id, FinanceEntryCorrection.original_entry_id == original_entry_id))
     reversal_ids = set(session.scalars(select(FinanceEntryCorrection.reversal_entry_id).where(FinanceEntryCorrection.tenant_id == tenant.id)).all())
     try:
@@ -6240,14 +6242,17 @@ def finance_correction_create(original_entry_id: int = Form(...), corrected_on: 
     session.add(reversal); session.flush()
     if assignment:
         session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=assignment.account_id, financial_entry_id=reversal.id))
+    original_journal = finance_create_cash_basis_journal(session, tenant.id, user.id, original, "訂正対象の台帳記録", "LG")
+    reversal_journal = finance_reverse_accrual_journal(session, tenant.id, user.id, original_journal, correction_day, f"取消：{original.description}"[:200], source_entry_id=reversal.id)
     replacement = None
     if correction_type == "replace":
         replacement = FinancialEntry(tenant_id=tenant.id, occurred_on=correction_day, entry_type=replacement_type, category=replacement_category, description=clean_description, amount=replacement_amount, notes=f"元仕訳 #{original.id} の訂正後仕訳／理由：{clean_reason}")
         session.add(replacement); session.flush()
         if assignment:
             session.add(FinanceAccountEntry(tenant_id=tenant.id, account_id=assignment.account_id, financial_entry_id=replacement.id))
+        replacement_journal = finance_create_cash_basis_journal(session, tenant.id, user.id, replacement, f"訂正後：元台帳#{original.id}", "CR")
     session.add(FinanceEntryCorrection(tenant_id=tenant.id, original_entry_id=original.id, reversal_entry_id=reversal.id, replacement_entry_id=replacement.id if replacement else None, correction_type=correction_type, reason=clean_reason, corrected_by_id=user.id))
-    record_finance_audit(session, tenant.id, user.id, "entry_correction", "financial_entry", original.id, "仕訳を訂正" if replacement else "仕訳を取消", f"reversal={reversal.id} replacement={replacement.id if replacement else ''} reason={clean_reason}")
+    record_finance_audit(session, tenant.id, user.id, "entry_correction", "financial_entry", original.id, "複式仕訳を訂正" if replacement else "複式仕訳を取消", f"original_journal={original_journal.id} reversal={reversal.id} reversal_journal={reversal_journal.id} replacement={replacement.id if replacement else ''} replacement_journal={replacement_journal.id if replacement else ''} reason={clean_reason}")
     session.commit()
     return RedirectResponse("/modules/finance/corrections", status_code=303)
 
