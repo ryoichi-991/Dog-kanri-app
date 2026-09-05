@@ -1874,7 +1874,7 @@ def page_usage_guide(title: str) -> str:
         (("決算前チェックリスト", "決算準備"), ["年度締め前に棚卸、売掛・買掛、固定資産、消費税、証憑、税理士確認の完了状況を記録できます。", "自動点検項目と担当者が確認する項目を一画面で照合できます。"], ["対象事業年度を選び、自動点検の未処理を解消します。", "原資料と残高を照合し、各項目を完了にします。", "全項目完了後に年度締めを実行します。"], "チェックだけで正式な決算・税務判断が完了するものではありません。根拠資料を保存し、必要な項目は税理士へ確認してください。"),
         (("月次締め", "会計期間ロック"), ["月ごとの入金・経費、証憑、口座割当の状態を点検できます。", "締めた月は台帳登録・口座割当・口座振替をロックし、確定後の誤変更を防ぎます。"], ["対象月を選び、未割当と証憑未保管を確認します。", "集計額を確認して管理者が月次締めを実行します。", "修正が必要な場合だけ理由を確認して締めを解除します。"], "締め解除後に修正した場合は、再度集計を確認して締め直してください。"),
         (("会計・証憑一括出力",), ["指定年の複式仕訳伝票・借方貸方明細・勘定科目・補助科目と、収支台帳・請求書・原価配賦をCSVで出力できます。", "領収書・証憑原本と全ファイルのSHA-256整合性情報をZIPにまとめられます。"], ["出力する暦年を指定します。", "管理者パスワードと安全保管の確認を入力します。", "ダウンロード後にmanifestの件数と整合性情報を確認し、権限管理された場所へ保存します。"], "ZIPには発生主義・取消を含む複式仕訳、個人情報、取引情報、証憑原本が含まれます。メールへ直接添付せず、安全な共有方法を利用してください。"),
-        (("領収書", "証憑"), ["収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "発行元・書類番号・台帳金額と原本をまとめて確認できます。"], ["紐づける台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から書類を開き、台帳の日付・金額と照合します。"], "書類には個人情報や口座情報が含まれる場合があります。必要な担当者だけが閲覧し、原本も法定期間に従って保管してください。"),
+        (("領収書", "証憑"), ["複式仕訳済みの収支台帳記録へ領収書・請求書のPDFや写真を紐づけて保管できます。", "伝票番号・仕訳状態・台帳金額と証憑原本を一画面で照合できます。"], ["複式仕訳済みの台帳記録と書類種別を選びます。", "発行元・書類番号を入力し、PDFまたは写真を登録します。", "一覧から伝票番号と原本を開き、借方・貸方の根拠資料として照合します。"], "仕訳未連携の台帳記録には証憑を登録できません。先に複式簿記仕訳画面で仕訳を補完してください。書類には個人情報や口座情報が含まれる場合があるため、必要な担当者だけが閲覧し、原本も法定期間に従って安全に保管してください。"),
         (("原価", "利益", "採算"), ["複式仕訳済みの経費を特定の犬または出産回へ配賦し、販売管理上の採算を確認できます。", "当期の複式仕訳による収益・費用・会計利益と、出産回ごとの販売予定・入金・原価を比較できます。"], ["当期の会計利益と配賦状況を確認します。", "複式仕訳済みの未配賦経費から、犬または出産回のどちらか一方と配賦額を指定します。", "出産回別の予定利益・入金基準利益と総勘定元帳を照合します。"], "出産回別利益は販売価格・入金額・配賦額による管理指標です。会計利益は売掛・買掛、減価償却、消費税振替、取消仕訳を含むため一致しない場合があります。正式な決算は税理士へ確認してください。"),
         (("収支", "経費", "原価", "請求"), ["犬舎ごとの入金と経費を記録し、月次の収支を確認できます。", "費目別の支出と販売管理上の未入金額をまとめて把握できます。"], ["表示月と区分を選んで記録を確認します。", "入金または経費の日付・費目・金額を登録します。", "月次残高と販売未入金額を確認します。"], "税務申告用の会計帳簿を代替するものではありません。領収書・請求書の原本と照合し、税理士へ確認してください。"),
         (("犬・血統書", "犬一覧", "在籍犬", "親犬", "販売犬", "譲渡済", "外部犬"), ["犬の基本情報、在籍区分、写真、血統書を管理できます。", "親犬・仔犬・販売犬・譲渡済犬などの状態を確認できます。"], ["対象犬を検索または一覧から選びます。", "登録・編集画面で必要項目を入力します。", "保存後に名前、性別、生年月日、在籍状態を確認します。"], "販売・譲渡・死亡などの状態変更は、一覧表示や帳票に影響します。対象犬を確認して操作してください。"),
@@ -4840,7 +4840,7 @@ FINANCE_AUDIT_ACTIONS = {
     "chart_initialize": "標準勘定科目作成", "chart_account_create": "勘定科目登録", "chart_account_stop": "勘定科目停止", "subaccount_create": "補助科目登録", "subaccount_stop": "補助科目停止", "category_account_map": "費目対応設定",
     "journal_create": "複式仕訳登録", "journal_sync": "収支複式仕訳連携", "journal_reverse": "複式仕訳取消",
     "opening_balance_create": "期首残高登録", "year_carryforward": "年度残高繰越",
-    "year_checklist_update": "決算前チェック更新", "cost_allocation": "原価配賦",
+    "year_checklist_update": "決算前チェック更新", "cost_allocation": "原価配賦", "finance_document": "仕訳証憑登録",
 }
 
 
@@ -7785,23 +7785,30 @@ def finance_documents_page(document_type: str = "", document_keyword: str = "", 
         raise HTTPException(status_code=400, detail="検索条件を確認してください")
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id).order_by(FinancialEntry.occurred_on.desc(), FinancialEntry.id.desc())).all()
     entries_by_id = {item.id: item for item in entries}
+    journals = session.scalars(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id.in_(entries_by_id), FinanceJournalEntry.status == "posted").order_by(FinanceJournalEntry.entry_date.desc(), FinanceJournalEntry.id.desc()).limit(5000)).all() if entries_by_id else []
+    journals_by_entry_id = {item.source_entry_id: item for item in journals if item.source_entry_id}
+    journaled_entries = [item for item in entries if item.id in journals_by_entry_id]
     documents = session.scalars(select(FinanceDocument).where(FinanceDocument.tenant_id == tenant.id).order_by(FinanceDocument.uploaded_at.desc(), FinanceDocument.id.desc())).all()
     keyword = document_keyword.strip().lower()
     documents = [item for item in documents if (not document_type or item.document_type == document_type) and (not keyword or keyword in (item.issued_by or "").lower() or keyword in (item.document_no or "").lower() or keyword in item.filename.lower() or keyword in (entries_by_id.get(item.financial_entry_id).description if entries_by_id.get(item.financial_entry_id) else "").lower())]
-    entry_options = "".join(f'<option value="{item.id}">{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(item.description)}／¥{item.amount:,}</option>' for item in entries)
+    entry_options = "".join(f'<option value="{item.id}">{journals_by_entry_id[item.id].voucher_no}／{item.occurred_on}／{"入金" if item.entry_type == "income" else "経費"}／{html.escape(item.description)}／¥{item.amount:,}</option>' for item in journaled_entries)
     type_options = "".join(f'<option value="{value}" {"selected" if document_type == value else ""}>{label}</option>' for value, label in (("", "すべて"), *FINANCE_DOCUMENT_TYPES.items()))
     upload_types = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_DOCUMENT_TYPES.items())
     rows = ""; mobile_cards = ""
     for item in documents:
         entry = entries_by_id.get(item.financial_entry_id)
+        journal = journals_by_entry_id.get(item.financial_entry_id)
         entry_label = f"{entry.occurred_on}／{entry.description}／¥{entry.amount:,}" if entry else "台帳記録未登録"
+        journal_label = f"{journal.voucher_no}／計上済み" if journal else "仕訳未連携"
         view = f'<a class="button secondary" href="/modules/finance/documents/{item.id}/file" target="_blank">書類を見る</a>'
-        rows += f'<tr><td>{FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type)}</td><td>{html.escape(entry_label)}</td><td>{html.escape(item.issued_by or "－")}</td><td>{html.escape(item.document_no or "－")}</td><td>{html.escape(item.filename)}</td><td>{item.uploaded_at.strftime("%Y-%m-%d")}</td><td>{view}</td></tr>'
-        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type)}／{html.escape(item.issued_by or "発行元未登録")}</h3><p>{html.escape(entry_label)}</p><p>番号：{html.escape(item.document_no or "－")}／{html.escape(item.filename)}</p>{view}</article>'''
-    body = f'''<h1>領収書・証憑管理</h1><p>収支台帳の記録へ領収書・請求書のPDFや写真を紐づけて保管します。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/costs">原価・利益管理</a></div>
-    <h2>書類を登録</h2>{f'<form method="post" action="/modules/finance/documents" enctype="multipart/form-data"><div class="grid"><div><label>台帳記録</label><select name="financial_entry_id">{entry_options}</select></div><div><label>書類種別</label><select name="document_type">{upload_types}</select></div><div><label>発行元</label><input name="issued_by" maxlength="150"></div><div><label>書類番号</label><input name="document_no" maxlength="100"></div></div><label>PDF・写真（8MB以下）</label><input type="file" name="document_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>書類を登録</button></form>' if entries else '<p class="error">先に収支・経費台帳へ記録を登録してください。</p>'}
+        rows += f'<tr><td>{FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type)}</td><td>{html.escape(journal_label)}</td><td>{html.escape(entry_label)}</td><td>{html.escape(item.issued_by or "－")}</td><td>{html.escape(item.document_no or "－")}</td><td>{html.escape(item.filename)}</td><td>{item.uploaded_at.strftime("%Y-%m-%d")}</td><td>{view}</td></tr>'
+        mobile_cards += f'''<article class="calendar-mobile-card"><h3>{FINANCE_DOCUMENT_TYPES.get(item.document_type, item.document_type)}／{html.escape(item.issued_by or "発行元未登録")}</h3><p><span class="badge">{html.escape(journal_label)}</span></p><p>{html.escape(entry_label)}</p><p>番号：{html.escape(item.document_no or "－")}／{html.escape(item.filename)}</p>{view}</article>'''
+    unjournaled_count = len(entries) - len(journaled_entries)
+    body = f'''<h1>領収書・証憑管理</h1><p>複式仕訳済みの収支台帳記録へ、借方・貸方の根拠となる領収書・請求書のPDFや写真を紐づけて保管します。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/double-entry">複式簿記仕訳</a><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳</a><a class="button secondary" href="/modules/costs">原価・利益管理</a></div>
+    {f'<p class="tenant"><strong>仕訳未連携の台帳記録：{unjournaled_count}件</strong>。複式簿記仕訳画面で補完すると証憑を登録できます。</p>' if unjournaled_count else ''}
+    <h2>書類を登録</h2>{f'<form method="post" action="/modules/finance/documents" enctype="multipart/form-data"><div class="grid"><div><label>複式仕訳済み台帳記録</label><select name="financial_entry_id">{entry_options}</select></div><div><label>書類種別</label><select name="document_type">{upload_types}</select></div><div><label>発行元</label><input name="issued_by" maxlength="150"></div><div><label>書類番号</label><input name="document_no" maxlength="100"></div></div><label>PDF・写真（8MB以下）</label><input type="file" name="document_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>仕訳証憑を登録</button></form>' if journaled_entries else '<p class="error">証憑を登録できる複式仕訳済みの台帳記録がありません。</p>'}
     <h2>登録済み書類</h2><form method="get" action="/modules/finance/documents"><div class="grid"><div><label>書類種別</label><select name="document_type">{type_options}</select></div><div><label>発行元・番号・ファイル名・台帳内容</label><input name="document_keyword" value="{html.escape(document_keyword)}" maxlength="100"></div></div><button>検索</button> <a class="button secondary" href="/modules/finance/documents">解除</a></form>
-    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>種別</th><th>台帳記録</th><th>発行元</th><th>番号</th><th>ファイル</th><th>登録日</th><th>操作</th></tr>{rows or '<tr><td colspan="7">条件に一致する書類はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する書類はありません。</div>'}</section>'''
+    <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>種別</th><th>仕訳伝票</th><th>台帳記録</th><th>発行元</th><th>番号</th><th>ファイル</th><th>登録日</th><th>操作</th></tr>{rows or '<tr><td colspan="8">条件に一致する書類はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する書類はありません。</div>'}</section>'''
     return layout("領収書・証憑管理", body, user)
 
 
@@ -7809,6 +7816,7 @@ def finance_documents_page(document_type: str = "", document_keyword: str = "", 
 async def finance_document_create(financial_entry_id: int = Form(...), document_type: str = Form(...), issued_by: str = Form(""), document_no: str = Form(""), document_file: UploadFile = File(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     entry = session.scalar(select(FinancialEntry).where(FinancialEntry.id == financial_entry_id, FinancialEntry.tenant_id == tenant.id))
+    journal = session.scalar(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.source_entry_id == financial_entry_id, FinanceJournalEntry.status == "posted").order_by(FinanceJournalEntry.id.desc()).limit(1))
     allowed_types = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
     content = await document_file.read(8 * 1024 * 1024 + 1)
     filename = Path(document_file.filename or "").name[:255]
@@ -7816,7 +7824,11 @@ async def finance_document_create(financial_entry_id: int = Form(...), document_
     suffix = Path(filename).suffix.lower()
     if not entry or document_type not in FINANCE_DOCUMENT_TYPES or document_file.content_type not in allowed_types or suffix not in allowed_extensions.get(document_file.content_type or "", set()) or not content or len(content) > 8 * 1024 * 1024 or not filename or len(issued_by) > 150 or len(document_no) > 100:
         raise HTTPException(status_code=400, detail="書類はPDF・JPG・PNG・WebPの8MB以下で登録してください")
-    session.add(FinanceDocument(tenant_id=tenant.id, financial_entry_id=entry.id, document_type=document_type, issued_by=issued_by.strip() or None, document_no=document_no.strip() or None, filename=filename, content_type=document_file.content_type, file_data=content))
+    if not journal:
+        raise HTTPException(status_code=409, detail="先に収支台帳記録を複式仕訳へ連携してください")
+    document = FinanceDocument(tenant_id=tenant.id, financial_entry_id=entry.id, document_type=document_type, issued_by=issued_by.strip() or None, document_no=document_no.strip() or None, filename=filename, content_type=document_file.content_type, file_data=content)
+    session.add(document); session.flush()
+    record_finance_audit(session, tenant.id, user.id, "finance_document", "finance_document", document.id, "複式仕訳へ証憑を登録", f"entry={entry.id} journal={journal.id} voucher={journal.voucher_no} type={document_type}")
     session.commit()
     return RedirectResponse("/modules/finance/documents", status_code=303)
 

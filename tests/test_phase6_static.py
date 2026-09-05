@@ -415,6 +415,22 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("複式仕訳伝票・借方貸方明細", "勘定科目・補助科目", "SHA-256", "manifest", "発生主義・取消"):
             self.assertIn(marker, guide)
 
+    def test_finance_documents_only_offer_posted_double_entry_records(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_documents_page"))
+        for marker in ("FinanceJournalEntry.tenant_id == tenant.id", 'FinanceJournalEntry.status == "posted"', "journals_by_entry_id", "journaled_entries", "voucher_no", "仕訳未連携の台帳記録", "/modules/finance/double-entry", "/modules/finance/general-ledger", "仕訳伝票"):
+            self.assertIn(marker, page)
+
+    def test_finance_document_upload_requires_posted_journal_and_audits(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "finance_document_create"))
+        for marker in ("FinancialEntry.tenant_id == tenant.id", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceJournalEntry.source_entry_id == financial_entry_id", 'FinanceJournalEntry.status == "posted"', "status_code=409", "先に収支台帳記録を複式仕訳へ連携してください", "session.flush()", "record_finance_audit", '"finance_document"', "voucher={journal.voucher_no}"):
+            self.assertIn(marker, route)
+
+    def test_finance_document_guide_explains_voucher_evidence_link(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("複式仕訳済みの収支台帳記録", "伝票番号・仕訳状態", "借方・貸方の根拠資料", "仕訳未連携の台帳記録には証憑を登録できません"):
+            self.assertIn(marker, guide)
+        self.assertIn('"finance_document": "仕訳証憑登録"', SOURCE)
+
     def test_finance_export_has_safety_limits_private_response_and_guide(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
         segment = ast.get_source_segment(SOURCE, route)
