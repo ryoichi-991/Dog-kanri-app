@@ -1537,6 +1537,21 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinanceJournalEntry.tenant_id == tenant.id", "posting_entry_ids", "journaled_entry_ids", "複式仕訳済み", "仕訳未連携", "複式簿記仕訳画面から補完"):
             self.assertIn(marker, page)
 
+    def test_cashflow_completion_posts_balanced_journal_once_and_audits(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_cashflow_complete"))
+        for marker in ("with_for_update", "ensure_finance_period_open", "FinancialEntry(", "session.flush()", "finance_create_cash_basis_journal", 'f"資金繰り予定#{plan.id}"', '"CFP"', '"cashflow_journal"', "journal={journal.id}"):
+            self.assertIn(marker, route)
+
+    def test_statement_suggestion_batch_posts_double_entry_and_audits(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_apply_suggestions"))
+        for marker in ("user, tenant = access", "FinanceStatementLine.tenant_id == tenant.id", ".limit(500)", "finance_period_close", "FinanceAccountEntry(", "finance_create_cash_basis_journal", '"BST"', '"statement_journal_batch"'):
+            self.assertIn(marker, route)
+
+    def test_statement_manual_post_is_locked_journaled_and_audited(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_line_post"))
+        for marker in ("user, tenant = access", "with_for_update", "ensure_finance_period_open", "FinanceAccountEntry(", "finance_create_cash_basis_journal", 'f"銀行明細#{line.import_id}/{line.row_no}"', '"statement_journal"', "journal={journal.id}"):
+            self.assertIn(marker, route)
+
     def test_depreciation_journal_is_balanced_linked_and_idempotent(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_depreciation_journal")
         segment = ast.get_source_segment(SOURCE, helper)
