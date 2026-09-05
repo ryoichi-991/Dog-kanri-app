@@ -402,6 +402,19 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("ledger.csv", "invoices.csv", "cost-allocations.csv", "documents.csv", "manifest.json", "hashlib.sha256", "zipfile.ZIP_DEFLATED", "document_files", "record_operation"):
             self.assertIn(marker, segment)
 
+    def test_finance_export_contains_complete_double_entry_dataset(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_page"))
+        download = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download"))
+        for marker in ("複式仕訳伝票・借方貸方明細CSV", "勘定科目・補助科目・費目対応CSV"):
+            self.assertIn(marker, page)
+        for marker in ("finance_double_entry_data", "FinanceCategoryAccountMap.tenant_id == tenant.id", "account_map", "subaccount_map", "journal_map", "chart-accounts.csv", "subaccounts.csv", "category-account-maps.csv", "journal-entries.csv", "journal-lines.csv", '"schema_version": 2', '"accounting_basis": "double_entry_accrual"', '"journal_entries": len(journals)', '"journal_lines": len(journal_lines)', "FINANCE_ACCOUNT_TYPES", "FINANCE_NORMAL_SIDES", "reversal_of_id", "source_entry_id"):
+            self.assertIn(marker, download)
+
+    def test_finance_export_guide_explains_double_entry_and_manifest(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("複式仕訳伝票・借方貸方明細", "勘定科目・補助科目", "SHA-256", "manifest", "発生主義・取消"):
+            self.assertIn(marker, guide)
+
     def test_finance_export_has_safety_limits_private_response_and_guide(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_export_download")
         segment = ast.get_source_segment(SOURCE, route)
