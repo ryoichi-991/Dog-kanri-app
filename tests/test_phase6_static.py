@@ -1858,6 +1858,26 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("finance_journal_integrity", 'journal_integrity["unbalanced_count"]', 'journal_integrity["debit_total"] != journal_integrity["credit_total"]', "journals=", "debit=", "credit="):
             self.assertIn(marker, close)
 
+    def test_finance_audit_detects_double_entry_integrity_issues(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_journal_issues"))
+        for marker in ("finance_journal_integrity", "FinancialEntry.tenant_id == tenant_id", "FinanceJournalEntry.tenant_id == tenant_id", ".limit(10000)", "source_counts", "unlinked_ids", "orphan_source_ids", "台帳未連携", "貸借不一致", "参照元不整合"):
+            self.assertIn(marker, helper)
+
+    def test_finance_audit_source_validation_is_tenant_scoped(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_journal_issues"))
+        for marker in ("existing_source_ids", "FinancialEntry.id.in_(all_source_ids)", '"unlinked_count"', '"orphan_source_count"', '"issues"'):
+            self.assertIn(marker, helper)
+
+    def test_finance_audit_page_shows_journal_reconciliation(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page"))
+        for marker in ("finance_audit_journal_issues", "journal_audit", "複式仕訳伝票", "借方・貸方合計", "複式仕訳の整合性", "対象期間の複式仕訳に不整合はありません", "/modules/finance/journals", "/modules/finance/general-ledger", "操作履歴"):
+            self.assertIn(marker, page)
+
+    def test_finance_audit_issue_output_is_escaped(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page"))
+        self.assertIn("html.escape(label)", page)
+        self.assertIn("html.escape(detail)", page)
+
 
 if __name__ == "__main__":
     unittest.main()

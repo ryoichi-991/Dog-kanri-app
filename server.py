@@ -4857,6 +4857,29 @@ def finance_audit_filters(action: str, from_date: str, to_date: str) -> tuple[st
     return action, start, end
 
 
+def finance_audit_journal_issues(session: Session, tenant_id: int, period_start: date, period_end: date) -> dict[str, object]:
+    integrity = finance_journal_integrity(session, tenant_id, period_start, period_end)
+    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.occurred_on >= period_start, FinancialEntry.occurred_on <= period_end).limit(10000)).all()
+    entry_ids = {item.id for item in entries}
+    journals = session.scalars(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant_id, FinanceJournalEntry.entry_date >= period_start, FinanceJournalEntry.entry_date <= period_end).limit(10000)).all()
+    source_counts: dict[int, int] = {}
+    for journal in journals:
+        if journal.source_entry_id is not None:
+            source_counts[journal.source_entry_id] = source_counts.get(journal.source_entry_id, 0) + 1
+    unlinked_ids = sorted(entry_ids - set(source_counts))
+    all_source_ids = set(source_counts)
+    existing_source_ids = set(session.scalars(select(FinancialEntry.id).where(FinancialEntry.tenant_id == tenant_id, FinancialEntry.id.in_(all_source_ids))).all()) if all_source_ids else set()
+    orphan_source_ids = sorted(all_source_ids - existing_source_ids)
+    issues = []
+    if unlinked_ids:
+        issues.append(("台帳未連携", len(unlinked_ids), f"台帳ID：{', '.join(map(str, unlinked_ids[:20]))}"))
+    if integrity["unbalanced_count"]:
+        issues.append(("貸借不一致", integrity["unbalanced_count"], "借方・貸方金額または仕訳明細を確認してください"))
+    if orphan_source_ids:
+        issues.append(("参照元不整合", len(orphan_source_ids), f"参照元台帳ID：{', '.join(map(str, orphan_source_ids[:20]))}"))
+    return {**integrity, "unlinked_count": len(unlinked_ids), "orphan_source_count": len(orphan_source_ids), "issues": issues}
+
+
 @app.get("/modules/finance/audit", response_class=HTMLResponse)
 def finance_audit_page(action: str = "", from_date: str = "", to_date: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
@@ -4869,13 +4892,17 @@ def finance_audit_page(action: str = "", from_date: str = "", to_date: str = "",
     events = session.scalars(query.order_by(FinanceAuditEvent.created_at.desc(), FinanceAuditEvent.id.desc()).limit(1000)).all()
     actor_ids = {item.actor_user_id for item in events}
     actor_names = {item.id: item.name for item in session.scalars(select(User).where(User.id.in_(actor_ids))).all()} if actor_ids else {}
+    journal_audit = finance_audit_journal_issues(session, tenant.id, start, end)
     options = ''.join(f'<option value="{value}" {"selected" if action == value else ""}>{label}</option>' for value, label in FINANCE_AUDIT_ACTIONS.items())
     rows = ''.join(f'<tr><td>{item.created_at.strftime("%Y-%m-%d %H:%M:%S")}</td><td>{html.escape(actor_names.get(item.actor_user_id, f"ユーザー#{item.actor_user_id}"))}</td><td>{html.escape(FINANCE_AUDIT_ACTIONS.get(item.action, item.action))}</td><td>{html.escape(item.entity_type)} #{item.entity_id or "－"}</td><td>{html.escape(item.summary)}</td><td>{html.escape(item.details or "－")}</td></tr>' for item in events)
     cards = ''.join(f'<article class="calendar-mobile-card"><h3>{html.escape(FINANCE_AUDIT_ACTIONS.get(item.action, item.action))}／{item.entity_type} #{item.entity_id or "－"}</h3><p>{item.created_at.strftime("%Y-%m-%d %H:%M:%S")}／{html.escape(actor_names.get(item.actor_user_id, f"ユーザー#{item.actor_user_id}"))}</p><p>{html.escape(item.summary)}</p><p>{html.escape(item.details or "")}</p></article>' for item in events)
     query_string = urlencode({"action": action, "from_date": start.isoformat(), "to_date": end.isoformat()})
+    issue_rows = ''.join(f'<tr><td>{html.escape(label)}</td><td><strong class="error">{count}件</strong></td><td>{html.escape(detail)}</td></tr>' for label, count, detail in journal_audit["issues"])
     body = f'''<h1>会計操作ログ・監査証跡</h1><p>重要な会計操作の実行者、日時、対象、処理内容を追跡します。監査ログは画面から変更・削除できません。</p>
     <form method="get"><div class="grid"><div><label>操作区分</label><select name="action"><option value="">すべて</option>{options}</select></div><div><label>開始日</label><input type="date" name="from_date" value="{start}" required></div><div><label>終了日</label><input type="date" name="to_date" value="{end}" max="{date.today()}" required></div></div><button>表示</button> <a class="button secondary" href="/modules/finance/audit.csv?{query_string}">CSV出力</a></form>
-    <div class="grid"><div class="module"><h3>表示件数</h3><strong>{len(events)}件</strong></div><div class="module"><h3>実行者数</h3><strong>{len(actor_ids)}人</strong></div></div>
+    <div class="grid"><div class="module"><h3>表示件数</h3><strong>{len(events)}件</strong></div><div class="module"><h3>実行者数</h3><strong>{len(actor_ids)}人</strong></div><div class="module"><h3>複式仕訳伝票</h3><strong>{journal_audit['journal_count']}件</strong><p>{journal_audit['line_count']}明細</p></div><div class="module"><h3>借方・貸方合計</h3><strong>¥{journal_audit['debit_total']:,}<br>¥{journal_audit['credit_total']:,}</strong></div><div class="module"><h3>要確認</h3><strong class="{'error' if journal_audit['issues'] else ''}">{sum(item[1] for item in journal_audit['issues'])}件</strong></div></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/journals">複式仕訳を確認</a><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳を確認</a></div><h2>複式仕訳の整合性</h2><table><tr><th>確認項目</th><th>件数</th><th>内容</th></tr>{issue_rows or '<tr><td colspan="3">対象期間の複式仕訳に不整合はありません。</td></tr>'}</table>
+    <h2>操作履歴</h2>
     <div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日時</th><th>実行者</th><th>操作</th><th>対象</th><th>概要</th><th>詳細</th></tr>{rows or '<tr><td colspan="6">条件に一致する監査ログはありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{cards or '<div class="tenant">条件に一致する監査ログはありません。</div>'}</section>'''
     return layout("会計操作ログ・監査証跡", body, user)
 
