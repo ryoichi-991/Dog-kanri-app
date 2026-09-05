@@ -355,9 +355,9 @@ class Phase6StaticTests(unittest.TestCase):
     def test_finance_reports_aggregate_management_indicators(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reports_page")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("monthly", "annual_income", "annual_expense", "annual_balance", "unpaid_total", "overdue_invoices", "overdue_total", "document_rate", "missing_documents", "category_totals"):
+        for marker in ("monthly", "annual_income", "annual_expense", "annual_balance", "unpaid_total", "overdue_invoices", "overdue_total", "document_rate", "missing_documents", "expense_account_totals"):
             self.assertIn(marker, segment)
-        for label in ("年間入金", "年間経費", "年間収支", "販売未入金", "期限超過請求", "経費証憑保管率", "月別推移", "年間の経費構成"):
+        for label in ("年間収益", "年間費用", "年間利益", "販売未入金", "期限超過請求", "経費証憑保管率", "月別推移", "勘定科目別費用構成"):
             self.assertIn(label, segment)
 
     def test_finance_reports_have_guide_navigation_and_mobile_cards(self):
@@ -449,6 +449,18 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("経営判断用の目安", guide_source)
         for marker in ("複式仕訳の収益・費用", "発生主義", "勘定科目別", "対応未設定額", "収支台帳の入出金額とは一致しない"):
             self.assertIn(marker, guide_source)
+
+    def test_management_dashboard_uses_double_entry_actuals(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reports_page"))
+        for marker in ("finance_budget_journal_actuals", "account_actuals", "account_by_id", "FinanceJournalEntry.tenant_id == tenant.id", 'account_by_id[account_id].account_type == "expense"', "expense_account_totals", "年間収益", "年間費用", "年間利益", "勘定科目別費用構成", "仕訳純額", "/modules/finance/general-ledger", "/modules/finance/statements-report", "売掛・買掛", "減価償却", "消費税振替", "残高調整", "取消仕訳"):
+            self.assertIn(marker, page)
+        self.assertNotIn('monthly[item.occurred_on.month][item.entry_type] += item.amount', page)
+        self.assertNotIn('category_totals[item.category]', page)
+
+    def test_management_dashboard_guide_explains_accrual_journal_basis(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("複式仕訳の収益・費用・利益", "発生主義", "勘定科目別の費用構成", "総勘定元帳", "売掛・買掛", "減価償却", "消費税振替", "取消仕訳"):
+            self.assertIn(marker, guide)
 
     def test_cashflow_model_and_routes_are_tenant_scoped(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceCashPlan")

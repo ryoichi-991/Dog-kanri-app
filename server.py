@@ -1848,7 +1848,7 @@ def page_usage_guide(title: str) -> str:
         (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
-        (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
+        (("経営収益", "収益ダッシュボード"), ["複式仕訳の収益・費用・利益を月別に比較できます。", "勘定科目別の費用構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "発生主義の年間サマリーと月別推移を確認します。", "総勘定元帳で内訳を照合し、要確認項目から請求書・証憑・原価管理へ移動します。"], "売掛・買掛、減価償却、消費税振替、取消仕訳を含む登録済み複式仕訳から集計します。正式な決算・税務申告では税理士と原資料を確認してください。"),
         (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。", "実績は複式仕訳の収益・費用から発生主義で集計し、勘定科目別にも比較できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "月別と勘定科目別の予実一覧で未達や超過を確認します。", "対応未設定額がある場合は費目対応を設定します。"], "予算は経営判断用の目安です。仕訳実績には売掛・買掛、減価償却、消費税振替、取消仕訳などが反映されるため、収支台帳の入出金額とは一致しない場合があります。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
@@ -6761,16 +6761,14 @@ def finance_reports_page(year: str = "", access=Depends(require_tenant_user), se
     if report_year < 2000 or report_year > 2100:
         raise HTTPException(status_code=400, detail="表示年を確認してください")
     year_start, year_end = date(report_year, 1, 1), date(report_year, 12, 31)
+    monthly, account_actuals, account_by_id = finance_budget_journal_actuals(session, tenant.id, year_start, year_end)
+    journals = session.scalars(select(FinanceJournalEntry).where(FinanceJournalEntry.tenant_id == tenant.id, FinanceJournalEntry.entry_date >= year_start, FinanceJournalEntry.entry_date <= year_end).order_by(FinanceJournalEntry.entry_date, FinanceJournalEntry.id).limit(10000)).all()
     entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= year_start, FinancialEntry.occurred_on <= year_end).order_by(FinancialEntry.occurred_on)).all()
-    monthly = {month: {"income": 0, "expense": 0} for month in range(1, 13)}
-    category_totals: dict[str, int] = {}
     expense_entry_ids: set[int] = set()
     for item in entries:
-        if item.entry_type in {"income", "expense"}:
-            monthly[item.occurred_on.month][item.entry_type] += item.amount
         if item.entry_type == "expense":
-            category_totals[item.category] = category_totals.get(item.category, 0) + item.amount
             expense_entry_ids.add(item.id)
+    expense_account_totals = {account_id: amount for account_id, amount in account_actuals.items() if account_by_id[account_id].account_type == "expense" and amount}
     annual_income = sum(value["income"] for value in monthly.values())
     annual_expense = sum(value["expense"] for value in monthly.values())
     annual_balance = annual_income - annual_expense
@@ -6785,19 +6783,20 @@ def finance_reports_page(year: str = "", access=Depends(require_tenant_user), se
     for month, values in monthly.items():
         balance = values["income"] - values["expense"]
         month_rows += f'<tr><td>{month}月</td><td>¥{values["income"]:,}</td><td>¥{values["expense"]:,}</td><td class="{"error" if balance < 0 else ""}">¥{balance:,}</td></tr>'
-        mobile_cards += f'<article class="calendar-mobile-card"><h3>{report_year}年{month}月</h3><p>入金 <strong>¥{values["income"]:,}</strong>／経費 <strong>¥{values["expense"]:,}</strong></p><p>収支 <strong class="{"error" if balance < 0 else ""}">¥{balance:,}</strong></p></article>'
-    max_category = max(category_totals.values(), default=1)
+        mobile_cards += f'<article class="calendar-mobile-card"><h3>{report_year}年{month}月</h3><p>収益 <strong>¥{values["income"]:,}</strong>／費用 <strong>¥{values["expense"]:,}</strong></p><p>利益 <strong class="{"error" if balance < 0 else ""}">{"-" if balance < 0 else ""}¥{abs(balance):,}</strong></p></article>'
+    max_category = max((abs(amount) for amount in expense_account_totals.values()), default=1)
     category_rows = ""
-    for key, amount in sorted(category_totals.items(), key=lambda pair: pair[1], reverse=True):
-        width = max(round(amount / max_category * 100), 2)
+    for account_id, amount in sorted(expense_account_totals.items(), key=lambda pair: abs(pair[1]), reverse=True):
+        account = account_by_id[account_id]
+        width = max(round(abs(amount) / max_category * 100), 2)
         ratio = amount / annual_expense * 100 if annual_expense else 0
-        category_rows += f'<tr><td>{html.escape(FINANCE_CATEGORIES.get(key, key))}</td><td>¥{amount:,}</td><td style="min-width:130px"><div style="height:12px;width:{width}%;background:#b78c75;border-radius:8px" aria-label="構成比 {ratio:.1f}%"></div></td></tr>'
-    body = f'''<h1>経営収益ダッシュボード</h1><p>登録済みの台帳・販売・請求書・証憑を集計し、犬舎経営の年間状況を確認します。</p>
+        category_rows += f'<tr><td>{html.escape(account.code)} {html.escape(account.name)}</td><td>{"-" if amount < 0 else ""}¥{abs(amount):,}</td><td style="min-width:130px"><div style="height:12px;width:{max(width, 0)}%;background:#b78c75;border-radius:8px" aria-label="構成比 {ratio:.1f}%"></div></td></tr>'
+    body = f'''<h1>経営収益ダッシュボード</h1><p>登録済みの複式仕訳・販売・請求書・証憑を集計し、犬舎経営の年間状況を発生主義で確認します。</p>
     <form method="get" action="/modules/finance/reports"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{report_year}" required></div></div><button>集計を表示</button> <a class="button secondary" href="/modules/finance/reports">今年へ戻る</a></form>
-    <div class="grid"><div class="module"><h3>年間入金</h3><p><strong style="font-size:25px">¥{annual_income:,}</strong></p></div><div class="module"><h3>年間経費</h3><p><strong style="font-size:25px">¥{annual_expense:,}</strong></p></div><div class="module"><h3>年間収支</h3><p><strong class="{'error' if annual_balance < 0 else ''}" style="font-size:25px">¥{annual_balance:,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div><div class="module"><h3>期限超過請求</h3><p><strong class="{'error' if overdue_invoices else ''}" style="font-size:25px">{len(overdue_invoices)}件／¥{overdue_total:,}</strong></p></div><div class="module"><h3>経費証憑保管率</h3><p><strong class="{'error' if missing_documents else ''}" style="font-size:25px">{document_rate}%</strong></p><small>未保管 {missing_documents}件</small></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/budgets">予算・予実比較</a><a class="button secondary" href="/modules/finance/cashflow">資金繰り予測</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a><a class="button secondary" href="/modules/finance/export">会計データ一括出力</a></div>
-    <h2>{report_year}年の月別推移</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金</th><th>経費</th><th>収支</th></tr>{month_rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
-    <h2>年間の経費構成</h2><div style="overflow-x:auto"><table><tr><th>費目</th><th>金額</th><th>比較</th></tr>{category_rows or '<tr><td colspan="3">経費記録はありません。</td></tr>'}</table></div>'''
+    <div class="grid"><div class="module"><h3>年間収益</h3><p><strong style="font-size:25px">¥{annual_income:,}</strong></p></div><div class="module"><h3>年間費用</h3><p><strong style="font-size:25px">¥{annual_expense:,}</strong></p></div><div class="module"><h3>年間利益</h3><p><strong class="{'error' if annual_balance < 0 else ''}" style="font-size:25px">{"-" if annual_balance < 0 else ""}¥{abs(annual_balance):,}</strong></p></div><div class="module"><h3>販売未入金</h3><p><strong style="font-size:25px">¥{unpaid_total:,}</strong></p></div><div class="module"><h3>期限超過請求</h3><p><strong class="{'error' if overdue_invoices else ''}" style="font-size:25px">{len(overdue_invoices)}件／¥{overdue_total:,}</strong></p></div><div class="module"><h3>経費証憑保管率</h3><p><strong class="{'error' if missing_documents else ''}" style="font-size:25px">{document_rate}%</strong></p><small>未保管 {missing_documents}件</small></div></div>
+    <p class="tenant">売掛・買掛、減価償却、消費税振替、残高調整、取消仕訳を含む複式仕訳 {len(journals)}伝票を集計しています。証憑保管率は収支台帳の経費記録を基準にしています。</p><div class="health-toolbar"><a class="button secondary" href="/modules/finance/general-ledger?start_year={report_year}">総勘定元帳</a><a class="button secondary" href="/modules/finance/statements-report?start_year={report_year}">財務諸表</a><a class="button secondary" href="/modules/finance/budgets?year={report_year}">予算・予実比較</a><a class="button secondary" href="/modules/invoices">請求書管理</a><a class="button secondary" href="/modules/finance/documents">領収書・証憑</a><a class="button secondary" href="/modules/costs">原価・利益管理</a></div>
+    <h2>{report_year}年の月別推移</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>収益</th><th>費用</th><th>利益</th></tr>{month_rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
+    <h2>年間の勘定科目別費用構成</h2><div style="overflow-x:auto"><table><tr><th>勘定科目</th><th>仕訳純額</th><th>比較</th></tr>{category_rows or '<tr><td colspan="3">費用仕訳はありません。</td></tr>'}</table></div>'''
     return layout("経営収益ダッシュボード", body, user)
 
 
