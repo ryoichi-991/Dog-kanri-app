@@ -228,6 +228,26 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("calendar-mobile-card", page_source)
         self.assertIn("calendar-mobile-only", page_source)
 
+    def test_finance_page_compares_cash_ledger_with_accrual_results(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page"))
+        for marker in ("finance_double_entry_data", "chart_by_id", "accounting_journal_by_id", "accounting_revenue", "accounting_expense", "accounting_profit", 'account.account_type == "revenue"', 'account.account_type == "expense"', "複式仕訳による当月実績", "発生主義", "売掛・買掛", "減価償却", "取消仕訳"):
+            self.assertIn(marker, page)
+
+    def test_finance_page_shows_voucher_status_and_unlinked_count(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page"))
+        for marker in ("FinanceJournalEntry.source_entry_id.in_(entry_ids)", "journals_by_entry_id", "unjournaled_count", "entry_journal_label", "voucher_no", "取消済み", "計上済み", "仕訳未連携", "複式仕訳伝票"):
+            self.assertIn(marker, page)
+
+    def test_finance_page_links_double_entry_reports_and_registers_both(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_page"))
+        for marker in ('href="/modules/finance/journals"', 'href="/modules/finance/general-ledger"', "台帳・複式仕訳へ登録"):
+            self.assertIn(marker, page)
+
+    def test_finance_guide_explains_cash_and_accrual_difference(self):
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("収支台帳と複式仕訳へ同時に記録", "現金基準の台帳収支", "発生主義の会計利益", "仕訳済み・未連携状態", "正式な決算・税務申告は税理士"):
+            self.assertIn(marker, guide)
+
     def test_invoice_model_and_routes_are_tenant_scoped(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Invoice")
         model_source = ast.get_source_segment(SOURCE, model)
@@ -285,7 +305,7 @@ class Phase6StaticTests(unittest.TestCase):
 
     def test_invoice_page_shows_accrual_payment_and_reversal_vouchers(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "invoices_page"))
-        for marker in ("finance_invoice_journal_status", "発生 {accrual_journal.voucher_no}", "入金 {payment_journal.voucher_no}", "取消 {reversal_journal.voucher_no}", "複式仕訳伝票", "/modules/finance/double-entry", "/modules/finance/general-ledger"):
+        for marker in ("finance_invoice_journal_status", "発生 {accrual_journal.voucher_no}", "入金 {payment_journal.voucher_no}", "取消 {reversal_journal.voucher_no}", "複式仕訳伝票", "/modules/finance/journals", "/modules/finance/general-ledger"):
             self.assertIn(marker, page)
 
     def test_invoice_pdf_contains_double_entry_voucher_summary(self):
@@ -442,7 +462,7 @@ class Phase6StaticTests(unittest.TestCase):
 
     def test_finance_documents_only_offer_posted_double_entry_records(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_documents_page"))
-        for marker in ("FinanceJournalEntry.tenant_id == tenant.id", 'FinanceJournalEntry.status == "posted"', "journals_by_entry_id", "journaled_entries", "voucher_no", "仕訳未連携の台帳記録", "/modules/finance/double-entry", "/modules/finance/general-ledger", "仕訳伝票"):
+        for marker in ("FinanceJournalEntry.tenant_id == tenant.id", 'FinanceJournalEntry.status == "posted"', "journals_by_entry_id", "journaled_entries", "voucher_no", "仕訳未連携の台帳記録", "/modules/finance/journals", "/modules/finance/general-ledger", "仕訳伝票"):
             self.assertIn(marker, page)
 
     def test_finance_document_upload_requires_posted_journal_and_audits(self):
