@@ -1849,7 +1849,7 @@ def page_usage_guide(title: str) -> str:
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "作成した請求書をPDFで保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して請求書を作成します。", "PDFを開き、宛名・金額・振込案内を確認します。", "入金確認後に入金済みへ変更し、収支台帳への反映を確認します。"], "請求書の発行前に顧客名・金額・支払期限を確認してください。入金済みへの変更は収支台帳へ実際の入金記録を作成します。"),
         (("経営収益", "収益ダッシュボード"), ["年間の入金・経費・収支を月別に比較できます。", "経費構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "年間サマリーと月別推移を確認します。", "要確認項目から台帳・請求書・証憑・原価管理へ移動します。"], "表示額は登録済みデータに基づく経営管理上の概算です。決算・税務申告では税理士と原資料を確認してください。"),
-        (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "予実一覧で未達や超過を確認し、台帳の内容を見直します。"], "予算は経営判断用の目安です。実績は収支・経費台帳への登録内容から集計されます。"),
+        (("予算管理", "予実比較"), ["月・費目ごとに入金目標と経費予算を登録できます。", "実績との差、目標達成率、予算超過を年間・月別に確認できます。", "実績は複式仕訳の収益・費用から発生主義で集計し、勘定科目別にも比較できます。"], ["表示年を選びます。", "対象月・区分・費目・予算額を登録します。", "月別と勘定科目別の予実一覧で未達や超過を確認します。", "対応未設定額がある場合は費目対応を設定します。"], "予算は経営判断用の目安です。仕訳実績には売掛・買掛、減価償却、消費税振替、取消仕訳などが反映されるため、収支台帳の入出金額とは一致しない場合があります。"),
         (("資金繰り", "90日予測"), ["現在の台帳残高へ入金予定・支払予定・未入金請求書を反映し、30日・60日・90日後の見込み残高を確認できます。", "予定を実行済みにすると収支台帳へ一度だけ反映できます。"], ["今後の入金予定または支払予定を登録します。", "期間別の見込み残高と予定一覧を確認します。", "実際に入出金した予定だけ実行済みにします。"], "見込み残高は登録済み予定に基づく概算です。二重計上を防ぐため、請求書由来の入金を手動予定へ重複登録しないでください。"),
         (("定期収支", "自動登録"), ["毎月発生する入金・経費を指定日に収支台帳へ自動登録できます。", "31日など存在しない日は、その月の末日に自動調整されます。"], ["区分・費目・金額・毎月の登録日・開始日を設定します。", "有効なルールと直近の自動登録履歴を確認します。", "不要になったルールは停止します。"], "金額変更や停止前に当月分が登録済みか確認してください。同じルールの同じ月は一度だけ登録されます。"),
         (("口座・現金", "口座別残高"), ["銀行口座・現金・決済口座を登録し、口座ごとの残高を確認できます。", "未割当の台帳記録を口座へ割り当て、口座間の資金移動を記録できます。", "各口座は現金・預金の補助科目となり、割当と振替を複式仕訳へ連携します。"], ["口座名・種類・開始残高を登録します。", "未割当の入金・経費を実際の入出金口座へ割り当てます。", "口座間で資金を移した場合は振替として登録します。", "仕訳未連携がある場合は補完ボタンを実行します。"], "口座間振替は収益・経費へ計上されません。開始残高は期首残高画面でも対応する補助科目へ登録し、台帳記録を誤った口座へ割り当てないよう日付・内容・金額を確認してください。"),
@@ -5598,6 +5598,24 @@ def finance_double_entry_data(session: Session, tenant_id: int, period_start: da
     return accounts, subaccounts, journals, lines
 
 
+def finance_budget_journal_actuals(session: Session, tenant_id: int, period_start: date, period_end: date):
+    accounts, _, journals, lines = finance_double_entry_data(session, tenant_id, period_start, period_end)
+    account_by_id = {item.id: item for item in accounts}; journal_by_id = {item.id: item for item in journals}
+    monthly = {month: {"income": 0, "expense": 0} for month in range(1, 13)}
+    account_actuals: dict[int, int] = {}
+    for line in lines:
+        account = account_by_id.get(line.account_id); journal = journal_by_id.get(line.journal_entry_id)
+        if not account or not journal or account.account_type not in {"revenue", "expense"}:
+            continue
+        if account.account_type == "revenue":
+            amount = line.amount if line.side == "credit" else -line.amount; entry_type = "income"
+        else:
+            amount = line.amount if line.side == "debit" else -line.amount; entry_type = "expense"
+        monthly[journal.entry_date.month][entry_type] += amount
+        account_actuals[account.id] = account_actuals.get(account.id, 0) + amount
+    return monthly, account_actuals, account_by_id
+
+
 @app.get("/modules/finance/general-ledger", response_class=HTMLResponse)
 def finance_general_ledger_page(start_year: str = "", account_id: str = "", access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access; setting = session.scalar(select(FinanceFiscalSetting).where(FinanceFiscalSetting.tenant_id == tenant.id)); start_month = setting.start_month if setting else 1
@@ -6793,11 +6811,13 @@ def finance_budgets_page(year: str = "", access=Depends(require_tenant_user), se
     if budget_year < 2000 or budget_year > 2100:
         raise HTTPException(status_code=400, detail="表示年を確認してください")
     budgets = session.scalars(select(FinanceBudget).where(FinanceBudget.tenant_id == tenant.id, FinanceBudget.year == budget_year).order_by(FinanceBudget.month, FinanceBudget.entry_type, FinanceBudget.category)).all()
-    entries = session.scalars(select(FinancialEntry).where(FinancialEntry.tenant_id == tenant.id, FinancialEntry.occurred_on >= date(budget_year, 1, 1), FinancialEntry.occurred_on <= date(budget_year, 12, 31))).all()
+    journal_monthly, account_actuals, account_by_id = finance_budget_journal_actuals(session, tenant.id, date(budget_year, 1, 1), date(budget_year, 12, 31))
+    mappings = session.scalars(select(FinanceCategoryAccountMap).where(FinanceCategoryAccountMap.tenant_id == tenant.id)).all()
+    mapping_by_key = {(item.entry_type, item.category): item.account_id for item in mappings}
     monthly = {month: {"income_budget": 0, "expense_budget": 0, "income_actual": 0, "expense_actual": 0} for month in range(1, 13)}
     for item in budgets: monthly[item.month][f"{item.entry_type}_budget"] += item.amount
-    for item in entries:
-        if item.entry_type in {"income", "expense"}: monthly[item.occurred_on.month][f"{item.entry_type}_actual"] += item.amount
+    for month, values in journal_monthly.items():
+        monthly[month]["income_actual"] = values["income"]; monthly[month]["expense_actual"] = values["expense"]
     income_budget = sum(value["income_budget"] for value in monthly.values()); expense_budget = sum(value["expense_budget"] for value in monthly.values())
     income_actual = sum(value["income_actual"] for value in monthly.values()); expense_actual = sum(value["expense_actual"] for value in monthly.values())
     income_rate = round(income_actual / income_budget * 100) if income_budget else 0
@@ -6808,14 +6828,30 @@ def finance_budgets_page(year: str = "", access=Depends(require_tenant_user), se
         rows += f'<tr><td>{month}月</td><td>¥{values["income_budget"]:,}</td><td>¥{values["income_actual"]:,}</td><td class="{"error" if income_gap < 0 else ""}">¥{income_gap:,}</td><td>¥{values["expense_budget"]:,}</td><td>¥{values["expense_actual"]:,}</td><td class="{"error" if expense_gap < 0 else ""}">¥{expense_gap:,}</td></tr>'
         mobile_cards += f'<article class="calendar-mobile-card"><h3>{budget_year}年{month}月</h3><p>入金目標 ¥{values["income_budget"]:,}／実績 <strong>¥{values["income_actual"]:,}</strong></p><p>経費予算 ¥{values["expense_budget"]:,}／実績 <strong class="{"error" if expense_gap < 0 else ""}">¥{values["expense_actual"]:,}</strong></p></article>'
     budget_rows = "".join(f'<tr><td>{item.month}月</td><td>{"入金目標" if item.entry_type == "income" else "経費予算"}</td><td>{html.escape(FINANCE_CATEGORIES.get(item.category, item.category))}</td><td>¥{item.amount:,}</td></tr>' for item in budgets)
+    account_budgets: dict[int, int] = {}; unmapped_budget = 0
+    for item in budgets:
+        account_id = mapping_by_key.get((item.entry_type, item.category))
+        if account_id in account_by_id:
+            account_budgets[account_id] = account_budgets.get(account_id, 0) + item.amount
+        else:
+            unmapped_budget += item.amount
+    comparison_account_ids = sorted(set(account_budgets) | set(account_actuals), key=lambda account_id: (account_by_id[account_id].code, account_id))
+    account_rows = ""
+    for account_id in comparison_account_ids:
+        account = account_by_id[account_id]
+        if account.account_type not in {"revenue", "expense"}: continue
+        budget_amount = account_budgets.get(account_id, 0); actual_amount = account_actuals.get(account_id, 0)
+        gap = actual_amount - budget_amount if account.account_type == "revenue" else budget_amount - actual_amount
+        account_rows += f'<tr><td>{html.escape(account.code)}</td><td>{html.escape(account.name)}</td><td>{"収益" if account.account_type == "revenue" else "費用"}</td><td>¥{budget_amount:,}</td><td>¥{actual_amount:,}</td><td class="{"error" if gap < 0 else ""}">¥{gap:,}</td></tr>'
     month_options = "".join(f'<option value="{month}">{month}月</option>' for month in range(1, 13))
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in FINANCE_CATEGORIES.items())
-    body = f'''<h1>予算管理・予実比較</h1><p>月ごとの入金目標と経費予算を登録し、収支台帳の実績との差を確認します。</p>
+    body = f'''<h1>予算管理・予実比較</h1><p>月ごとの入金目標と経費予算を登録し、複式仕訳の収益・費用実績との差を確認します。売掛・買掛、減価償却、消費税振替、残高調整も発生主義で反映します。</p>
     <form method="get" action="/modules/finance/budgets"><div class="grid"><div><label>表示年</label><input type="number" name="year" min="2000" max="2100" value="{budget_year}" required></div></div><button>予実を表示</button> <a class="button secondary" href="/modules/finance/budgets">今年へ戻る</a></form>
     <div class="grid"><div class="module"><h3>年間入金目標</h3><p><strong style="font-size:25px">¥{income_budget:,}</strong></p></div><div class="module"><h3>入金実績・達成率</h3><p><strong class="{'error' if income_budget and income_actual < income_budget else ''}" style="font-size:25px">¥{income_actual:,}／{income_rate}%</strong></p></div><div class="module"><h3>年間経費予算</h3><p><strong style="font-size:25px">¥{expense_budget:,}</strong></p></div><div class="module"><h3>経費実績・消化率</h3><p><strong class="{'error' if expense_budget and expense_actual > expense_budget else ''}" style="font-size:25px">¥{expense_actual:,}／{expense_rate}%</strong></p></div></div>
-    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a></div>
+    <div class="health-toolbar"><a class="button secondary" href="/modules/finance/reports">経営収益ダッシュボード</a><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/general-ledger">総勘定元帳・複式試算表</a><a class="button secondary" href="/modules/finance/chart-accounts">費目対応設定</a></div>
     <h2>予算・目標を登録</h2><form method="post" action="/modules/finance/budgets"><div class="grid"><div><label>年</label><input type="number" name="year" min="2000" max="2100" value="{budget_year}" required></div><div><label>月</label><select name="month">{month_options}</select></div><div><label>区分</label><select name="entry_type"><option value="income">入金目標</option><option value="expense">経費予算</option></select></div><div><label>費目</label><select name="category">{category_options}</select></div><div><label>金額</label><input type="number" name="amount" min="0" max="999999999" required></div></div><button>登録・更新</button></form>
     <h2>{budget_year}年の月別予実</h2><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>月</th><th>入金目標</th><th>入金実績</th><th>入金差額</th><th>経費予算</th><th>経費実績</th><th>経費残額</th></tr>{rows}</table></div><section class="calendar-mobile-only">{mobile_cards}</section>
+    <h2>勘定科目別の予実</h2><p class="tenant">費目対応を使って予算を勘定科目へ集約しています。対応未設定の予算：¥{unmapped_budget:,}。実績は取消仕訳を含む借方・貸方の純額です。</p><div style="overflow-x:auto"><table><tr><th>コード</th><th>勘定科目</th><th>区分</th><th>予算</th><th>仕訳実績</th><th>差額・残額</th></tr>{account_rows or '<tr><td colspan="6">勘定科目または仕訳実績がありません。</td></tr>'}</table></div>
     <h2>登録済みの予算・目標</h2><div style="overflow-x:auto"><table><tr><th>月</th><th>区分</th><th>費目</th><th>金額</th></tr>{budget_rows or '<tr><td colspan="4">予算・目標はまだ登録されていません。</td></tr>'}</table></div>'''
     return layout("予算管理・予実比較", body, user)
 

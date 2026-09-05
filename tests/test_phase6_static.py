@@ -423,12 +423,22 @@ class Phase6StaticTests(unittest.TestCase):
     def test_finance_budgets_compare_monthly_actuals_and_mobile(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_budgets_page")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("monthly", "income_budget", "expense_budget", "income_actual", "expense_actual", "income_rate", "expense_rate", "income_gap", "expense_gap", "FinancialEntry.tenant_id == tenant.id"):
+        for marker in ("monthly", "income_budget", "expense_budget", "income_actual", "expense_actual", "income_rate", "expense_rate", "income_gap", "expense_gap", "finance_budget_journal_actuals", "FinanceCategoryAccountMap.tenant_id == tenant.id"):
             self.assertIn(marker, segment)
         for label in ("年間入金目標", "入金実績・達成率", "年間経費予算", "経費実績・消化率", "月別予実"):
             self.assertIn(label, segment)
         self.assertIn("calendar-mobile-card", segment)
         self.assertIn("calendar-mobile-only", segment)
+
+    def test_budget_actuals_use_balanced_journal_revenue_and_expense_net_amounts(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_budget_journal_actuals"))
+        for marker in ("finance_double_entry_data", "account_by_id", "journal_by_id", "monthly", "account_actuals", 'account.account_type not in {"revenue", "expense"}', 'line.side == "credit"', 'entry_type = "income"', 'line.side == "debit"', 'entry_type = "expense"', "journal.entry_date.month"):
+            self.assertIn(marker, helper)
+
+    def test_budget_page_maps_category_budgets_to_chart_accounts_and_exposes_gaps(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_budgets_page"))
+        for marker in ("mapping_by_key", "account_budgets", "unmapped_budget", "comparison_account_ids", "account_actuals", "勘定科目別の予実", "仕訳実績", "対応未設定の予算", "/modules/finance/general-ledger", "/modules/finance/chart-accounts", "売掛・買掛", "減価償却", "消費税振替", "残高調整"):
+            self.assertIn(marker, page)
 
     def test_finance_budgets_have_specific_guide_and_navigation(self):
         self.assertIn('href="/modules/finance/budgets"', SOURCE)
@@ -437,6 +447,8 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("予算管理", guide_source)
         self.assertIn("予実比較", guide_source)
         self.assertIn("経営判断用の目安", guide_source)
+        for marker in ("複式仕訳の収益・費用", "発生主義", "勘定科目別", "対応未設定額", "収支台帳の入出金額とは一致しない"):
+            self.assertIn(marker, guide_source)
 
     def test_cashflow_model_and_routes_are_tenant_scoped(self):
         model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "FinanceCashPlan")
