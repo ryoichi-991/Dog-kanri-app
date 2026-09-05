@@ -1382,12 +1382,14 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("require_tenant_admin", "first_day < date(2000, 1, 1)", "first_day > date(2100, 12, 1)", "FinanceJournalEntry.tenant_id == tenant.id", "FinanceJournalLine.tenant_id == tenant.id", ".limit(1000)", ".limit(20000)", "finance_export_csv", 'media_type="text/csv; charset=utf-8"', '"Cache-Control": "private, no-store"', '"X-Content-Type-Options": "nosniff"'):
             self.assertIn(marker, segment)
 
-    def test_journal_usage_blocks_account_stop_and_source_correction(self):
+    def test_journal_usage_blocks_account_stop_and_business_source_correction(self):
         stop = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_chart_account_stop"))
         source = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids"))
         self.assertIn("FinanceJournalLine.tenant_id == tenant.id", stop)
         self.assertIn("journal_line", stop)
-        self.assertIn("FinanceJournalEntry.source_entry_id", source)
+        self.assertIn("FinancePayable", source)
+        self.assertIn("FinanceExpenseRequest", source)
+        self.assertNotIn("FinanceJournalEntry", source)
 
     def test_journals_have_navigation_guide_and_audit_actions(self):
         self.assertIn('"finance/journals": ("複式簿記仕訳"', SOURCE)
@@ -1551,6 +1553,27 @@ class Phase6StaticTests(unittest.TestCase):
         route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_statement_line_post"))
         for marker in ("user, tenant = access", "with_for_update", "ensure_finance_period_open", "FinanceAccountEntry(", "finance_create_cash_basis_journal", 'f"銀行明細#{line.import_id}/{line.row_no}"', '"statement_journal"', "journal={journal.id}"):
             self.assertIn(marker, route)
+
+    def test_direct_ledger_entry_posts_double_entry_and_audits(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create"))
+        for marker in ("ensure_finance_period_open", "FinancialEntry(", "session.flush()", "finance_create_cash_basis_journal", '"収支台帳直接入力"', '"LG"', '"ledger_journal"', "journal={journal.id}"):
+            self.assertIn(marker, route)
+
+    def test_correction_reverses_original_journal_and_posts_replacement(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_correction_create"))
+        for marker in ("with_for_update", "finance_create_cash_basis_journal", "original_journal", "finance_reverse_accrual_journal", "source_entry_id=reversal.id", "reversal_journal", "replacement_journal", '"CR"', "original_journal={original_journal.id}"):
+            self.assertIn(marker, route)
+
+    def test_direct_journal_link_does_not_block_supported_correction(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_source_entry_ids"))
+        self.assertNotIn("FinanceJournalEntry", helper)
+        for marker in ("FinanceCashPlan", "FinanceRecurringPosting", "FinancePayable", "FinanceExpenseRequest", "Invoice", "FinanceReceivableSettlement", "FinanceDepreciationPosting"):
+            self.assertIn(marker, helper)
+
+    def test_reversal_helper_can_link_correction_ledger_entry(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_reverse_accrual_journal"))
+        for marker in ("source_entry_id: int | None = None", "source_entry_id=source_entry_id", "reversal_of_id=original.id", 'original.status = "reversed"'):
+            self.assertIn(marker, helper)
 
     def test_depreciation_journal_is_balanced_linked_and_idempotent(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_depreciation_journal")
