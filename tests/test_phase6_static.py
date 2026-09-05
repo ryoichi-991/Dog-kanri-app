@@ -1517,6 +1517,26 @@ class Phase6StaticTests(unittest.TestCase):
         payable = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_payable_pay"))
         self.assertIn('finance_create_accrual_settlement_journal(session, tenant.id, user.id, entry, payable.amount, "payable"', payable)
 
+    def test_cash_basis_helper_is_balanced_linked_and_idempotent(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_cash_basis_journal"))
+        for marker in ("FinanceJournalEntry.tenant_id == tenant_id", "FinanceJournalEntry.source_entry_id == entry.id", 'finance_system_account(session, tenant_id, "cash")', "finance_category_account", 'entry.entry_type == "income"', '("debit", cash.id', '("credit", mapped.id', '("debit", mapped.id', '("credit", cash.id', "source_entry_id=entry.id"):
+            self.assertIn(marker, helper)
+
+    def test_expense_approval_posts_double_entry_and_keeps_document_link(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_approve"))
+        for marker in ("with_for_update", "FinanceAccountEntry(", "FinanceDocument(", "finance_create_cash_basis_journal", 'f"経費申請#{item.id}"', '"EX"', "journal={journal.id}"):
+            self.assertIn(marker, route)
+
+    def test_recurring_generation_posts_or_defers_double_entry_safely(self):
+        helper = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "generate_due_finance_recurring"))
+        for marker in ("Membership.tenant_id == rule.tenant_id", "Membership.role == Role.admin", ".limit(1)", "finance_create_cash_basis_journal", 'f"定期収支ルール#{rule.id}"', '"RC"', "except HTTPException as exc", "exc.status_code != 409", '"recurring_journal"'):
+            self.assertIn(marker, helper)
+
+    def test_recurring_page_shows_double_entry_status_and_recovery_path(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_recurring_page"))
+        for marker in ("FinanceJournalEntry.tenant_id == tenant.id", "posting_entry_ids", "journaled_entry_ids", "複式仕訳済み", "仕訳未連携", "複式簿記仕訳画面から補完"):
+            self.assertIn(marker, page)
+
     def test_depreciation_journal_is_balanced_linked_and_idempotent(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_create_depreciation_journal")
         segment = ast.get_source_segment(SOURCE, helper)
