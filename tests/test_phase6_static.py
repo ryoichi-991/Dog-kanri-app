@@ -1384,6 +1384,11 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("breeding_dog_options", "母犬を検索", "父犬を検索", "mating-dam-search", "mating-sire-search", "breeding-dog-search", "data-search", "呼び名・血統書名・犬種・血統書番号", "頭が見つかりました", "選択してください"):
             self.assertIn(marker, page)
 
+    def test_heat_cycle_dam_list_is_searchable(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "breeding_page"))
+        for marker in ("heat-dam-search", 'data-dog-select="heat-dam"', 'id="heat-dam" name="dog_id" required', "母犬を検索", "breeding-dog-count"):
+            self.assertIn(marker, page)
+
     def test_additional_mating_route_is_scoped_bounded_and_duplicate_safe(self):
         route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_attempt_create"))
         for marker in ("BreedingRecord.tenant_id == tenant.id", "with_for_update", "BreedingMatingAttempt.tenant_id == tenant.id", ".limit(3)", "next_sequence > 3", "mated < record.mating_date", "timedelta(days=14)", "mated == record.mating_date", "mated in dates", "len(notes) > 500", "session.commit()"):
