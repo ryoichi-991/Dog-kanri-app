@@ -4037,7 +4037,9 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
         f'<div class="review-field"><label>{PEDIGREE_LABELS[index]}（{"牡" if index % 2 else "牝" if index else "本人"}）</label><input name="ancestor_{index}" value="{html.escape(name)}" maxlength="200" {"required" if index == 0 else ""}>{f"<label>毛色</label><input name=\"ancestor_color_{index}\" value=\"{html.escape(colors_by_dog[index])}\" maxlength=\"100\" placeholder=\"例：SALT &amp; PEPPER\">" if index else ""}{title_select(index)}<label class="review-check"><input type="checkbox" name="verified_fields" value="ancestor_{index}" {"required" if name else ""}> <span>{"原本と照合済み" if name else "未読（入力する場合は照合してください）"}</span></label></div>'
         for index, name in enumerate(names)
     )
-    existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.category != "external").order_by(Dog.call_name)).all()
+    # 外部犬も血統書の上書き対象に含める。利用組織の境界は tenant_id で維持する。
+    existing_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id).order_by(Dog.call_name)).all()
+    category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
     detected_chip = metadata.get("microchip_no", "")
     detected_domestic_no = document_metadata.get("domestic_no", "")
     detected_origin_no = document_metadata.get("origin_no", "")
@@ -4048,7 +4050,7 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
         or (detected_origin_no and dog.origin_registration_no == detected_origin_no)
     ), None)
     existing_options = '<option value="">新しい犬として登録</option>' + "".join(
-        f'<option value="{dog.id}" {"selected" if dog.id == matched_dog_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}／国内番号：{html.escape(dog.pedigree_no or "未登録")}／海外番号：{html.escape(dog.origin_registration_no or "未登録")}／MC：{html.escape(dog.microchip_no or "未登録")}</option>'
+        f'<option value="{dog.id}" {"selected" if dog.id == matched_dog_id else ""}>【{category_labels.get(dog.category, dog.category)}】{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}／国内番号：{html.escape(dog.pedigree_no or "未登録")}／海外番号：{html.escape(dog.origin_registration_no or "未登録")}／MC：{html.escape(dog.microchip_no or "未登録")}</option>'
         for dog in existing_dogs
     )
     sex_value = metadata.get("sex", "")
@@ -4163,7 +4165,9 @@ def pedigree_import(
     root.registered_name = names[0]
     root.breed = breed.strip() or root.breed
     root.sex = sex
-    root.category = category
+    # 既存犬の血統書更新では、外部犬などの運用区分を意図せず変更しない。
+    if not existing_dog_id:
+        root.category = category
     # 血統書の上書き更新で「販売済」「譲渡済」などの運用状態を在舎中へ戻さない。
     if not existing_dog_id:
         root.status = "resident"

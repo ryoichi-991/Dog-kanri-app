@@ -178,6 +178,19 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertIn("day == date.today()", segment)
 
+    def test_pedigree_scan_search_includes_external_dogs(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("Dog.tenant_id == tenant.id", segment)
+        self.assertNotIn('Dog.category != "external"', segment)
+        self.assertIn('"external": "外部犬"', segment)
+        self.assertIn("category_labels.get(dog.category, dog.category)", segment)
+
+    def test_pedigree_update_preserves_existing_dog_category(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn("if not existing_dog_id:\n        root.category = category", segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
