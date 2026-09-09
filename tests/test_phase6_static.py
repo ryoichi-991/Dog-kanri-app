@@ -153,6 +153,14 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("if key in event_keys", segment)
         self.assertIn('task_category = item.category if item.category in {"breeding", "health", "legal", "sales"}', segment)
 
+    def test_business_calendar_shows_birth_candidate_window_from_all_mating_attempts(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("mating_attempts_by_breeding", "candidate_start", "candidate_end", "timedelta(days=61)", "timedelta(days=65)", "出産候補期間", "birth-window", "birth-due"):
+            self.assertIn(marker, segment)
+        self.assertIn("min(mating_days)", segment)
+        self.assertIn("max(mating_days)", segment)
+
     def test_business_calendar_has_mobile_cards(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
         segment = ast.get_source_segment(SOURCE, route)

@@ -2494,15 +2494,28 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
         event_keys.add(key)
         state = "completed" if completed else ("overdue" if day < date.today() else "upcoming")
         events.append((day, title, category, state, source, url))
+    completed_breedings = set(session.scalars(select(Litter.breeding_id).where(Litter.tenant_id == tenant.id, Litter.breeding_id.is_not(None))).all())
+    mating_attempts_by_breeding: dict[int, list[date]] = {}
+    for attempt in session.scalars(select(BreedingMatingAttempt).where(BreedingMatingAttempt.tenant_id == tenant.id).order_by(BreedingMatingAttempt.mating_date)).all():
+        mating_attempts_by_breeding.setdefault(attempt.breeding_id, []).append(attempt.mating_date)
+    for item in session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id)).all():
+        dog = dogs.get(item.dam_id)
+        dog_name = dog.call_name if dog else "母犬"
+        mating_days = mating_attempts_by_breeding.get(item.id) or [item.mating_date]
+        expected_day = item.mating_date + timedelta(days=63)
+        candidate_start = min(mating_days) + timedelta(days=61)
+        candidate_end = max(mating_days) + timedelta(days=65)
+        candidate_day = candidate_start
+        while candidate_day <= candidate_end:
+            title = f"{dog_name} 出産予定" if candidate_day == expected_day else f"{dog_name} 出産候補期間"
+            add_event(candidate_day, title, "breeding", "交配記録", "/modules/births", item.id in completed_breedings)
+            candidate_day += timedelta(days=1)
     for item in session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id)).all():
         task_category = item.category if item.category in {"breeding", "health", "legal", "sales"} else "todo"
         task_url = {"breeding": "/modules/breeding", "health": "/modules/health", "legal": "/modules/legal", "sales": "/modules/sales"}.get(task_category, "/modules/todo")
         add_event(item.due_date, item.title, task_category, "Todo", task_url, item.completed)
     for item in session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id)).all():
         dog = dogs.get(item.dog_id); add_event(item.start_date + timedelta(days=180), f"{dog.call_name if dog else '対象犬'} 次回ヒート予測", "breeding", "ヒート記録", "/modules/breeding")
-    completed_breedings = set(session.scalars(select(Litter.breeding_id).where(Litter.tenant_id == tenant.id, Litter.breeding_id.is_not(None))).all())
-    for item in session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id)).all():
-        dog = dogs.get(item.dam_id); add_event(item.mating_date + timedelta(days=63), f"{dog.call_name if dog else '母犬'} 出産予定", "breeding", "交配記録", "/modules/births", item.id in completed_breedings)
     for item in session.scalars(select(Vaccination).where(Vaccination.tenant_id == tenant.id, Vaccination.next_due_on.is_not(None))).all():
         dog = dogs.get(item.dog_id); add_event(item.next_due_on, f"{dog.call_name if dog else '対象犬'} {item.vaccine_name}接種予定", "health", "ワクチン", "/modules/health/vaccinations")
     for item in session.scalars(select(HealthRecord).where(HealthRecord.tenant_id == tenant.id, HealthRecord.category == "checkup", HealthRecord.next_due_on.is_not(None))).all():
@@ -2529,7 +2542,10 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
         calendar_cells += '<div class="month-calendar-week">'
         for day in week:
             day_events = events_by_day.get(day, []) if day.month == first_day.month else []
-            event_links = "".join(f'<a class="month-calendar-event {state}" href="{url}" title="{html.escape(title, quote=True)}">{html.escape(title)}</a>' for title, category, state, url in day_events)
+            event_links = ""
+            for title, category, state, url in day_events:
+                event_kind = " birth-window" if "出産候補期間" in title else (" birth-due" if "出産予定" in title else "")
+                event_links += f'<a class="month-calendar-event {state}{event_kind}" href="{url}" title="{html.escape(title, quote=True)}">{html.escape(title)}</a>'
             cell_class = "month-calendar-day outside" if day.month != first_day.month else "month-calendar-day"
             if day == date.today(): cell_class += " today"
             calendar_cells += f'<div class="{cell_class}"><span class="month-calendar-date">{day.day}</span>{event_links}</div>'
@@ -2539,7 +2555,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     retained_filters = urlencode({"calendar_category": calendar_category, "calendar_state": calendar_state})
     month_calendar = f'''<section class="month-calendar" aria-label="{first_day.year}年{first_day.month}月のカレンダー"><div class="month-calendar-nav"><a class="button secondary" href="/modules/calendar?month={previous_month:%Y-%m}&{retained_filters}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="/modules/calendar?month={next_month:%Y-%m}&{retained_filters}">翌月 →</a></div><div class="month-calendar-head"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>{calendar_cells}</section>'''
     body = f'''<h1>業務カレンダー</h1><p>Todoに加え、ヒート予測・出産予定・健康予定・法令期限を登録データから自動表示します。</p><form method="get" action="/modules/calendar"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>分類</label><select name="calendar_category">{category_options}</select></div><div><label>状態</label><select name="calendar_state">{state_options}</select></div></div><label style="font-weight:400"><input type="checkbox" name="show_all" value="true" style="width:auto" {"checked" if show_all else ""}> 月を限定せず全期間を表示</label><button>カレンダーを表示</button> <a class="button secondary" href="/modules/calendar">今月へ戻る</a> <a class="button" href="/modules/todo">予定を手動登録</a></form>{month_calendar}<h2>予定一覧</h2><p><strong>{len(events)}件</strong>の予定を表示しています。</p><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>予定</th><th>分類</th><th>登録元</th><th>状態</th></tr>{rows or '<tr><td colspan="5">条件に一致する予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する予定はありません。</div>'}</section>
-    <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
+    <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.birth-window{{background:#f8edf1;color:#855667;border-left:3px solid #d7a1b4}}.month-calendar-event.birth-due{{background:#cf6f91;color:#fff;font-weight:700}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
     return layout("カレンダー", body, user)
 
 
