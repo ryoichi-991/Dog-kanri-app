@@ -162,6 +162,13 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn(".calendar-mobile-only{{display:none}}", layout_source)
         self.assertIn(".health-mobile-only,.calendar-mobile-only{{display:block}}", layout_source)
 
+    def test_business_calendar_always_renders_month_grid(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("monthdatescalendar", "events_by_day", "month-calendar-week", "month-calendar-day", "month-calendar-event", "前月", "翌月", "予定一覧"):
+            self.assertIn(marker, segment)
+        self.assertIn("day == date.today()", segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
