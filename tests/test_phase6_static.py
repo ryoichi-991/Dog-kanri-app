@@ -1364,6 +1364,26 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("FinanceOpeningBalance.tenant_id == tenant_id", "FinanceOpeningBalance.start_year == start_year", "FinanceYearCarryforward.tenant_id == tenant_id", "FinanceYearCarryforward.target_start_year == start_year", "期首残高・年度繰越", "初年度で残高0の場合は未登録でも可", '"blocking_count"'):
             self.assertIn(marker, helper)
 
+    def test_breeding_mating_attempt_model_is_tenant_scoped_and_unique(self):
+        model = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "BreedingMatingAttempt"))
+        for marker in ('__tablename__ = "breeding_mating_attempts"', 'UniqueConstraint("breeding_id", "sequence"', 'UniqueConstraint("breeding_id", "mating_date"', "tenant_id", "breeding_id", "sequence", "mating_date", "method", "created_at"):
+            self.assertIn(marker, model)
+
+    def test_first_mating_creates_attempt_for_same_breeding(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_create"))
+        for marker in ("BreedingRecord(", "session.flush()", "BreedingMatingAttempt(", "breeding_id=record.id", "sequence=1", "mating_date=mated", "method=method"):
+            self.assertIn(marker, route)
+
+    def test_breeding_page_allows_second_and_third_mating_dates(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "breeding_page"))
+        for marker in ("BreedingMatingAttempt.tenant_id == tenant.id", "attempts_by_breeding", "dates.insert", "next_sequence", "next_sequence <= 3", "/modules/breeding/mating/{record.id}/attempt", "回目交配日", "3回登録済み"):
+            self.assertIn(marker, page)
+
+    def test_additional_mating_route_is_scoped_bounded_and_duplicate_safe(self):
+        route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_attempt_create"))
+        for marker in ("BreedingRecord.tenant_id == tenant.id", "with_for_update", "BreedingMatingAttempt.tenant_id == tenant.id", ".limit(3)", "next_sequence > 3", "mated < record.mating_date", "timedelta(days=14)", "mated == record.mating_date", "mated in dates", "len(notes) > 500", "session.commit()"):
+            self.assertIn(marker, route)
+
     def test_year_checklist_update_validates_locks_upserts_and_audits(self):
         route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_year_checklist_update"))
         for marker in ("require_tenant_admin", "not confirmed", "item_key not in FINANCE_YEAR_CHECKLIST_ITEMS", "len(notes) > 500", "FinanceYearClose.tenant_id == tenant.id", "FinanceYearCloseChecklist.tenant_id == tenant.id", ".with_for_update()", "item.completed = completed", "FinanceYearCloseChecklist(", '"year_checklist_update"'):

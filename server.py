@@ -204,6 +204,19 @@ class BreedingRecord(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class BreedingMatingAttempt(Base):
+    __tablename__ = "breeding_mating_attempts"
+    __table_args__ = (UniqueConstraint("breeding_id", "sequence", name="uq_breeding_mating_attempt_sequence"), UniqueConstraint("breeding_id", "mating_date", name="uq_breeding_mating_attempt_date"))
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    breeding_id: Mapped[int] = mapped_column(ForeignKey("breeding_records.id", ondelete="CASCADE"), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    mating_date: Mapped[date] = mapped_column(Date, index=True)
+    method: Mapped[str] = mapped_column(String(20), default="natural")
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class Litter(Base):
     __tablename__ = "litters"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -1845,7 +1858,7 @@ def page_usage_guide(title: str) -> str:
         (("通知配信履歴",), ["LINE・メール・ブラウザの配信結果をまとめて確認できます。", "条件検索、失敗通知の再送、CSV・PDF出力ができます。"], ["検索条件を指定して履歴を絞り込みます。", "失敗理由を確認し、設定修正後に必要な通知だけ再送します。", "必要に応じて表示条件のまま帳票を出力します。"], "再送はオーナーへ実際に通知されます。宛先と内容を確認してから操作してください。"),
         (("LINE公式", "LINE連携"), ["LINE公式アカウントの接続状態とオーナー連携を確認できます。", "接続診断、テスト通知、配信履歴の確認ができます。"], ["接続状態と最終Webhook受信日時を確認します。", "オーナーの連携状態を確認します。", "必要な場合だけテスト通知を実行します。"], "Channel secretやアクセストークンは第三者へ共有しないでください。"),
         (("健康", "体重", "ワクチン", "健診", "投薬", "病歴", "フード"), ["愛犬の健康記録、予定、共有データを確認・登録できます。", "検索、実施済み管理、カレンダー表示、帳票出力ができます。"], ["対象犬と健康カテゴリーを確認します。", "日付と内容を入力して記録します。", "必要な記録だけブリーダーまたはオーナーへ共有します。"], "健康記録は診断書ではありません。緊急時や判断に迷う場合は獣医師へ相談してください。"),
-        (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と登録済み情報を確認します。", "日付・相手犬・検査結果などを入力します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
+        (("ヒート", "交配", "遺伝子", "血統"), ["ヒート、交配計画、血統情報、遺伝子検査を管理できます。", "同じ父犬・母犬の交配記録に1回目から3回目までの交配日を保存できます。", "組み合わせの検討や近親交配分析に利用できます。"], ["対象犬と1回目の交配日を登録します。", "同じ交配記録の一覧から2回目・3回目の日付と方法を追加します。", "分析結果と原資料を照合して計画を確定します。"], "自動計算や提案、出産予定日は判断材料です。血統書原本と獣医師・専門家の確認を優先してください。"),
         (("出産", "仔犬"), ["出産予定、出産記録、仔犬情報を登録・確認できます。", "母犬別の出産状況と仔犬の管理に利用できます。"], ["母犬と対象の出産記録を選びます。", "日付、頭数、仔犬情報を登録します。", "販売・健康・血統情報へ正しく連携されたか確認します。"], "出生数や個体の取り違えを防ぐため、登録後に母犬と日付を再確認してください。"),
         (("請求書",), ["販売案件から請求書を作成し、発行・入金状況を管理できます。", "発行時の売掛金仕訳、入金時の消込仕訳、取消時の反対仕訳と伝票番号を確認できます。", "会計伝票番号を記載した請求書PDFを保存・印刷できます。"], ["対象の販売案件、請求額、支払期限を確認して下書きを作成します。", "発行済みに変更し、売掛金／売上の複式仕訳が計上されたことを確認します。", "PDFの会計伝票番号を確認し、入金後は売掛金・請求書入金消込から処理します。"], "請求書の発行は売上計上を伴います。発行日・金額・取引先を確認し、誤りは削除せず取消処理で反対仕訳を残してください。正式な税務処理は税理士へ確認してください。"),
         (("経営収益", "収益ダッシュボード"), ["複式仕訳の収益・費用・利益を月別に比較できます。", "勘定科目別の費用構成、販売未入金、期限超過請求、証憑の保管状況をまとめて確認できます。"], ["確認する年を選びます。", "発生主義の年間サマリーと月別推移を確認します。", "総勘定元帳で内訳を照合し、要確認項目から請求書・証憑・原価管理へ移動します。"], "売掛・買掛、減価償却、消費税振替、取消仕訳を含む登録済み複式仕訳から集計します。正式な決算・税務申告では税理士と原資料を確認してください。"),
@@ -2518,6 +2531,11 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     males = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "male", Dog.active.is_(True)).order_by(Dog.call_name)).all()
     heats = session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id).order_by(HeatCycle.start_date.desc())).all()
     breedings = session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id).order_by(BreedingRecord.mating_date.desc())).all()
+    breeding_ids = [item.id for item in breedings]
+    attempts = session.scalars(select(BreedingMatingAttempt).where(BreedingMatingAttempt.tenant_id == tenant.id, BreedingMatingAttempt.breeding_id.in_(breeding_ids)).order_by(BreedingMatingAttempt.breeding_id, BreedingMatingAttempt.sequence).limit(3000)).all() if breeding_ids else []
+    attempts_by_breeding: dict[int, list[BreedingMatingAttempt]] = {}
+    for attempt in attempts:
+        attempts_by_breeding.setdefault(attempt.breeding_id, []).append(attempt)
     female_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in females)
     male_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in males)
     heat_rows = ""
@@ -2528,7 +2546,14 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     for record in breedings:
         sire, dam = session.get(Dog, record.sire_id), session.get(Dog, record.dam_id)
         coefficient = f"{record.coefficient:.2f}%" if record.coefficient is not None else "-"
-        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{record.mating_date}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{coefficient}</td><td>{html.escape(record.status)}</td></tr>"
+        record_attempts = attempts_by_breeding.get(record.id, [])
+        dates = [(item.sequence, item.mating_date, item.method) for item in record_attempts]
+        if not any(sequence == 1 for sequence, _, _ in dates):
+            dates.insert(0, (1, record.mating_date, "natural" if "自然交配" in (record.notes or "") else "artificial"))
+        date_labels = "<br>".join(f'{sequence}回目：{mating_day}（{"自然" if method == "natural" else "人工授精"}）' for sequence, mating_day, method in dates)
+        next_sequence = max(sequence for sequence, _, _ in dates) + 1
+        add_form = f'''<form method="post" action="/modules/breeding/mating/{record.id}/attempt"><div class="grid"><div><label>{next_sequence}回目交配日</label><input name="mating_date" type="date" min="{record.mating_date}" max="{record.mating_date + timedelta(days=14)}" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><input name="notes" maxlength="500"><button>{next_sequence}回目を追加</button></form>''' if next_sequence <= 3 and record.status == "mated" else '<span class="badge">3回登録済み</span>'
+        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{date_labels}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{coefficient}</td><td>{html.escape(record.status)}<br>{add_form}</td></tr>"
     body = f'''<h1>交配・ヒート管理</h1>
     <h2>ヒート記録</h2><form method="post" action="/modules/breeding/heat"><div class="grid"><div><label>母犬</label><select name="dog_id" required>{female_options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>ヒートを登録</button></form>
     <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th></tr>{heat_rows}</table>
@@ -2563,8 +2588,28 @@ def mating_create(dam_id: int = Form(...), sire_id: int = Form(...), mating_date
     if notes.strip():
         note += "\n" + notes.strip()
     coefficient = offspring_coefficient(session, tenant.id, sire.id, dam.id) * 100
-    session.add(BreedingRecord(tenant_id=tenant.id, sire_id=sire.id, dam_id=dam.id, mating_date=mated, coefficient=coefficient, status="mated", notes=note))
+    record = BreedingRecord(tenant_id=tenant.id, sire_id=sire.id, dam_id=dam.id, mating_date=mated, coefficient=coefficient, status="mated", notes=note)
+    session.add(record); session.flush()
+    session.add(BreedingMatingAttempt(tenant_id=tenant.id, breeding_id=record.id, sequence=1, mating_date=mated, method=method, notes=notes.strip() or None))
     session.add(TaskEvent(tenant_id=tenant.id, dog_id=dam.id, title=f"{dam.call_name} 出産予定", category="breeding", due_date=mated + timedelta(days=63)))
+    session.commit()
+    return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.post("/modules/breeding/mating/{breeding_id}/attempt")
+def mating_attempt_create(breeding_id: int, mating_date: str = Form(...), method: str = Form("natural"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    record = session.scalar(select(BreedingRecord).where(BreedingRecord.id == breeding_id, BreedingRecord.tenant_id == tenant.id).with_for_update())
+    try:
+        mated = date.fromisoformat(mating_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="交配日を確認してください")
+    attempts = session.scalars(select(BreedingMatingAttempt).where(BreedingMatingAttempt.tenant_id == tenant.id, BreedingMatingAttempt.breeding_id == breeding_id).order_by(BreedingMatingAttempt.sequence).limit(3)).all() if record else []
+    sequences = {item.sequence for item in attempts}; dates = {item.mating_date for item in attempts}
+    next_sequence = max({1, *sequences}) + 1
+    if not record or record.status != "mated" or method not in {"natural", "artificial"} or next_sequence > 3 or mated < record.mating_date or mated > record.mating_date + timedelta(days=14) or mated == record.mating_date or mated in dates or len(notes) > 500:
+        raise HTTPException(status_code=400, detail="2回目・3回目の交配情報を確認してください")
+    session.add(BreedingMatingAttempt(tenant_id=tenant.id, breeding_id=record.id, sequence=next_sequence, mating_date=mated, method=method, notes=notes.strip() or None))
     session.commit()
     return RedirectResponse("/modules/breeding", status_code=303)
 
