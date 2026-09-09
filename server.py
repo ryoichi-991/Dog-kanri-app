@@ -2536,8 +2536,17 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     attempts_by_breeding: dict[int, list[BreedingMatingAttempt]] = {}
     for attempt in attempts:
         attempts_by_breeding.setdefault(attempt.breeding_id, []).append(attempt)
-    female_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in females)
-    male_options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in males)
+    def breeding_dog_options(dogs: list[Dog]) -> str:
+        options = ['<option value="">選択してください</option>']
+        for dog in dogs:
+            details = " ／ ".join(value for value in (dog.registered_name, dog.breed, dog.pedigree_no) if value)
+            label = dog.call_name + (f"（{details}）" if details else "")
+            search_text = " ".join(value for value in (dog.call_name, dog.registered_name, dog.breed, dog.pedigree_no) if value)
+            options.append(f'<option value="{dog.id}" data-search="{html.escape(search_text, quote=True)}">{html.escape(label)}</option>')
+        return "".join(options)
+
+    female_options = breeding_dog_options(females)
+    male_options = breeding_dog_options(males)
     heat_rows = ""
     for heat in heats:
         dog = session.get(Dog, heat.dog_id)
@@ -2557,9 +2566,11 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     body = f'''<h1>交配・ヒート管理</h1>
     <h2>ヒート記録</h2><form method="post" action="/modules/breeding/heat"><div class="grid"><div><label>母犬</label><select name="dog_id" required>{female_options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>ヒートを登録</button></form>
     <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th></tr>{heat_rows}</table>
-    <h2>交配記録</h2><form method="post" action="/modules/breeding/mating"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{female_options}</select></div><div><label>父犬</label><select name="sire_id" required>{male_options}</select></div><div><label>1回目交配日</label><input name="mating_date" type="date" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>交配を登録</button></form>
+    <h2>交配記録</h2><form method="post" action="/modules/breeding/mating"><div class="grid"><div class="breeding-dog-picker"><label for="mating-dam-search">母犬を検索</label><input id="mating-dam-search" class="breeding-dog-search" type="search" data-dog-select="mating-dam" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small class="breeding-dog-count"></small><label for="mating-dam">母犬</label><select id="mating-dam" name="dam_id" required>{female_options}</select></div><div class="breeding-dog-picker"><label for="mating-sire-search">父犬を検索</label><input id="mating-sire-search" class="breeding-dog-search" type="search" data-dog-select="mating-sire" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small class="breeding-dog-count"></small><label for="mating-sire">父犬</label><select id="mating-sire" name="sire_id" required>{male_options}</select></div><div><label>1回目交配日</label><input name="mating_date" type="date" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>交配を登録</button></form>
     <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>近親交配率</th><th>状態</th></tr>{breeding_rows}</table>
-    <h2>交配シミュレーション</h2><form method="post" action="/modules/breeding/simulation"><div class="grid"><div><label>母犬</label><select name="dam_id">{female_options}</select></div><div><label>父犬</label><select name="sire_id">{male_options}</select></div></div><button>近親交配率と遺伝病リスクを計算</button></form>'''
+    <h2>交配シミュレーション</h2><form method="post" action="/modules/breeding/simulation"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{female_options}</select></div><div><label>父犬</label><select name="sire_id" required>{male_options}</select></div></div><button>近親交配率と遺伝病リスクを計算</button></form>
+    <style>.breeding-dog-count{{display:block;color:#806b72;margin:5px 0}}.breeding-dog-picker{{min-width:0}}</style>
+    <script>document.querySelectorAll('.breeding-dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),count=input.parentElement.querySelector('.breeding-dog-count'),original=Array.from(select.options).slice(1).map(function(option){{return option.cloneNode(true)}});function filterDogs(){{var keyword=input.value.trim().toLocaleLowerCase('ja'),selected=select.value,matches=original.filter(function(option){{return !keyword||(option.dataset.search||option.textContent).toLocaleLowerCase('ja').includes(keyword)}});select.replaceChildren(new Option('選択してください',''),...matches.map(function(option){{return option.cloneNode(true)}}));if(matches.some(function(option){{return option.value===selected}}))select.value=selected;count.textContent=keyword?matches.length+'頭が見つかりました':original.length+'頭から検索できます'}}input.addEventListener('input',filterDogs);filterDogs()}});</script>'''
     return layout("交配・ヒート管理", body, user)
 
 
