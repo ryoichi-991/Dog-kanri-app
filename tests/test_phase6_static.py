@@ -158,6 +158,7 @@ class Phase6StaticTests(unittest.TestCase):
         segment = ast.get_source_segment(SOURCE, route)
         for marker in ("mating_attempts_by_breeding", "candidate_start", "candidate_end", "timedelta(days=61)", "timedelta(days=65)", "出産候補期間", "birth-window", "birth-due"):
             self.assertIn(marker, segment)
+        self.assertIn("[item.mating_date, *mating_attempts_by_breeding.get(item.id, [])]", segment)
         self.assertIn("min(mating_days)", segment)
         self.assertIn("max(mating_days)", segment)
 

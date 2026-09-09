@@ -2501,7 +2501,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     for item in session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id)).all():
         dog = dogs.get(item.dam_id)
         dog_name = dog.call_name if dog else "母犬"
-        mating_days = mating_attempts_by_breeding.get(item.id) or [item.mating_date]
+        mating_days = [item.mating_date, *mating_attempts_by_breeding.get(item.id, [])]
         expected_day = item.mating_date + timedelta(days=63)
         candidate_start = min(mating_days) + timedelta(days=61)
         candidate_end = max(mating_days) + timedelta(days=65)
