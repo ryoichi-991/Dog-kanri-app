@@ -251,11 +251,20 @@ class Phase6StaticTests(unittest.TestCase):
         )
         self.assertEqual(namespace["extract_title_keys"]("TH. CH."), ["thai_champion"])
         self.assertEqual(namespace["extract_title_keys"]("TH.CH."), ["thai_champion"])
+        self.assertEqual(
+            set(namespace["extract_title_keys"]("CH/20. 12, C1B-J, J. CH")),
+            {"champion", "junior_international_champion", "junior_champion"},
+        )
         segment = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "jkc_slot_text"))
         self.assertIn("is_pedigree_registration_line", segment)
+        self.assertIn("incomplete_name", segment)
+        self.assertIn('name = f"{possible[-2]} {name}"', segment)
         self.assertIn("1: (.055, .385, .505, .465)", SOURCE)
         self.assertIn("2: (.055, .695, .505, .775)", SOURCE)
         self.assertIn("3: (.075, .310, .505, .380)", SOURCE)
+        self.assertIn("8: (.535, .340, .970, .435)", SOURCE)
+        self.assertIn("11: (.535, .560, .970, .655)", SOURCE)
+        self.assertIn("12: (.535, .650, .970, .735)", SOURCE)
 
     def test_pedigree_import_preserves_registered_ancestor_data(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")

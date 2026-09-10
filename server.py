@@ -3145,7 +3145,7 @@ PEDIGREE_EXCLUDE = {
     "BREED", "SEX", "COLOR", "DATE OF BIRTH", "OWNER", "BREEDER", "REGISTRATION",
 }
 TITLE_PATTERNS = [
-    ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?|CIB-J)\b"),
+    ("junior_international_champion", r"\b(?:J\.?\s*INT\.?\s*CH\.?|JUNIOR\s+INTERNATIONAL\s+CHAMPION|J\.?C\.?I\.?B\.?|C[1I]B-J)\b"),
     ("international_veteran_champion", r"\b(?:CIB-V|INTERNATIONAL\s+VETERAN\s+CHAMPION)\b"),
     ("international_show_champion", r"\b(?:C\.?I\.?E\.?)\b"),
     ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+(?:BEAUTY\s+)?CHAMPION|C\.?I\.?B\.?)\b"),
@@ -3173,17 +3173,17 @@ JKC_SLOT_BOXES = {
     1: (.055, .385, .505, .465), 2: (.055, .695, .505, .775),
     3: (.075, .310, .505, .380), 4: (.075, .475, .505, .555),
     5: (.075, .615, .505, .690), 6: (.075, .785, .505, .865),
-    7: (.535, .275, .970, .345), 8: (.535, .340, .970, .410),
-    9: (.535, .395, .970, .475), 10: (.535, .470, .970, .555),
-    11: (.535, .545, .970, .630), 12: (.535, .620, .970, .705),
-    13: (.535, .700, .970, .790), 14: (.535, .785, .970, .875),
+    7: (.535, .275, .970, .355), 8: (.535, .340, .970, .435),
+    9: (.535, .415, .970, .500), 10: (.535, .490, .970, .575),
+    11: (.535, .560, .970, .655), 12: (.535, .650, .970, .735),
+    13: (.535, .720, .970, .810), 14: (.535, .800, .970, .890),
 }
 
 
 def is_pedigree_registration_line(value: str) -> bool:
     """犬名直後の登録番号を検出する。ID/DNA番号は血統登録番号に含めない。"""
     upper = value.upper().replace("—", "-").replace("–", "-")
-    return bool(normalize_jkc_number(upper) or re.search(r"\b(?:KATH|LOE|AKC[- ]?RN)\s*[- ]?\s*\d{6,12}\b", upper))
+    return bool(normalize_jkc_number(upper) or re.search(r"\b(?:KATH|LOE|AKC[- ]?RN|AP)\s*[- ]?\s*\d{6,12}\b|\b\d{4,8}[A-Z]{1,3}\b", upper))
 
 
 def extract_title_keys(value: str) -> list[str]:
@@ -3403,7 +3403,7 @@ def jkc_root_metadata(image: Image.Image, records: list[tuple[float, float, str]
     result.update(trusted_identity)
     # 本犬の称号は犬名の直上だけから取得する。広い本人情報領域には
     # 右側7番祖先のINT.CH等が入り得るため、本人へ誤付与しない。
-    root_title_lines = lines_in((.25, .035, .76, .115))
+    root_title_lines = lines_in((.25, .090, .76, .145))
     title_keys = extract_title_keys("\n".join(root_title_lines))
     if title_keys:
         result["titles"] = ",".join(title_keys)
@@ -3440,6 +3440,10 @@ def jkc_slot_text(image: Image.Image) -> str:
                 possible.append(upper)
         title_context = "\n".join(lines[max(0, reg_index - 5):reg_index])
         name = possible[-1] if possible else ""
+        # OCRが「ELISE」「OF ESTRELLA JP」のように犬名の先頭語だけを
+        # 別行へ分割した場合は、登録番号直前の2候補を一つの犬名へ戻す。
+        if len(possible) >= 2 and re.match(r"^OF\s+", name, re.IGNORECASE):
+            name = f"{possible[-2]} {name}"
         if not name:
             # 表の罫線が | や ] として犬名先頭に付着したケース。
             compact = "\n".join(lines)
@@ -3478,10 +3482,11 @@ def jkc_slot_text(image: Image.Image) -> str:
         # 全面座標OCRで名前と毛色が取れた欄は再OCRしない。従来は全14欄を
         # 常に拡大OCRしていたため、低性能な本番環境で処理上限に達していた。
         fallback_color = ""
-        if not name or not local_color:
+        incomplete_name = bool(re.match(r"^OF\s+", name, re.IGNORECASE))
+        if not name or not local_color or incomplete_name:
             cropped_text = crop_text(box)
             fallback_name, fallback_titles, fallback_color = details_from_text(cropped_text)
-            if not name:
+            if not name or (incomplete_name and fallback_name.upper().endswith(name.upper())):
                 name = fallback_name
             for key in fallback_titles:
                 if key not in titles:
