@@ -226,6 +226,9 @@ class Litter(Base):
     birth_date: Mapped[date] = mapped_column(Date)
     born_count: Mapped[int] = mapped_column(Integer, default=0)
     alive_count: Mapped[int] = mapped_column(Integer, default=0)
+    male_count: Mapped[int] = mapped_column(Integer, default=0)
+    female_count: Mapped[int] = mapped_column(Integer, default=0)
+    color_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -2058,6 +2061,9 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS dog_transfers ADD COLUMN IF NOT EXISTS amount INTEGER"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_time VARCHAR(5)"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_location VARCHAR(300)"))
+        conn.execute(text("ALTER TABLE IF EXISTS litters ADD COLUMN IF NOT EXISTS male_count INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE IF EXISTS litters ADD COLUMN IF NOT EXISTS female_count INTEGER NOT NULL DEFAULT 0"))
+        conn.execute(text("ALTER TABLE IF EXISTS litters ADD COLUMN IF NOT EXISTS color_details TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_capacity INTEGER"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
@@ -2679,31 +2685,78 @@ def breeding_simulation(dam_id: int = Form(...), sire_id: int = Form(...), acces
 def births_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dams = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female").order_by(Dog.call_name)).all()
-    options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dams)
+    options = "".join(f'<option value="{d.id}">{html.escape(d.call_name)}／{html.escape(d.registered_name or "血統名未登録")}／{html.escape(d.breed or "犬種未登録")}／{html.escape(d.pedigree_no or "番号未登録")}</option>' for d in dams)
     litters = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id).order_by(Litter.birth_date.desc())).all()
     rows = ""
     for litter in litters:
         dam = session.get(Dog, litter.dam_id)
         search_text = " ".join(str(value) for value in (
             litter.birth_date, dam.call_name, dam.registered_name, litter.born_count,
-            litter.alive_count, litter.notes,
+            litter.alive_count, litter.male_count, litter.female_count, litter.color_details, litter.notes,
         ) if value).lower()
-        rows += f'''<tr class="birth-record-row" data-search="{html.escape(search_text)}"><td>{litter.birth_date}</td><td>{html.escape(dam.call_name)}<br><small>{html.escape(dam.registered_name or "血統名未登録")}</small></td><td>{litter.born_count}</td><td>{litter.alive_count}</td><td>{html.escape(litter.notes or '-')}</td></tr>'''
-    body = f'''<h1>出産管理</h1><form method="post"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{options}</select></div><div><label>出産日</label><input name="birth_date" type="date" required></div><div><label>出生頭数</label><input name="born_count" type="number" min="0" required></div><div><label>生存頭数</label><input name="alive_count" type="number" min="0" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>出産を登録</button></form><div class="tenant"><label for="birth-record-search">出産記録を検索</label><input id="birth-record-search" type="search" placeholder="母犬名・血統書名・出産日・頭数・メモを入力" autocomplete="off"><p id="birth-record-result" style="margin:6px 0 0;color:#765f68;font-size:12px"></p></div><table><thead><tr><th>出産日</th><th>母犬</th><th>出生</th><th>生存</th><th>メモ</th></tr></thead><tbody>{rows}<tr id="birth-record-empty" style="display:none"><td colspan="5">検索条件に一致する出産記録はありません。</td></tr>{'' if rows else '<tr class="birth-record-initial-empty"><td colspan="5">出産記録はありません。</td></tr>'}</tbody></table><script>(function(){{const search=document.getElementById('birth-record-search');const result=document.getElementById('birth-record-result');const rows=Array.from(document.querySelectorAll('.birth-record-row'));const empty=document.getElementById('birth-record-empty');function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');let count=0;for(const row of rows){{const visible=!keyword||row.dataset.search.toLocaleLowerCase('ja').includes(keyword);row.style.display=visible?'':'none';if(visible)count++;}}empty.style.display=keyword&&count===0?'':'none';result.textContent=keyword?count+'件が見つかりました':rows.length+'件から検索できます';}}search.addEventListener('input',render);render();}})();</script>'''
+        rows += f'''<tr class="birth-record-row" data-search="{html.escape(search_text)}"><td>{litter.birth_date}</td><td>{html.escape(dam.call_name)}<br><small>{html.escape(dam.registered_name or "血統名未登録")}</small></td><td>{litter.born_count}<br><small>牡 {litter.male_count}／牝 {litter.female_count}</small></td><td>{litter.alive_count}</td><td>{html.escape(litter.color_details or '-')}</td><td>{html.escape(litter.notes or '-')}</td><td><a class="button secondary" href="/modules/births/{litter.id}/edit">編集</a> <form class="inline" method="post" action="/modules/births/{litter.id}/delete" onsubmit="return confirm('この出産記録を削除しますか？元に戻せません。')"><button class="danger">削除</button></form></td></tr>'''
+    body = f'''<style>.birth-count{{display:grid;grid-template-columns:48px 1fr 48px;gap:7px;align-items:center}}.birth-count button{{margin:0;padding:10px 4px;font-size:20px}}.birth-count input{{text-align:center}}.birth-notes{{min-height:110px}}</style><h1>出産管理</h1><form method="post"><div class="grid"><div><label for="birth-dam-search">母犬を検索</label><input id="birth-dam-search" type="search" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small id="birth-dam-result"></small><label for="birth-dam-select">母犬</label><select id="birth-dam-select" name="dam_id" required>{options}</select></div><div><label>出産日</label><input name="birth_date" type="date" required></div><div><label>出生頭数</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="born-count" data-step="-1">−</button><input id="born-count" name="born_count" type="number" min="0" value="0" required><button type="button" class="secondary birth-count-step" data-target="born-count" data-step="1">＋</button></div></div><div><label>生存頭数</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="alive-count" data-step="-1">−</button><input id="alive-count" name="alive_count" type="number" min="0" value="0" required><button type="button" class="secondary birth-count-step" data-target="alive-count" data-step="1">＋</button></div></div><div><label>牡</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="male-count" data-step="-1">−</button><input id="male-count" name="male_count" type="number" min="0" value="0" required><button type="button" class="secondary birth-count-step" data-target="male-count" data-step="1">＋</button></div></div><div><label>牝</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="female-count" data-step="-1">−</button><input id="female-count" name="female_count" type="number" min="0" value="0" required><button type="button" class="secondary birth-count-step" data-target="female-count" data-step="1">＋</button></div></div></div><label>毛色・内訳</label><input name="color_details" maxlength="500" placeholder="例：ソルト＆ペッパー 3頭、ブラック 1頭"><label>メモ</label><textarea class="birth-notes" name="notes" maxlength="2000" placeholder="出産時刻、体重、特記事項など"></textarea><button>出産を登録</button></form><div class="tenant"><label for="birth-record-search">出産記録を検索</label><input id="birth-record-search" type="search" placeholder="母犬名・血統書名・出産日・頭数・毛色・メモを入力" autocomplete="off"><p id="birth-record-result" style="margin:6px 0 0;color:#765f68;font-size:12px"></p></div><table><thead><tr><th>出産日</th><th>母犬</th><th>出生・性別</th><th>生存</th><th>毛色</th><th>メモ</th><th>操作</th></tr></thead><tbody>{rows}<tr id="birth-record-empty" style="display:none"><td colspan="7">検索条件に一致する出産記録はありません。</td></tr>{'' if rows else '<tr class="birth-record-initial-empty"><td colspan="7">出産記録はありません。</td></tr>'}</tbody></table><script>(function(){{document.querySelectorAll('.birth-count-step').forEach(button=>button.addEventListener('click',()=>{{const input=document.getElementById(button.dataset.target);input.value=String(Math.max(Number(input.min||0),Number(input.value||0)+Number(button.dataset.step)));input.dispatchEvent(new Event('input',{{bubbles:true}}));}}));const damSearch=document.getElementById('birth-dam-search');const damSelect=document.getElementById('birth-dam-select');const damResult=document.getElementById('birth-dam-result');const dams=Array.from(damSelect.options).map(option=>({{value:option.value,text:option.textContent}}));function renderDams(){{const keyword=damSearch.value.trim().toLocaleLowerCase('ja');const selected=damSelect.value;const matches=keyword?dams.filter(dam=>dam.text.toLocaleLowerCase('ja').includes(keyword)):dams;damSelect.replaceChildren(...matches.map(dam=>new Option(dam.text,dam.value)));if(matches.some(dam=>dam.value===selected))damSelect.value=selected;damResult.textContent=keyword?matches.length+'頭が見つかりました':dams.length+'頭から検索できます';}}damSearch.addEventListener('input',renderDams);renderDams();const search=document.getElementById('birth-record-search');const result=document.getElementById('birth-record-result');const rows=Array.from(document.querySelectorAll('.birth-record-row'));const empty=document.getElementById('birth-record-empty');function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');let count=0;for(const row of rows){{const visible=!keyword||row.dataset.search.toLocaleLowerCase('ja').includes(keyword);row.style.display=visible?'':'none';if(visible)count++;}}empty.style.display=keyword&&count===0?'':'none';result.textContent=keyword?count+'件が見つかりました':rows.length+'件から検索できます';}}search.addEventListener('input',render);render();}})();</script>'''
     return layout("出産管理", body, user)
 
 
 @app.post("/modules/births")
-def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_count: int = Form(...), alive_count: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_count: int = Form(...), alive_count: int = Form(...), male_count: int = Form(0), female_count: int = Form(0), color_details: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dam = session.scalar(select(Dog).where(Dog.id == dam_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
-    if not dam or born_count < 0 or alive_count < 0 or alive_count > born_count:
+    if not dam or min(born_count, alive_count, male_count, female_count) < 0 or alive_count > born_count or male_count + female_count > born_count or len(color_details) > 500 or len(notes) > 2000:
         raise HTTPException(status_code=400, detail="出産情報を確認してください")
-    born = date.fromisoformat(birth_date)
-    session.add(Litter(tenant_id=tenant.id, dam_id=dam.id, birth_date=born, born_count=born_count, alive_count=alive_count, notes=notes.strip() or None))
+    try:
+        born = date.fromisoformat(birth_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="出産日を確認してください")
+    session.add(Litter(tenant_id=tenant.id, dam_id=dam.id, birth_date=born, born_count=born_count, alive_count=alive_count, male_count=male_count, female_count=female_count, color_details=color_details.strip() or None, notes=notes.strip() or None))
     related = session.scalar(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id, BreedingRecord.dam_id == dam.id, BreedingRecord.mating_date <= born).order_by(BreedingRecord.mating_date.desc()))
     if related:
         related.status = "delivered"
+    session.commit()
+    return RedirectResponse("/modules/births", status_code=303)
+
+
+@app.get("/modules/births/{litter_id}/edit", response_class=HTMLResponse)
+def litter_edit_page(litter_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    litter = session.scalar(select(Litter).where(Litter.id == litter_id, Litter.tenant_id == tenant.id))
+    if not litter:
+        raise HTTPException(status_code=404, detail="出産記録が見つかりません")
+    dams = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female").order_by(Dog.call_name)).all()
+    options = "".join(f'<option value="{dog.id}" {"selected" if dog.id == litter.dam_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in dams)
+    body = f'''<style>.birth-count{{display:grid;grid-template-columns:48px 1fr 48px;gap:7px;align-items:center}}.birth-count button{{margin:0;padding:10px 4px;font-size:20px}}.birth-count input{{text-align:center}}.birth-notes{{min-height:110px}}</style><h1>出産記録を編集</h1><form method="post"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{options}</select></div><div><label>出産日</label><input name="birth_date" type="date" value="{litter.birth_date}" required></div><div><label>出生頭数</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="edit-born-count" data-step="-1">−</button><input id="edit-born-count" name="born_count" type="number" min="0" value="{litter.born_count}" required><button type="button" class="secondary birth-count-step" data-target="edit-born-count" data-step="1">＋</button></div></div><div><label>生存頭数</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="edit-alive-count" data-step="-1">−</button><input id="edit-alive-count" name="alive_count" type="number" min="0" value="{litter.alive_count}" required><button type="button" class="secondary birth-count-step" data-target="edit-alive-count" data-step="1">＋</button></div></div><div><label>牡</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="edit-male-count" data-step="-1">−</button><input id="edit-male-count" name="male_count" type="number" min="0" value="{litter.male_count}" required><button type="button" class="secondary birth-count-step" data-target="edit-male-count" data-step="1">＋</button></div></div><div><label>牝</label><div class="birth-count"><button type="button" class="secondary birth-count-step" data-target="edit-female-count" data-step="-1">−</button><input id="edit-female-count" name="female_count" type="number" min="0" value="{litter.female_count}" required><button type="button" class="secondary birth-count-step" data-target="edit-female-count" data-step="1">＋</button></div></div></div><label>毛色・内訳</label><input name="color_details" maxlength="500" value="{html.escape(litter.color_details or '')}"><label>メモ</label><textarea class="birth-notes" name="notes" maxlength="2000">{html.escape(litter.notes or '')}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/births">キャンセル</a></form><script>document.querySelectorAll('.birth-count-step').forEach(button=>button.addEventListener('click',()=>{{const input=document.getElementById(button.dataset.target);input.value=String(Math.max(Number(input.min||0),Number(input.value||0)+Number(button.dataset.step)));}}));</script>'''
+    return layout("出産記録を編集", body, user)
+
+
+@app.post("/modules/births/{litter_id}/edit")
+def litter_update(litter_id: int, dam_id: int = Form(...), birth_date: str = Form(...), born_count: int = Form(...), alive_count: int = Form(...), male_count: int = Form(0), female_count: int = Form(0), color_details: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    litter = session.scalar(select(Litter).where(Litter.id == litter_id, Litter.tenant_id == tenant.id).with_for_update())
+    dam = session.scalar(select(Dog).where(Dog.id == dam_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    if not litter or not dam or min(born_count, alive_count, male_count, female_count) < 0 or alive_count > born_count or male_count + female_count > born_count or len(color_details) > 500 or len(notes) > 2000:
+        raise HTTPException(status_code=400, detail="出産情報を確認してください")
+    try:
+        born = date.fromisoformat(birth_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="出産日を確認してください")
+    litter.dam_id, litter.birth_date = dam.id, born
+    litter.born_count, litter.alive_count = born_count, alive_count
+    litter.male_count, litter.female_count = male_count, female_count
+    litter.color_details, litter.notes = color_details.strip() or None, notes.strip() or None
+    session.commit()
+    return RedirectResponse("/modules/births", status_code=303)
+
+
+@app.post("/modules/births/{litter_id}/delete")
+def litter_delete(litter_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    litter = session.scalar(select(Litter).where(Litter.id == litter_id, Litter.tenant_id == tenant.id).with_for_update())
+    if not litter:
+        raise HTTPException(status_code=404, detail="出産記録が見つかりません")
+    if session.scalar(select(CostAllocation.id).where(CostAllocation.tenant_id == tenant.id, CostAllocation.litter_id == litter.id).limit(1)):
+        raise HTTPException(status_code=400, detail="原価配賦で使用中のため削除できません。先に会計記録を確認してください")
+    session.delete(litter)
     session.commit()
     return RedirectResponse("/modules/births", status_code=303)
 

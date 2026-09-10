@@ -212,6 +212,30 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertIn("Litter.tenant_id == tenant.id", segment)
 
+    def test_birth_management_supports_details_steppers_edit_and_delete(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Litter")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("male_count", "female_count", "color_details"):
+            self.assertIn(marker, model_source)
+            self.assertIn(f"litters ADD COLUMN IF NOT EXISTS {marker}", SOURCE)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "births_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ("birth-dam-search", "birth-count-step", "male_count", "female_count", "color_details", "毛色・内訳", "編集", "削除"):
+            self.assertIn(marker, page_source)
+        for route_name in ("litter_edit_page", "litter_update", "litter_delete"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            route_source = ast.get_source_segment(SOURCE, route)
+            self.assertIn("Litter.tenant_id == tenant.id", route_source)
+        delete_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "litter_delete")
+        self.assertIn("CostAllocation.litter_id == litter.id", ast.get_source_segment(SOURCE, delete_route))
+
+    def test_birth_create_and_update_validate_detailed_counts(self):
+        for route_name in ("litter_create", "litter_update"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            segment = ast.get_source_segment(SOURCE, route)
+            for marker in ("male_count + female_count > born_count", "alive_count > born_count", "len(color_details) > 500", "len(notes) > 2000"):
+                self.assertIn(marker, segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
