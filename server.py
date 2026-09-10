@@ -4584,14 +4584,18 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
         ".registered-ancestor{border-color:#8bb897;background:#f3fbf5}.review-check{display:flex",
     )
     body = body.replace(
+        '<label for="existing-dog-search">登録犬を検索</label>',
+        '<label for="existing-dog-search">登録方法の対象犬を検索</label>',
+    )
+    body = body.replace(
         "<h2>今回アップロードした書類</h2>",
-        f'''<div class="tenant"><label for="pedigree-source-dog">登録済み兄弟犬から血統を引き継ぐ</label><select id="pedigree-source-dog" name="pedigree_source_dog_id">{lineage_source_options}</select><p><small>選択した犬の父母・祖父母・曾祖父母だけを利用します。本犬の名前・番号・性別などはコピーしません。</small></p></div><h2>今回アップロードした書類</h2>''',
+        f'''<div class="tenant"><label for="pedigree-source-search">兄弟犬を検索</label><input id="pedigree-source-search" type="search" placeholder="呼び名・血統書名を入力" autocomplete="off"><p id="pedigree-source-result" style="margin:6px 0;color:#765f68;font-size:12px"></p><label for="pedigree-source-dog">登録済み兄弟犬から血統を引き継ぐ</label><select id="pedigree-source-dog" name="pedigree_source_dog_id">{lineage_source_options}</select><p><small>選択した犬の父母・祖父母・曾祖父母だけを利用します。本犬の名前・番号・性別などはコピーしません。</small></p></div><h2>今回アップロードした書類</h2>''',
     )
     body = body.replace(
         "読み取れなかった先祖は空欄のままで構いません。入力されている各個体は、犬名・毛色・タイトルを原本と照合してください。",
         "緑色は登録済みデータを優先した祖先です。読み取れなかった先祖は空欄のままで構いません。",
     )
-    source_script = f'''const source=document.getElementById('pedigree-source-dog'),sourceData={lineage_source_json};source.addEventListener('change',function(){{const data=sourceData[source.value];if(!data)return;for(let index=1;index<15;index++){{const name=form.querySelector('[name="ancestor_'+index+'"]'),color=form.querySelector('[name="ancestor_color_'+index+'"]'),title=form.querySelector('[name="title_'+index+'"]');if(name)name.value=data.names[index]||'';if(color)color.value=data.colors[index]||'';if(title)Array.from(title.options).forEach(option=>option.selected=(data.titles[index]||[]).includes(option.value));}}reviewState();}});'''
+    source_script = f'''const source=document.getElementById('pedigree-source-dog'),sourceSearch=document.getElementById('pedigree-source-search'),sourceResult=document.getElementById('pedigree-source-result'),sourceData={lineage_source_json},sourceDogs=Array.from(source.options).slice(1).map(option=>({{value:option.value,text:option.textContent}}));function renderSources(){{const keyword=sourceSearch.value.trim().toLocaleLowerCase('ja'),selected=source.value,matches=keyword?sourceDogs.filter(dog=>dog.text.toLocaleLowerCase('ja').includes(keyword)):sourceDogs;source.replaceChildren(new Option('OCR結果を使用',''),...matches.map(dog=>new Option(dog.text,dog.value)));if(matches.some(dog=>dog.value===selected))source.value=selected;sourceResult.textContent=keyword?matches.length+'頭が見つかりました':sourceDogs.length+'頭から検索できます';}}sourceSearch.addEventListener('input',renderSources);renderSources();source.addEventListener('change',function(){{const data=sourceData[source.value];if(!data)return;for(let index=1;index<15;index++){{const name=form.querySelector('[name="ancestor_'+index+'"]'),color=form.querySelector('[name="ancestor_color_'+index+'"]'),title=form.querySelector('[name="title_'+index+'"]');if(name)name.value=data.names[index]||'';if(color)color.value=data.colors[index]||'';if(title)Array.from(title.options).forEach(option=>option.selected=(data.titles[index]||[]).includes(option.value));}}reviewState();}});'''
     body = body.replace("form.addEventListener('change',reviewState);", source_script + "form.addEventListener('change',reviewState);")
     return layout("血統書読み取り確認", body, user)
 

@@ -212,6 +212,16 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("len(matches) == 1", reuse_segment)
         self.assertIn('return names, titles, colors, "", matched_ids', reuse_segment)
 
+    def test_pedigree_dog_selectors_are_searchable(self):
+        scan = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
+        segment = ast.get_source_segment(SOURCE, scan)
+        for marker in (
+            "登録方法の対象犬を検索", "existing-dog-search", "pedigree-source-search",
+            "pedigree-source-result", "呼び名・血統書名を入力", "renderSources", "sourceDogs",
+        ):
+            self.assertIn(marker, segment)
+        self.assertIn("if(matches.some(dog=>dog.value===selected))source.value=selected", segment)
+
     def test_pedigree_import_preserves_registered_ancestor_data(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")
         segment = ast.get_source_segment(SOURCE, route)
