@@ -191,6 +191,16 @@ class Phase6StaticTests(unittest.TestCase):
         segment = ast.get_source_segment(SOURCE, route)
         self.assertIn("if not existing_dog_id:\n        root.category = category", segment)
 
+    def test_categorized_dog_lists_are_searchable(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "categorized_dogs_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in (
+            "categorized-dog-search", "categorized-dog-row", "data-search", "登録犬を検索",
+            "origin_registration_no", "microchip_no", "検索条件に一致する犬はいません", "頭が見つかりました",
+        ):
+            self.assertIn(marker, segment)
+        self.assertIn("Dog.tenant_id == tenant.id", segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
