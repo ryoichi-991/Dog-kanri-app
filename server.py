@@ -2630,7 +2630,7 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
     heat_rows = ""
     for heat in heats:
         dog = session.get(Dog, heat.dog_id)
-        heat_rows += f"<tr><td>{html.escape(dog.call_name)}</td><td>{heat.start_date}</td><td>{heat.start_date + timedelta(days=180)}</td></tr>"
+        heat_rows += f'''<tr><td>{html.escape(dog.call_name)}</td><td>{heat.start_date}</td><td>{heat.start_date + timedelta(days=180)}</td><td>{html.escape(heat.notes or "-")}</td><td><a class="button secondary" href="/modules/breeding/heat/{heat.id}/edit">編集</a></td></tr>'''
     breeding_rows = ""
     for record in breedings:
         sire, dam = session.get(Dog, record.sire_id), session.get(Dog, record.dam_id)
@@ -2642,12 +2642,12 @@ def breeding_page(access=Depends(require_tenant_user), session: Session = Depend
         date_labels = "<br>".join(f'{sequence}回目：{mating_day}（{"自然" if method == "natural" else "人工授精"}）' for sequence, mating_day, method in dates)
         next_sequence = max(sequence for sequence, _, _ in dates) + 1
         add_form = f'''<form method="post" action="/modules/breeding/mating/{record.id}/attempt"><div class="grid"><div><label>{next_sequence}回目交配日</label><input name="mating_date" type="date" min="{record.mating_date}" max="{record.mating_date + timedelta(days=14)}" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><input name="notes" maxlength="500"><button>{next_sequence}回目を追加</button></form>''' if next_sequence <= 3 and record.status == "mated" else '<span class="badge">3回登録済み</span>'
-        breeding_rows += f"<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{date_labels}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{coefficient}</td><td>{html.escape(record.status)}<br>{add_form}</td></tr>"
+        breeding_rows += f'''<tr><td>{html.escape(dam.call_name)}</td><td>{html.escape(sire.call_name)}</td><td>{date_labels}</td><td>{record.mating_date + timedelta(days=63)}</td><td>{coefficient}</td><td>{html.escape(record.status)}<br>{add_form}</td><td><a class="button secondary" href="/modules/breeding/mating/{record.id}/edit">編集</a></td></tr>'''
     body = f'''<h1>交配・ヒート管理</h1>
     <h2>ヒート記録</h2><form method="post" action="/modules/breeding/heat"><div class="grid"><div class="breeding-dog-picker"><label for="heat-dam-search">母犬を検索</label><input id="heat-dam-search" class="breeding-dog-search" type="search" data-dog-select="heat-dam" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small class="breeding-dog-count"></small><label for="heat-dam">母犬</label><select id="heat-dam" name="dog_id" required>{female_options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" required></div></div><label>メモ</label><textarea name="notes"></textarea><button>ヒートを登録</button></form>
-    <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th></tr>{heat_rows}</table>
+    <table><tr><th>母犬</th><th>開始日</th><th>次回予測</th><th>メモ</th><th>操作</th></tr>{heat_rows}</table>
     <h2>交配記録</h2><form method="post" action="/modules/breeding/mating"><div class="grid"><div class="breeding-dog-picker"><label for="mating-dam-search">母犬を検索</label><input id="mating-dam-search" class="breeding-dog-search" type="search" data-dog-select="mating-dam" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small class="breeding-dog-count"></small><label for="mating-dam">母犬</label><select id="mating-dam" name="dam_id" required>{female_options}</select></div><div class="breeding-dog-picker"><label for="mating-sire-search">父犬を検索</label><input id="mating-sire-search" class="breeding-dog-search" type="search" data-dog-select="mating-sire" placeholder="呼び名・血統書名・犬種・血統書番号" autocomplete="off"><small class="breeding-dog-count"></small><label for="mating-sire">父犬</label><select id="mating-sire" name="sire_id" required>{male_options}</select></div><div><label>1回目交配日</label><input name="mating_date" type="date" required></div><div><label>交配方法</label><select name="method"><option value="natural">自然交配</option><option value="artificial">人工授精</option></select></div></div><label>メモ</label><textarea name="notes"></textarea><button>交配を登録</button></form>
-    <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>近親交配率</th><th>状態</th></tr>{breeding_rows}</table>
+    <table><tr><th>母犬</th><th>父犬</th><th>交配日</th><th>出産予定日</th><th>近親交配率</th><th>状態</th><th>操作</th></tr>{breeding_rows}</table>
     <h2>交配シミュレーション</h2><form method="post" action="/modules/breeding/simulation"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{female_options}</select></div><div><label>父犬</label><select name="sire_id" required>{male_options}</select></div></div><button>近親交配率と遺伝病リスクを計算</button></form>
     <style>.breeding-dog-count{{display:block;color:#806b72;margin:5px 0}}.breeding-dog-picker{{min-width:0}}</style>
     <script>document.querySelectorAll('.breeding-dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),count=input.parentElement.querySelector('.breeding-dog-count'),original=Array.from(select.options).slice(1).map(function(option){{return option.cloneNode(true)}});function filterDogs(){{var keyword=input.value.trim().toLocaleLowerCase('ja'),selected=select.value,matches=original.filter(function(option){{return !keyword||(option.dataset.search||option.textContent).toLocaleLowerCase('ja').includes(keyword)}});select.replaceChildren(new Option('選択してください',''),...matches.map(function(option){{return option.cloneNode(true)}}));if(matches.some(function(option){{return option.value===selected}}))select.value=selected;count.textContent=keyword?matches.length+'頭が見つかりました':original.length+'頭から検索できます'}}input.addEventListener('input',filterDogs);filterDogs()}});</script>'''
@@ -2663,6 +2663,38 @@ def heat_create(dog_id: int = Form(...), start_date: str = Form(...), notes: str
     started = date.fromisoformat(start_date)
     session.add(HeatCycle(tenant_id=tenant.id, dog_id=dog.id, start_date=started, notes=notes.strip() or None))
     session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} 次回ヒート予測", category="breeding", due_date=started + timedelta(days=180)))
+    session.commit()
+    return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.get("/modules/breeding/heat/{heat_id}/edit", response_class=HTMLResponse)
+def heat_edit_page(heat_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    heat = session.scalar(select(HeatCycle).where(HeatCycle.id == heat_id, HeatCycle.tenant_id == tenant.id))
+    if not heat:
+        raise HTTPException(status_code=404, detail="ヒート記録が見つかりません")
+    females = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female").order_by(Dog.call_name)).all()
+    options = "".join(f'<option value="{dog.id}" {"selected" if dog.id == heat.dog_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in females)
+    body = f'''<h1>ヒート記録を編集</h1><form method="post"><div class="grid"><div><label>母犬</label><select name="dog_id" required>{options}</select></div><div><label>ヒート開始日</label><input name="start_date" type="date" value="{heat.start_date}" required></div></div><label>メモ</label><textarea name="notes" maxlength="2000">{html.escape(heat.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/breeding">キャンセル</a></form>'''
+    return layout("ヒート記録を編集", body, user)
+
+
+@app.post("/modules/breeding/heat/{heat_id}/edit")
+def heat_update(heat_id: int, dog_id: int = Form(...), start_date: str = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    heat = session.scalar(select(HeatCycle).where(HeatCycle.id == heat_id, HeatCycle.tenant_id == tenant.id).with_for_update())
+    dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    try:
+        started = date.fromisoformat(start_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ヒート開始日を確認してください")
+    if not heat or not dog or len(notes) > 2000:
+        raise HTTPException(status_code=400, detail="ヒート情報を確認してください")
+    old_dog = session.get(Dog, heat.dog_id)
+    automatic_tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id, TaskEvent.dog_id == heat.dog_id, TaskEvent.category == "breeding", TaskEvent.title == f"{old_dog.call_name} 次回ヒート予測", TaskEvent.due_date == heat.start_date + timedelta(days=180))).all()
+    heat.dog_id, heat.start_date, heat.notes = dog.id, started, notes.strip() or None
+    for task in automatic_tasks:
+        task.dog_id, task.title, task.due_date = dog.id, f"{dog.call_name} 次回ヒート予測", started + timedelta(days=180)
     session.commit()
     return RedirectResponse("/modules/breeding", status_code=303)
 
@@ -2683,6 +2715,70 @@ def mating_create(dam_id: int = Form(...), sire_id: int = Form(...), mating_date
     session.add(record); session.flush()
     session.add(BreedingMatingAttempt(tenant_id=tenant.id, breeding_id=record.id, sequence=1, mating_date=mated, method=method, notes=notes.strip() or None))
     session.add(TaskEvent(tenant_id=tenant.id, dog_id=dam.id, title=f"{dam.call_name} 出産予定", category="breeding", due_date=mated + timedelta(days=63)))
+    session.commit()
+    return RedirectResponse("/modules/breeding", status_code=303)
+
+
+@app.get("/modules/breeding/mating/{breeding_id}/edit", response_class=HTMLResponse)
+def mating_edit_page(breeding_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    record = session.scalar(select(BreedingRecord).where(BreedingRecord.id == breeding_id, BreedingRecord.tenant_id == tenant.id))
+    if not record:
+        raise HTTPException(status_code=404, detail="交配記録が見つかりません")
+    females = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "female").order_by(Dog.call_name)).all()
+    males = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.sex == "male").order_by(Dog.call_name)).all()
+    dam_options = "".join(f'<option value="{dog.id}" {"selected" if dog.id == record.dam_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in females)
+    sire_options = "".join(f'<option value="{dog.id}" {"selected" if dog.id == record.sire_id else ""}>{html.escape(dog.call_name)}／{html.escape(dog.registered_name or "血統名未登録")}</option>' for dog in males)
+    attempts = session.scalars(select(BreedingMatingAttempt).where(BreedingMatingAttempt.tenant_id == tenant.id, BreedingMatingAttempt.breeding_id == record.id).order_by(BreedingMatingAttempt.sequence).limit(3)).all()
+    if not attempts:
+        attempts = [BreedingMatingAttempt(id=0, tenant_id=tenant.id, breeding_id=record.id, sequence=1, mating_date=record.mating_date, method="natural" if "自然交配" in (record.notes or "") else "artificial", notes=None)]
+    attempt_forms = "".join(f'''<section class="tenant"><h3>{attempt.sequence}回目の交配</h3><input type="hidden" name="attempt_id" value="{attempt.id or 0}"><div class="grid"><div><label>交配日</label><input name="attempt_date" type="date" value="{attempt.mating_date}" required></div><div><label>交配方法</label><select name="attempt_method"><option value="natural" {"selected" if attempt.method == "natural" else ""}>自然交配</option><option value="artificial" {"selected" if attempt.method == "artificial" else ""}>人工授精</option></select></div></div><label>メモ</label><textarea name="attempt_notes" maxlength="500">{html.escape(attempt.notes or "")}</textarea></section>''' for attempt in attempts)
+    body = f'''<h1>交配記録を編集</h1><p>父犬・母犬と、登録済みの交配日・方法・メモを修正できます。</p><form method="post"><div class="grid"><div><label>母犬</label><select name="dam_id" required>{dam_options}</select></div><div><label>父犬</label><select name="sire_id" required>{sire_options}</select></div></div>{attempt_forms}<button>変更を保存</button> <a class="button secondary" href="/modules/breeding">キャンセル</a></form>'''
+    return layout("交配記録を編集", body, user)
+
+
+@app.post("/modules/breeding/mating/{breeding_id}/edit")
+def mating_update(breeding_id: int, dam_id: int = Form(...), sire_id: int = Form(...), attempt_id: list[int] = Form(...), attempt_date: list[str] = Form(...), attempt_method: list[str] = Form(...), attempt_notes: list[str] = Form(...), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    record = session.scalar(select(BreedingRecord).where(BreedingRecord.id == breeding_id, BreedingRecord.tenant_id == tenant.id).with_for_update())
+    dam = session.scalar(select(Dog).where(Dog.id == dam_id, Dog.tenant_id == tenant.id, Dog.sex == "female"))
+    sire = session.scalar(select(Dog).where(Dog.id == sire_id, Dog.tenant_id == tenant.id, Dog.sex == "male"))
+    if not record or not dam or not sire or dam.id == sire.id or not 1 <= len(attempt_id) <= 3 or not (len(attempt_id) == len(attempt_date) == len(attempt_method) == len(attempt_notes)):
+        raise HTTPException(status_code=400, detail="交配情報を確認してください")
+    existing = session.scalars(select(BreedingMatingAttempt).where(BreedingMatingAttempt.tenant_id == tenant.id, BreedingMatingAttempt.breeding_id == record.id).order_by(BreedingMatingAttempt.sequence).limit(3)).all()
+    existing_by_id = {item.id: item for item in existing}
+    if [item_id for item_id in attempt_id if item_id] != [item.id for item in existing] or any(method not in {"natural", "artificial"} for method in attempt_method) or any(len(notes) > 500 for notes in attempt_notes):
+        raise HTTPException(status_code=400, detail="登録済みの交配情報を確認してください")
+    try:
+        mating_days = [date.fromisoformat(value) for value in attempt_date]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="交配日を確認してください")
+    if len(set(mating_days)) != len(mating_days) or mating_days != sorted(mating_days) or mating_days[-1] > mating_days[0] + timedelta(days=14):
+        raise HTTPException(status_code=400, detail="交配日は1回目から14日以内の日付順で入力してください")
+    old_dam = session.get(Dog, record.dam_id)
+    old_mating_date = record.mating_date
+    automatic_tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id, TaskEvent.dog_id == record.dam_id, TaskEvent.category == "breeding", TaskEvent.title == f"{old_dam.call_name} 出産予定", TaskEvent.due_date == old_mating_date + timedelta(days=63))).all()
+    for item in existing:
+        item.mating_date = date(1000, 1, item.sequence)
+    if existing:
+        session.flush()
+    for sequence, (item_id, mating_day, method, notes) in enumerate(zip(attempt_id, mating_days, attempt_method, attempt_notes), start=1):
+        item = existing_by_id.get(item_id)
+        if not item:
+            item = BreedingMatingAttempt(tenant_id=tenant.id, breeding_id=record.id, sequence=sequence)
+            session.add(item)
+        item.sequence, item.mating_date, item.method, item.notes = sequence, mating_day, method, notes.strip() or None
+    first_note = f"交配方法: {'自然交配' if attempt_method[0] == 'natural' else '人工授精'}"
+    if attempt_notes[0].strip():
+        first_note += "\n" + attempt_notes[0].strip()
+    record.dam_id, record.sire_id, record.mating_date = dam.id, sire.id, mating_days[0]
+    record.coefficient, record.notes = offspring_coefficient(session, tenant.id, sire.id, dam.id) * 100, first_note
+    for task in automatic_tasks:
+        task.dog_id, task.title, task.due_date = dam.id, f"{dam.call_name} 出産予定", mating_days[0] + timedelta(days=63)
+    linked_litters = session.scalars(select(Litter).where(Litter.tenant_id == tenant.id, Litter.breeding_id == record.id)).all()
+    for litter in linked_litters:
+        litter.dam_id = dam.id
+        sync_litter_puppy_dogs(session, litter, tenant.id)
     session.commit()
     return RedirectResponse("/modules/breeding", status_code=303)
 

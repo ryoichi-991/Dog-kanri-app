@@ -1521,6 +1521,26 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("heat-dam-search", 'data-dog-select="heat-dam"', 'id="heat-dam" name="dog_id" required', "母犬を検索", "breeding-dog-count"):
             self.assertIn(marker, page)
 
+    def test_heat_records_can_be_edited_and_prediction_is_synchronized(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "breeding_page"))
+        self.assertIn('/modules/breeding/heat/{heat.id}/edit', page)
+        edit_page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "heat_edit_page"))
+        for marker in ("HeatCycle.tenant_id == tenant.id", "ヒート記録を編集", 'name="dog_id"', 'name="start_date"', 'name="notes"'):
+            self.assertIn(marker, edit_page)
+        update = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "heat_update"))
+        for marker in ("HeatCycle.tenant_id == tenant.id", "with_for_update", "TaskEvent.tenant_id == tenant.id", "次回ヒート予測", "started + timedelta(days=180)", "session.commit()"):
+            self.assertIn(marker, update)
+
+    def test_mating_records_and_attempts_can_be_edited_safely(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "breeding_page"))
+        self.assertIn('/modules/breeding/mating/{record.id}/edit', page)
+        edit_page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_edit_page"))
+        for marker in ("BreedingRecord.tenant_id == tenant.id", "BreedingMatingAttempt.tenant_id == tenant.id", 'name="attempt_id"', 'name="attempt_date"', 'name="attempt_method"', 'name="attempt_notes"'):
+            self.assertIn(marker, edit_page)
+        update = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_update"))
+        for marker in ("BreedingRecord.tenant_id == tenant.id", "with_for_update", "existing_by_id", "len(set(mating_days))", "timedelta(days=14)", "offspring_coefficient", "出産予定", "timedelta(days=63)", "linked_litters", "sync_litter_puppy_dogs", "session.commit()"):
+            self.assertIn(marker, update)
+
     def test_additional_mating_route_is_scoped_bounded_and_duplicate_safe(self):
         route = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "mating_attempt_create"))
         for marker in ("BreedingRecord.tenant_id == tenant.id", "with_for_update", "BreedingMatingAttempt.tenant_id == tenant.id", ".limit(3)", "next_sequence > 3", "mated < record.mating_date", "timedelta(days=14)", "mated == record.mating_date", "mated in dates", "len(notes) > 500", "session.commit()"):
