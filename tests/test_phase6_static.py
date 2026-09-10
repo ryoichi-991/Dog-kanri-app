@@ -240,6 +240,22 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertEqual(result["origin_country"], "日本")
         self.assertEqual(result["origin_organization"], "")
 
+    def test_jkc_pedigree_slots_and_thai_title_are_read_separately(self):
+        patterns = next(node for node in TREE.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "TITLE_PATTERNS" for target in node.targets))
+        extractor = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "extract_title_keys")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[patterns, extractor], type_ignores=[]), "server.py", "exec"), namespace)
+        self.assertEqual(
+            set(namespace["extract_title_keys"]("CH/23. 8, J. CH, CH(THA)")),
+            {"champion", "junior_champion", "thai_champion"},
+        )
+        self.assertEqual(namespace["extract_title_keys"]("TH. CH."), ["champion"])
+        segment = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "jkc_slot_text"))
+        self.assertIn("is_pedigree_registration_line", segment)
+        self.assertIn("1: (.055, .385, .505, .465)", SOURCE)
+        self.assertIn("2: (.055, .695, .505, .775)", SOURCE)
+        self.assertIn("3: (.075, .310, .505, .380)", SOURCE)
+
     def test_pedigree_import_preserves_registered_ancestor_data(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")
         segment = ast.get_source_segment(SOURCE, route)

@@ -3149,6 +3149,7 @@ TITLE_PATTERNS = [
     ("international_veteran_champion", r"\b(?:CIB-V|INTERNATIONAL\s+VETERAN\s+CHAMPION)\b"),
     ("international_show_champion", r"\b(?:C\.?I\.?E\.?)\b"),
     ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+(?:BEAUTY\s+)?CHAMPION|C\.?I\.?B\.?)\b"),
+    ("thai_champion", r"\b(?:CH\s*\(\s*THA\s*\)|THAI(?:LAND)?\s+CHAMPION)(?=$|[\s,;/])"),
     ("junior_champion", r"\b(?:J\.?\s*CH\.?|JR\.?\s*CH\.?|JUNIOR\s+CHAMPION)\b"),
     ("veteran_champion", r"\b(?:V\.?\s*CH\.?|VETERAN\s+CHAMPION)\b"),
     ("grand_champion", r"\b(?:GCH|GR\.?\s*CH\.?|GRAND\s+CHAMPION)\b"),
@@ -3157,6 +3158,7 @@ TITLE_PATTERNS = [
 TITLE_LABELS = {
     "champion": ("CH", "silver", "チャンピオン"),
     "international_champion": ("INT.CH", "gold", "インターチャンピオン"),
+    "thai_champion": ("TH.CH", "gold", "タイチャンピオン"),
     "junior_champion": ("J.CH", "rose", "ジュニアチャンピオン"),
     "junior_international_champion": ("J.INT.CH", "purple", "ジュニアインターチャンピオン"),
     "international_veteran_champion": ("CIB-V", "purple", "インターナショナルベテランチャンピオン"),
@@ -3168,14 +3170,20 @@ TITLE_LABELS = {
 # JKC公式の3代祖血統証明書に記載される番号と領域。番号検出が一つ失敗しても、
 # 後続の犬が別の親族欄へずれないよう各欄を独立して読み取る。
 JKC_SLOT_BOXES = {
-    1: (.055, .300, .505, .405), 2: (.055, .625, .505, .735),
-    3: (.075, .235, .505, .325), 4: (.075, .385, .505, .485),
-    5: (.075, .535, .505, .665), 6: (.075, .720, .505, .840),
-    7: (.535, .195, .970, .300), 8: (.535, .285, .970, .375),
-    9: (.535, .355, .970, .450), 10: (.535, .430, .970, .530),
-    11: (.535, .505, .970, .610), 12: (.535, .585, .970, .685),
-    13: (.535, .680, .970, .790), 14: (.535, .775, .970, .900),
+    1: (.055, .385, .505, .465), 2: (.055, .695, .505, .775),
+    3: (.075, .310, .505, .380), 4: (.075, .475, .505, .555),
+    5: (.075, .615, .505, .690), 6: (.075, .785, .505, .865),
+    7: (.535, .275, .970, .345), 8: (.535, .340, .970, .410),
+    9: (.535, .395, .970, .475), 10: (.535, .470, .970, .555),
+    11: (.535, .545, .970, .630), 12: (.535, .620, .970, .705),
+    13: (.535, .700, .970, .790), 14: (.535, .785, .970, .875),
 }
+
+
+def is_pedigree_registration_line(value: str) -> bool:
+    """犬名直後の登録番号を検出する。ID/DNA番号は血統登録番号に含めない。"""
+    upper = value.upper().replace("—", "-").replace("–", "-")
+    return bool(normalize_jkc_number(upper) or re.search(r"\b(?:KATH|LOE|AKC[- ]?RN)\s*[- ]?\s*\d{6,12}\b", upper))
 
 
 def extract_title_keys(value: str) -> list[str]:
@@ -3419,7 +3427,7 @@ def jkc_slot_text(image: Image.Image) -> str:
 
     def details_from_text(value: str) -> tuple[str, list[str], str]:
         lines = [re.sub(r"\s{2,}", " ", line).strip(" |") for line in value.splitlines() if line.strip()]
-        reg_index = next((i for i, line in enumerate(lines) if normalize_jkc_number(line)), None)
+        reg_index = next((i for i, line in enumerate(lines) if is_pedigree_registration_line(line)), None)
         if reg_index is None:
             return "", [], normalize_pedigree_color(value)
         possible = []
@@ -3443,7 +3451,7 @@ def jkc_slot_text(image: Image.Image) -> str:
     def details_for(box: tuple[float, float, float, float]) -> tuple[str, list[str], str]:
         left, top, right, bottom = box
         local = [record for record in records if left <= record[0] <= right and top <= record[1] <= bottom]
-        registration_lines = [record for record in local if normalize_jkc_number(record[2])]
+        registration_lines = [record for record in local if is_pedigree_registration_line(record[2])]
         if registration_lines:
             reg_y = registration_lines[0][1]
             before_registration = [record for record in local if record[1] < reg_y]
@@ -3488,7 +3496,7 @@ def jkc_slot_text(image: Image.Image) -> str:
         if not name:
             retry = crop_text(box, psm=11)
             retry_lines = [line.strip() for line in retry.upper().splitlines() if line.strip()]
-            reg_index = next((i for i, line in enumerate(retry_lines) if normalize_jkc_number(line)), None)
+            reg_index = next((i for i, line in enumerate(retry_lines) if is_pedigree_registration_line(line)), None)
             if reg_index is not None and reg_index > 0:
                 retry_names = []
                 for raw_name in retry_lines[max(0, reg_index - 4):reg_index]:
