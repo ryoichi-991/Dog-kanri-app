@@ -1,5 +1,6 @@
 import ast
 import pathlib
+import re
 import unittest
 
 
@@ -221,6 +222,23 @@ class Phase6StaticTests(unittest.TestCase):
         ):
             self.assertIn(marker, segment)
         self.assertIn("if(matches.some(dog=>dog.value===selected))source.value=selected", segment)
+
+    def test_domestic_jkc_document_ignores_ancestor_overseas_numbers(self):
+        function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_document_metadata")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "server.py", "exec"), namespace)
+        result = namespace["pedigree_document_metadata"](
+            "CERTIFIED PEDIGREE 国際公認血統証明書\nJKC-MS -02760/26\nKATH105970131",
+            {"organization": "JKC", "country": "日本", "pedigree_no": "JKC-MS-02760/26"},
+        )
+        self.assertEqual(result["type"], "domestic_pedigree")
+        self.assertEqual(result["registration_no"], "JKC-MS-02760/26")
+        self.assertEqual(result["domestic_no"], "JKC-MS-02760/26")
+        self.assertEqual(result["organization"], "JKC")
+        self.assertEqual(result["country"], "日本")
+        self.assertEqual(result["origin_no"], "")
+        self.assertEqual(result["origin_country"], "日本")
+        self.assertEqual(result["origin_organization"], "")
 
     def test_pedigree_import_preserves_registered_ancestor_data(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")

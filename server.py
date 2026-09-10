@@ -3625,6 +3625,7 @@ def pedigree_document_metadata(raw_text: str, metadata: dict[str, str]) -> dict[
     upper = raw_text.upper().replace("’", "'")
     is_import = "REGISTRATION CERTIFICATE FOR IMPORTED DOG" in upper or "輸入犬登録証明書" in raw_text
     is_export = "CERTIFIED EXPORT PEDIGREE" in upper or "EXPORT PEDIGREE" in upper
+    is_domestic = "CERTIFIED PEDIGREE" in upper or "国際公認血統証明書" in raw_text
     kath = re.search(r"\bKATH\s*[- ]?\s*(\d{7,12})\b", upper)
     jkc = re.search(r"\bJKC\s*[-— ]?\s*([A-Z]{1,4})\s*[-— ]?\s*(\d{4,6})\s*/\s*(\d{2})(?:\s*[-— ]?\s*([A-Z1]))?", upper)
     # 国内の通常血統書へOCRが推測した -K/-P 等を付けない。
@@ -3641,11 +3642,16 @@ def pedigree_document_metadata(raw_text: str, metadata: dict[str, str]) -> dict[
     kath_no = f"KATH{kath.group(1)}" if kath else ""
     if is_import:
         return {"type": "import_registration", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": "JKC", "country": "日本", "domestic_no": jkc_no, "origin_no": kath_no, "origin_country": "タイ", "origin_organization": "KCTH", "primary": "true"}
+    # 国内JKC血統証明書にも、父母・祖先のKATH等の海外番号が記載される。
+    # 書類種別と本犬番号は上部の表題・本犬欄を優先し、祖先番号を本犬の
+    # 出生国番号として取り込まない。
+    if not is_export and jkc_no and (is_domestic or metadata.get("organization", "").upper() == "JKC"):
+        return {"type": "domestic_pedigree", "registration_no": jkc_no, "organization": "JKC", "country": "日本", "domestic_no": jkc_no, "origin_no": "", "origin_country": "日本", "origin_organization": "", "primary": "true"}
     if is_export or kath_no:
         return {"type": "export_pedigree", "registration_no": kath_no or metadata.get("pedigree_no", ""), "organization": "KCTH", "country": "タイ", "domestic_no": "", "origin_no": kath_no, "origin_country": "タイ", "origin_organization": "KCTH", "primary": "false"}
     organization = metadata.get("organization", "")
     country = metadata.get("country", "")
-    return {"type": "domestic_pedigree", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": organization, "country": country, "domestic_no": jkc_no or metadata.get("pedigree_no", ""), "origin_no": "", "origin_country": "", "origin_organization": "", "primary": "true" if organization.upper() == "JKC" else "false"}
+    return {"type": "domestic_pedigree", "registration_no": jkc_no or metadata.get("pedigree_no", ""), "organization": organization, "country": country, "domestic_no": jkc_no or metadata.get("pedigree_no", ""), "origin_no": "", "origin_country": "日本" if organization.upper() == "JKC" else "", "origin_organization": "", "primary": "true" if organization.upper() == "JKC" else "false"}
 
 
 def pedigree_candidates(raw_text: str) -> tuple[dict[str, str], list[str], list[list[str]], list[str]]:
