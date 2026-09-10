@@ -201,6 +201,23 @@ class Phase6StaticTests(unittest.TestCase):
         segment = ast.get_source_segment(SOURCE, route)
         self.assertIn("if not existing_dog_id:\n        root.category = category", segment)
 
+    def test_pedigree_reuses_registered_ancestors_and_sibling_lineage(self):
+        scan = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
+        scan_segment = ast.get_source_segment(SOURCE, scan)
+        for marker in ("登録済みデータ優先", "登録済み兄弟犬から血統を引き継ぐ", "pedigree_source_dog_id", "pedigree_lineage_snapshot", "lineage_source_data"):
+            self.assertIn(marker, scan_segment)
+        reuse = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "reuse_registered_pedigree")
+        reuse_segment = ast.get_source_segment(SOURCE, reuse)
+        self.assertIn('re.sub(r"[^A-Z0-9]"', reuse_segment)
+        self.assertIn("len(matches) == 1", reuse_segment)
+
+    def test_pedigree_import_preserves_registered_ancestor_data(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("pedigree_source_dog_id", "source_data", "not node.titles", "not node.color", "not node.sire_id", "not node.dam_id"):
+            self.assertIn(marker, segment)
+        self.assertIn("len(matches) == 1", segment)
+
     def test_categorized_dog_lists_are_searchable(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "categorized_dogs_page")
         segment = ast.get_source_segment(SOURCE, route)
