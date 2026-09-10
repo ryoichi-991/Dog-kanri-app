@@ -327,6 +327,29 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("HealthRecord.tenant_id == tenant.id", "HealthRecord.dog_id == dog.id", "HealthRecord.weight_kg.is_not(None)", ".limit(50)", "dog_weight_trend_chart(weight_records)", "{weight_chart}"):
             self.assertIn(marker, segment)
 
+    def test_every_health_section_on_dog_detail_has_an_edit_action(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        self.assertIn('href="/modules/dogs/{dog.id}/health/{kind}/{item.id}/edit"', segment)
+        for kind in ("record", "vaccination", "medication", "disease", "food", "genetic"):
+            self.assertIn(f'edit_link("{kind}", item)', segment)
+        self.assertGreaterEqual(segment.count("<th>操作</th>"), 6)
+
+    def test_dog_health_edit_is_tenant_and_dog_scoped(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_health_edit_item")
+        segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("model.id == record_id", "model.tenant_id == tenant_id", "model.dog_id == dog_id"):
+            self.assertIn(marker, segment)
+        self.assertIn('@app.get("/modules/dogs/{dog_id}/health/{record_type}/{record_id}/edit"', SOURCE)
+        self.assertIn('@app.post("/modules/dogs/{dog_id}/health/{record_type}/{record_id}/edit"', SOURCE)
+
+    def test_dog_health_update_supports_all_six_health_sections(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('record_type == "record"', 'record_type == "vaccination"', 'record_type == "medication"', 'record_type == "disease"', 'record_type == "food"', 'item.test_name, item.result'):
+            self.assertIn(marker, segment)
+        self.assertIn('RedirectResponse(f"/modules/dogs/{dog.id}?tab=health", status_code=303)', segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)

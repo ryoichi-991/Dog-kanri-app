@@ -5128,13 +5128,14 @@ def dog_detail_page(dog_id: int, tab: str = "care", access=Depends(require_tenan
         medications = session.scalars(select(Medication).where(Medication.tenant_id == tenant.id, Medication.dog_id == dog.id).order_by(Medication.administered_on.desc()).limit(30)).all()
         diseases = session.scalars(select(DiseaseHistory).where(DiseaseHistory.tenant_id == tenant.id, DiseaseHistory.dog_id == dog.id).order_by(DiseaseHistory.diagnosed_on.desc()).limit(30)).all()
         foods = session.scalars(select(FoodHistory).where(FoodHistory.tenant_id == tenant.id, FoodHistory.dog_id == dog.id).order_by(FoodHistory.started_on.desc()).limit(30)).all()
-        health_rows = "".join(f'''<tr><td>{item.record_date}</td><td>{html.escape(item.category)}</td><td>{f'{item.weight_kg:g}kg' if item.weight_kg is not None else '-'}</td><td>{html.escape(item.clinic or '-')}</td><td>{html.escape(item.notes or '-')}</td></tr>''' for item in health_records)
-        vaccine_rows = "".join(f'''<tr><td>{item.administered_on}</td><td>{html.escape(item.vaccine_name)}</td><td>{item.next_due_on or '-'}</td><td>{html.escape(item.clinic or '-')}</td></tr>''' for item in vaccinations)
-        genetic_rows = "".join(f'''<tr><td>{html.escape(item.test_name)}</td><td>{html.escape(item.result)}</td><td>{item.tested_on or '-'}</td><td>{html.escape(item.laboratory or '-')}</td></tr>''' for item in genetics)
-        medicine_rows = "".join(f'''<tr><td>{item.administered_on}</td><td>{html.escape(item.medicine_name)}</td><td>{html.escape(item.purpose or '-')}</td><td>{html.escape(item.status or '-')}</td></tr>''' for item in medications)
-        disease_rows = "".join(f'''<tr><td>{item.diagnosed_on or '-'}</td><td>{html.escape(item.disease_name)}</td><td>{html.escape(item.status or '-')}</td><td>{html.escape(item.clinic or '-')}</td></tr>''' for item in diseases)
-        food_rows = "".join(f'''<tr><td>{item.started_on}</td><td>{html.escape(item.name)}</td><td>{f'{item.amount_g:g}g' if item.amount_g is not None else '-'}</td><td>{html.escape(item.status or '-')}</td></tr>''' for item in foods)
-        tab_content = f'''<div class="dog-summary-grid"><div class="tenant"><small>健康・体重</small><h3>{len(health_records)}件</h3></div><div class="tenant"><small>ワクチン</small><h3>{len(vaccinations)}件</h3></div><div class="tenant"><small>遺伝子検査</small><h3>{len(genetics)}件</h3></div></div><div class="dog-tab-actions"><a class="button" href="/modules/health">健康記録を追加</a><a class="button secondary" href="/modules/genetics">遺伝子検査を管理</a></div><h2>健康・体重記録</h2><table><tr><th>日付</th><th>分類</th><th>体重</th><th>病院</th><th>メモ</th></tr>{health_rows or '<tr><td colspan="5">健康記録はありません。</td></tr>'}</table><h2>ワクチン</h2><table><tr><th>接種日</th><th>ワクチン</th><th>次回予定</th><th>病院</th></tr>{vaccine_rows or '<tr><td colspan="4">ワクチン記録はありません。</td></tr>'}</table><h2>投薬</h2><table><tr><th>日付</th><th>薬剤</th><th>目的</th><th>状態</th></tr>{medicine_rows or '<tr><td colspan="4">投薬記録はありません。</td></tr>'}</table><h2>病歴</h2><table><tr><th>診断日</th><th>病名</th><th>状態</th><th>病院</th></tr>{disease_rows or '<tr><td colspan="4">病歴はありません。</td></tr>'}</table><h2>フード履歴</h2><table><tr><th>開始日</th><th>フード</th><th>量</th><th>状態</th></tr>{food_rows or '<tr><td colspan="4">フード履歴はありません。</td></tr>'}</table><h2>遺伝子検査</h2><table><tr><th>検査名</th><th>結果</th><th>検査日</th><th>検査機関</th></tr>{genetic_rows or '<tr><td colspan="4">遺伝子検査はありません。</td></tr>'}</table>'''
+        edit_link = lambda kind, item: f'<a class="button secondary" href="/modules/dogs/{dog.id}/health/{kind}/{item.id}/edit">編集</a>'
+        health_rows = "".join(f'''<tr><td>{item.record_date}</td><td>{html.escape(item.category)}</td><td>{f'{item.weight_kg:g}kg' if item.weight_kg is not None else '-'}</td><td>{html.escape(item.clinic or '-')}</td><td>{html.escape(item.notes or '-')}</td><td>{edit_link("record", item)}</td></tr>''' for item in health_records)
+        vaccine_rows = "".join(f'''<tr><td>{item.administered_on}</td><td>{html.escape(item.vaccine_name)}</td><td>{item.next_due_on or '-'}</td><td>{html.escape(item.clinic or '-')}</td><td>{edit_link("vaccination", item)}</td></tr>''' for item in vaccinations)
+        genetic_rows = "".join(f'''<tr><td>{html.escape(item.test_name)}</td><td>{html.escape(item.result)}</td><td>{item.tested_on or '-'}</td><td>{html.escape(item.laboratory or '-')}</td><td>{edit_link("genetic", item)}</td></tr>''' for item in genetics)
+        medicine_rows = "".join(f'''<tr><td>{item.administered_on}</td><td>{html.escape(item.medicine_name)}</td><td>{html.escape(item.purpose or '-')}</td><td>{html.escape(item.status or '-')}</td><td>{edit_link("medication", item)}</td></tr>''' for item in medications)
+        disease_rows = "".join(f'''<tr><td>{item.diagnosed_on or '-'}</td><td>{html.escape(item.disease_name)}</td><td>{html.escape(item.status or '-')}</td><td>{html.escape(item.clinic or '-')}</td><td>{edit_link("disease", item)}</td></tr>''' for item in diseases)
+        food_rows = "".join(f'''<tr><td>{item.started_on}</td><td>{html.escape(item.name)}</td><td>{f'{item.amount_g:g}g' if item.amount_g is not None else '-'}</td><td>{html.escape(item.status or '-')}</td><td>{edit_link("food", item)}</td></tr>''' for item in foods)
+        tab_content = f'''<div class="dog-summary-grid"><div class="tenant"><small>健康・体重</small><h3>{len(health_records)}件</h3></div><div class="tenant"><small>ワクチン</small><h3>{len(vaccinations)}件</h3></div><div class="tenant"><small>遺伝子検査</small><h3>{len(genetics)}件</h3></div></div><div class="dog-tab-actions"><a class="button" href="/modules/health">健康記録を追加</a><a class="button secondary" href="/modules/genetics">遺伝子検査を管理</a></div><h2>健康・体重記録</h2><table><tr><th>日付</th><th>分類</th><th>体重</th><th>病院</th><th>メモ</th><th>操作</th></tr>{health_rows or '<tr><td colspan="6">健康記録はありません。</td></tr>'}</table><h2>ワクチン</h2><table><tr><th>接種日</th><th>ワクチン</th><th>次回予定</th><th>病院</th><th>操作</th></tr>{vaccine_rows or '<tr><td colspan="5">ワクチン記録はありません。</td></tr>'}</table><h2>投薬</h2><table><tr><th>日付</th><th>薬剤</th><th>目的</th><th>状態</th><th>操作</th></tr>{medicine_rows or '<tr><td colspan="5">投薬記録はありません。</td></tr>'}</table><h2>病歴</h2><table><tr><th>診断日</th><th>病名</th><th>状態</th><th>病院</th><th>操作</th></tr>{disease_rows or '<tr><td colspan="5">病歴はありません。</td></tr>'}</table><h2>フード履歴</h2><table><tr><th>開始日</th><th>フード</th><th>量</th><th>状態</th><th>操作</th></tr>{food_rows or '<tr><td colspan="5">フード履歴はありません。</td></tr>'}</table><h2>遺伝子検査</h2><table><tr><th>検査名</th><th>結果</th><th>検査日</th><th>検査機関</th><th>操作</th></tr>{genetic_rows or '<tr><td colspan="5">遺伝子検査はありません。</td></tr>'}</table>'''
     else:
         transfer = session.scalar(select(DogTransfer).where(DogTransfer.tenant_id == tenant.id, DogTransfer.dog_id == dog.id))
         tab_content = f'''<h2>登録データ</h2><dl class="dog-facts">{info_html}</dl><div class="dog-tab-actions"><a class="button" href="/modules/dogs/{dog.id}/edit">基本情報・血統書情報を編集</a>{f'<a class="button secondary" href="/modules/transferred-dogs/{dog.id}">譲渡情報を編集</a>' if dog.status == 'transferred' else ''}</div><div class="tenant"><h2>販売・譲渡情報</h2><p><strong>販売先：</strong>{html.escape(buyer or '未登録')}</p><p><strong>譲渡日：</strong>{transfer.transferred_on if transfer else '未登録'}</p><p><strong>譲渡理由：</strong>{html.escape(transfer.reason or '未登録') if transfer else '未登録'}</p></div>'''
@@ -5152,6 +5153,118 @@ def dog_detail_page(dog_id: int, tab: str = "care", access=Depends(require_tenan
     @media(max-width:1100px){{.pedigree-canvas{{margin:0}}}}
     </style><div class="detail-head"><div><h1>{html.escape(dog.call_name)}</h1><p>{title_marks(dog.titles)} <strong>{html.escape(dog.registered_name or dog.call_name)}</strong></p><p><span class="badge">{category_labels.get(dog.category, dog.category)}</span> <span class="badge">{status_labels.get(dog.status, dog.status)}</span>　{html.escape(dog.breed or '犬種未登録')} ／ {'牡' if dog.sex == 'male' else '牝'} ／ {dog.birth_date or '生年月日未登録'}</p></div><a class="button" href="/modules/dogs/{dog.id}/edit">編集する</a></div><nav class="dog-detail-tabs" aria-label="{html.escape(dog.call_name)}の管理項目">{tabs}</nav><section class="dog-detail-panel"><h1 style="font-size:22px">{tab_labels[tab]}</h1>{tab_content}</section><p><a class="button secondary" href="/modules/resident-dogs">在籍犬一覧へ戻る</a></p>'''
     return layout(f"{dog.call_name}の詳細", body, user)
+
+
+DOG_HEALTH_EDIT_MODELS = {
+    "record": HealthRecord, "vaccination": Vaccination, "medication": Medication,
+    "disease": DiseaseHistory, "food": FoodHistory, "genetic": GeneticTest,
+}
+
+
+def dog_health_edit_item(session: Session, tenant_id: int, dog_id: int, record_type: str, record_id: int):
+    model = DOG_HEALTH_EDIT_MODELS.get(record_type)
+    if not model:
+        raise HTTPException(status_code=404, detail="健康記録の種類が見つかりません")
+    item = session.scalar(select(model).where(model.id == record_id, model.tenant_id == tenant_id, model.dog_id == dog_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="この犬の健康記録が見つかりません")
+    return item
+
+
+def health_edit_select(name: str, selected: str | None, choices: dict[str, str], label: str) -> str:
+    options = "".join(f'<option value="{key}" {"selected" if selected == key else ""}>{value}</option>' for key, value in choices.items())
+    return f'<div><label>{label}</label><select name="{name}">{options}</select></div>'
+
+
+@app.get("/modules/dogs/{dog_id}/health/{record_type}/{record_id}/edit", response_class=HTMLResponse)
+def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    item = dog_health_edit_item(session, tenant.id, dog.id, record_type, record_id)
+    value = lambda field: html.escape(str(getattr(item, field, None) or ""))
+    checked = lambda field: "checked" if getattr(item, field, False) else ""
+    if record_type == "record":
+        recorded_at = item.recorded_at.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%dT%H:%M") if item.recorded_at else ""
+        fields = f'''<div class="grid"><div><label>記録日</label><input type="date" name="record_date" value="{item.record_date}" required></div><div><label>測定日時</label><input type="datetime-local" name="recorded_at" value="{recorded_at}"></div><div><label>分類</label><input value="{html.escape(item.category)}" disabled><input type="hidden" name="category" value="{html.escape(item.category)}"></div><div><label>体重（kg）</label><input type="number" step="0.01" min="0.01" name="weight_kg" value="{value('weight_kg')}"></div><div><label>食事量（g）</label><input type="number" step="0.1" min="0" name="meal_amount_g" value="{value('meal_amount_g')}"></div><div><label>フード名</label><input name="food_name" value="{value('food_name')}"></div><div><label>うんちの状態</label><input name="stool_condition" value="{value('stool_condition')}"></div><div><label>健康状態</label><input name="health_condition" value="{value('health_condition')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div></div><fieldset><legend>健診項目</legend><label><input type="checkbox" name="physical_exam" {checked('physical_exam')}> 触診</label><label><input type="checkbox" name="blood_test" {checked('blood_test')}> 血液検査</label><label><input type="checkbox" name="ultrasound" {checked('ultrasound')}> エコー</label><label><input type="checkbox" name="chest_xray" {checked('chest_xray')}> 胸部X線</label></fieldset>{health_edit_select('result_summary', item.result_summary, {'':'未設定','normal':'異常なし','followup':'経過観察','recheck':'再検査','treatment':'治療・受診が必要'}, '健診結果')}<label>メモ</label><textarea name="notes">{value('notes')}</textarea>'''
+        title = "健康・体重記録"
+    elif record_type == "vaccination":
+        fields = f'''<div class="grid"><div><label>ワクチン名</label><input name="vaccine_name" value="{value('vaccine_name')}" required maxlength="150"></div><div><label>接種日</label><input type="date" name="administered_on" value="{item.administered_on}" required></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div><div><label>証明書番号</label><input name="certificate_no" value="{value('certificate_no')}"></div>{health_edit_select('vaccine_type', item.vaccine_type, {'rabies':'狂犬病','mixed':'混合ワクチン','other':'その他'}, '種類')}<div><label>子犬期の接種順</label><input type="number" min="1" max="4" name="dose_number" value="{value('dose_number')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>メーカー</label><input name="manufacturer" value="{value('manufacturer')}"></div><div><label>ロット番号</label><input name="lot_no" value="{value('lot_no')}"></div>{health_edit_select('reaction', item.reaction, {'none':'なし','mild':'軽度','severe':'重度','unknown':'不明'}, '副反応')}</div><label>メモ</label><textarea name="notes">{value('notes')}</textarea><p><small>登録済みの証明書ファイルはそのまま保持されます。</small></p>'''
+        title = "ワクチン記録"
+    elif record_type == "medication":
+        fields = f'''<div class="grid"><div><label>薬剤名</label><input name="medicine_name" value="{value('medicine_name')}" required></div><div><label>記録日</label><input type="date" name="administered_on" value="{item.administered_on}" required></div>{health_edit_select('medication_type', item.medication_type, {'treatment':'治療薬','prevention':'予防薬','supplement':'サプリメント','other':'その他'}, '区分')}<div><label>目的・対象症状</label><input name="purpose" value="{value('purpose')}"></div><div><label>1回量</label><input name="dosage" value="{value('dosage')}"></div><div><label>投薬頻度</label><input name="frequency" value="{value('frequency')}"></div><div><label>開始日</label><input type="date" name="started_on" value="{value('started_on')}"></div><div><label>終了日</label><input type="date" name="ended_on" value="{value('ended_on')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div>{health_edit_select('status', item.status, {'single':'単回','ongoing':'継続中','completed':'終了'}, '状態')}<div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div></div><label>オーナー向け説明</label><textarea name="owner_notes">{value('owner_notes')}</textarea><label>犬舎内部メモ</label><textarea name="notes">{value('notes')}</textarea>'''
+        title = "投薬記録"
+    elif record_type == "disease":
+        fields = f'''<div class="grid"><div><label>疾患名</label><input name="disease_name" value="{value('disease_name')}" required></div><div><label>診断日</label><input type="date" name="diagnosed_on" value="{value('diagnosed_on')}"></div>{health_edit_select('disease_category', item.disease_category, {'digestive':'消化器','respiratory':'呼吸器','skin':'皮膚','orthopedic':'整形・関節','cardiac':'循環器','urinary':'泌尿器','reproductive':'生殖器','infectious':'感染症','other':'その他'}, '分類')}{health_edit_select('status', item.status, {'treatment':'治療中','followup':'経過観察','recovered':'完治','chronic':'慢性'}, '状態')}<div><label>治療開始日</label><input type="date" name="treatment_started_on" value="{value('treatment_started_on')}"></div><div><label>治療終了日</label><input type="date" name="treatment_ended_on" value="{value('treatment_ended_on')}"></div><div><label>次回診察・確認日</label><input type="date" name="next_followup_on" value="{value('next_followup_on')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>担当獣医師</label><input name="veterinarian" value="{value('veterinarian')}"></div></div><label><input type="checkbox" name="recurrence" {checked('recurrence')}> 再発</label><label>症状</label><textarea name="symptoms">{value('symptoms')}</textarea><label>オーナー向け説明</label><textarea name="owner_notes">{value('owner_notes')}</textarea><label>犬舎内部メモ</label><textarea name="details">{value('details')}</textarea>'''
+        title = "病歴記録"
+    elif record_type == "food":
+        fields = f'''<div class="grid"><div><label>フード名</label><input name="name" value="{value('name')}" required></div><div><label>メーカー</label><input name="manufacturer" value="{value('manufacturer')}"></div>{health_edit_select('food_type', item.food_type, {'dry':'ドライ','wet':'ウェット','raw':'生食','prescription':'療法食','supplement':'サプリメント','other':'その他'}, '種類')}<div><label>1日量（g）</label><input type="number" step="0.1" min="0.1" name="amount_g" value="{value('amount_g')}"></div><div><label>1日の給与回数</label><input type="number" min="1" max="10" name="times_per_day" value="{value('times_per_day')}"></div><div><label>利用開始日</label><input type="date" name="started_on" value="{item.started_on}" required></div><div><label>利用終了日</label><input type="date" name="ended_on" value="{value('ended_on')}"></div>{health_edit_select('status', item.status, {'ongoing':'利用中','completed':'終了'}, '状態')}<div><label>変更・終了理由</label><input name="change_reason" value="{value('change_reason')}"></div></div><label>オーナー向け説明</label><textarea name="owner_notes">{value('owner_notes')}</textarea><label>犬舎内部メモ</label><textarea name="notes">{value('notes')}</textarea>'''
+        title = "フード履歴"
+    else:
+        fields = f'''<div class="grid"><div><label>検査名・遺伝病名</label><input name="test_name" value="{value('test_name')}" required></div>{health_edit_select('result', item.result, {'clear':'クリア','carrier':'キャリア','affected':'アフェクテッド','unknown':'不明'}, '結果')}<div><label>検査日</label><input type="date" name="tested_on" value="{value('tested_on')}"></div><div><label>検査機関</label><input name="laboratory" value="{value('laboratory')}"></div></div>'''
+        title = "遺伝子検査"
+    body = f'''<a class="button secondary" href="/modules/dogs/{dog.id}?tab=health">健康データへ戻る</a><h1>{html.escape(dog.call_name)}の{title}を編集</h1><p>登録済みデータを修正して保存できます。対象犬と記録種別は変更されません。</p><form method="post">{fields}<button>変更を保存</button> <a class="button secondary" href="/modules/dogs/{dog.id}?tab=health">キャンセル</a></form>'''
+    return layout(f"{title}の編集", body, user)
+
+
+@app.post("/modules/dogs/{dog_id}/health/{record_type}/{record_id}/edit")
+async def dog_health_record_update(dog_id: int, record_type: str, record_id: int, request: Request, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    dog = tenant_dog(session, tenant.id, dog_id)
+    item = dog_health_edit_item(session, tenant.id, dog.id, record_type, record_id)
+    form = await request.form()
+    text_value = lambda key: str(form.get(key, "")).strip()
+    parse_date = lambda key: date.fromisoformat(text_value(key)) if text_value(key) else None
+    try:
+        if record_type == "record":
+            if text_value("category") != item.category: raise ValueError
+            item.record_date = parse_date("record_date")
+            item.recorded_at = datetime.fromisoformat(text_value("recorded_at")).replace(tzinfo=ZoneInfo("Asia/Tokyo")) if text_value("recorded_at") else None
+            item.weight_kg = float(text_value("weight_kg")) if text_value("weight_kg") else None
+            item.meal_amount_g = float(text_value("meal_amount_g")) if text_value("meal_amount_g") else None
+            if item.weight_kg is not None and item.weight_kg <= 0 or item.meal_amount_g is not None and item.meal_amount_g < 0: raise ValueError
+            item.food_name, item.stool_condition, item.health_condition = text_value("food_name") or None, text_value("stool_condition") or None, text_value("health_condition") or None
+            item.clinic, item.notes, item.next_due_on = text_value("clinic") or None, text_value("notes") or None, parse_date("next_due_on")
+            item.physical_exam, item.blood_test = "physical_exam" in form, "blood_test" in form
+            item.ultrasound, item.chest_xray = "ultrasound" in form, "chest_xray" in form
+            item.result_summary = text_value("result_summary") or None
+            if not item.record_date or item.stool_condition not in {None, "良好", "やわらかい", "下痢", "硬い", "出ていない"} or item.health_condition not in {None, "良好", "少し悪い", "悪い"} or item.result_summary not in {None, "normal", "followup", "recheck", "treatment"}: raise ValueError
+        elif record_type == "vaccination":
+            item.vaccine_name, item.administered_on, item.next_due_on = text_value("vaccine_name"), parse_date("administered_on"), parse_date("next_due_on")
+            item.certificate_no, item.vaccine_type = text_value("certificate_no") or None, text_value("vaccine_type")
+            item.dose_number = int(text_value("dose_number")) if text_value("dose_number") else None
+            item.clinic, item.manufacturer, item.lot_no = text_value("clinic") or None, text_value("manufacturer") or None, text_value("lot_no") or None
+            item.reaction, item.notes = text_value("reaction"), text_value("notes") or None
+            if not item.vaccine_name or not item.administered_on or item.vaccine_type not in {"rabies", "mixed", "other"} or item.reaction not in {"none", "mild", "severe", "unknown"} or item.dose_number not in {None, 1, 2, 3, 4}: raise ValueError
+        elif record_type == "medication":
+            item.medicine_name, item.administered_on = text_value("medicine_name"), parse_date("administered_on")
+            item.medication_type, item.purpose = text_value("medication_type"), text_value("purpose") or None
+            item.dosage, item.frequency = text_value("dosage") or None, text_value("frequency") or None
+            item.started_on, item.ended_on, item.next_due_on = parse_date("started_on"), parse_date("ended_on"), parse_date("next_due_on")
+            item.status, item.clinic = text_value("status"), text_value("clinic") or None
+            item.owner_notes, item.notes = text_value("owner_notes") or None, text_value("notes") or None
+            if not item.medicine_name or not item.administered_on or item.medication_type not in {"treatment", "prevention", "supplement", "other"} or item.status not in {"single", "ongoing", "completed"} or item.started_on and item.ended_on and item.ended_on < item.started_on: raise ValueError
+        elif record_type == "disease":
+            item.disease_name, item.diagnosed_on = text_value("disease_name"), parse_date("diagnosed_on")
+            item.disease_category, item.status = text_value("disease_category"), text_value("status")
+            item.treatment_started_on, item.treatment_ended_on, item.next_followup_on = parse_date("treatment_started_on"), parse_date("treatment_ended_on"), parse_date("next_followup_on")
+            item.clinic, item.veterinarian, item.recurrence = text_value("clinic") or None, text_value("veterinarian") or None, "recurrence" in form
+            item.symptoms, item.owner_notes, item.details = text_value("symptoms") or None, text_value("owner_notes") or None, text_value("details") or None
+            if not item.disease_name or item.disease_category not in {"digestive", "respiratory", "skin", "orthopedic", "cardiac", "urinary", "reproductive", "infectious", "other"} or item.status not in {"treatment", "followup", "recovered", "chronic"} or item.treatment_started_on and item.treatment_ended_on and item.treatment_ended_on < item.treatment_started_on: raise ValueError
+        elif record_type == "food":
+            item.name, item.manufacturer, item.food_type = text_value("name"), text_value("manufacturer") or None, text_value("food_type")
+            item.amount_g = float(text_value("amount_g")) if text_value("amount_g") else None
+            item.times_per_day = int(text_value("times_per_day")) if text_value("times_per_day") else None
+            item.started_on, item.ended_on, item.status = parse_date("started_on"), parse_date("ended_on"), text_value("status")
+            item.change_reason, item.owner_notes, item.notes = text_value("change_reason") or None, text_value("owner_notes") or None, text_value("notes") or None
+            if not item.name or not item.started_on or item.food_type not in {"dry", "wet", "raw", "prescription", "supplement", "other"} or item.status not in {"ongoing", "completed"} or item.amount_g is not None and item.amount_g <= 0 or item.times_per_day is not None and not 1 <= item.times_per_day <= 10 or item.ended_on and item.ended_on < item.started_on or item.status == "completed" and not item.ended_on: raise ValueError
+        else:
+            item.test_name, item.result = text_value("test_name"), text_value("result")
+            item.tested_on, item.laboratory = parse_date("tested_on"), text_value("laboratory") or None
+            if not item.test_name or item.result not in {"clear", "carrier", "affected", "unknown"}: raise ValueError
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="健康記録の入力内容を確認してください")
+    session.commit()
+    return RedirectResponse(f"/modules/dogs/{dog.id}?tab=health", status_code=303)
 
 
 @app.get("/modules/dogs/{dog_id}/edit", response_class=HTMLResponse)
