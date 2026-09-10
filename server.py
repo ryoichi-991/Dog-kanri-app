@@ -12453,16 +12453,74 @@ def family_owner_link_remove(ownership_id: int, access=Depends(require_tenant_ad
     return RedirectResponse("/family/owners", status_code=303)
 
 
-@app.get("/admin/users", response_class=HTMLResponse)
-def user_list(request: Request, access=Depends(require_tenant_admin), session: Session = Depends(db)):
-    user, tenant = access
-    memberships = session.scalars(select(Membership).where(Membership.tenant_id == tenant.id)).all()
+def render_user_management(user: User, tenant: Tenant, session: Session, searched_email: str = "",
+                           account: User | None = None, message: str = "", error: str = "") -> str:
+    role_labels = {Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}
+    memberships = session.scalars(
+        select(Membership).where(Membership.tenant_id == tenant.id).order_by(Membership.id)
+    ).all()
     rows = ""
     for member in memberships:
-        account = session.get(User, member.user_id)
-        rows += f"<tr><td>{html.escape(account.name)}</td><td>{html.escape(account.email)}</td><td>{member.role.value}</td></tr>"
-    body = f'<h1>{html.escape(tenant.name)}のユーザー</h1><a class="button" href="/family/owners">オーナーと犬を連携</a><form method="post"><label>登録済みユーザーのメールアドレス</label><input name="email" type="email" required><label>権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select><button>所属を追加</button></form><table><tr><th>名前</th><th>メール</th><th>権限</th></tr>{rows}</table>'
+        member_account = session.get(User, member.user_id)
+        if not member_account:
+            continue
+        state = "利用中" if member_account.active else "停止中"
+        rows += (f"<tr><td>{html.escape(member_account.name)}</td><td>{html.escape(member_account.email)}</td>"
+                 f"<td>{role_labels.get(member.role, member.role.value)}</td><td>{state}</td></tr>")
+    result = ""
+    if account:
+        current = session.scalar(select(Membership).where(
+            Membership.tenant_id == tenant.id, Membership.user_id == account.id
+        ))
+        current_label = role_labels.get(current.role, current.role.value) if current else "この犬舎には未所属"
+        account_state = "利用中" if account.active else "停止中"
+        add_form = ""
+        if account.active:
+            add_form = f'''<form method="post" action="/admin/users" style="margin-top:16px">
+            <input type="hidden" name="email" value="{html.escape(account.email)}">
+            <label>付与する権限</label><select name="role"><option value="employee">従業員</option><option value="customer">お客様</option><option value="admin">管理者</option></select>
+            <label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> このユーザーを選択した権限で所属させることを確認しました</label>
+            <button>{'所属権限を変更' if current else '所属を追加'}</button></form>'''
+        else:
+            add_form = '<p class="error">停止中のアカウントは所属へ追加できません。運営管理者がアカウントを再開してください。</p>'
+        result = f'''<section class="tenant"><h2>検索結果</h2><div class="grid">
+        <div><strong>氏名</strong><p>{html.escape(account.name)}</p></div><div><strong>メールアドレス</strong><p>{html.escape(account.email)}</p></div>
+        <div><strong>現在の所属</strong><p>{html.escape(current_label)}</p></div><div><strong>アカウント状態</strong><p>{account_state}</p></div></div>{add_form}</section>'''
+    elif searched_email:
+        customer = session.scalar(select(Customer).where(
+            Customer.tenant_id == tenant.id, func.lower(Customer.email) == searched_email
+        ).limit(1))
+        detail = ("顧客台帳には同じメールアドレスがありますが、ログイン用ユーザー登録が完了していません。"
+                  if customer else "このメールアドレスのログインユーザーは登録されていません。")
+        result = f'''<section class="tenant"><h2>検索結果</h2><p class="error">{detail}</p>
+        <p>本人に <a href="/register">ユーザー登録画面</a> から登録してもらい、登録完了後にもう一度検索してください。</p></section>'''
+    notice = f'<p class="tenant"><strong>{html.escape(message)}</strong></p>' if message else ""
+    error_notice = f'<p class="error">{html.escape(error)}</p>' if error else ""
+    body = f'''<h1>{html.escape(tenant.name)}のユーザー</h1><p><a class="button" href="/family/owners">オーナーと犬を連携</a></p>
+    {notice}{error_notice}<section class="tenant"><h2>登録ユーザーを検索</h2><p>従業員本人がユーザー登録したメールアドレスを入力してください。</p>
+    <form method="post" action="/admin/users/search"><label>登録済みユーザーのメールアドレス</label>
+    <input name="email" type="email" value="{html.escape(searched_email)}" maxlength="255" autocomplete="email" required><button>登録ユーザーを検索</button></form></section>
+    {result}<h2>現在の所属ユーザー</h2><div style="overflow-x:auto"><table><tr><th>名前</th><th>メール</th><th>権限</th><th>状態</th></tr>
+    {rows or '<tr><td colspan="4">所属ユーザーはいません。</td></tr>'}</table></div>'''
     return layout("ユーザー管理", body, user)
+
+
+@app.get("/admin/users", response_class=HTMLResponse)
+def user_list(request: Request, added: int = 0, updated: int = 0,
+              access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    message = "従業員を所属へ追加しました。" if added else ("所属権限を変更しました。" if updated else "")
+    return render_user_management(user, tenant, session, message=message)
+
+
+@app.post("/admin/users/search", response_class=HTMLResponse)
+def user_search(email: str = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    user, tenant = access
+    normalized = normalize_email(email)[:255]
+    if not normalized or "@" not in normalized:
+        return HTMLResponse(render_user_management(user, tenant, session, error="メールアドレスを確認してください。"), status_code=400)
+    account = session.scalar(select(User).where(func.lower(User.email) == normalized))
+    return render_user_management(user, tenant, session, searched_email=normalized, account=account)
 
 
 @app.get("/admin/password-resets", response_class=HTMLResponse)
@@ -12780,18 +12838,28 @@ def password_reset_issue(request_id: int, admin_password: str = Form(...), acces
 
 
 @app.post("/admin/users")
-def membership_add(email: str = Form(...), role: Role = Form(...), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def membership_add(email: str = Form(...), role: Role = Form(...), confirmed: bool = Form(False),
+                   access=Depends(require_tenant_admin), session: Session = Depends(db)):
     user, tenant = access
-    account = session.scalar(select(User).where(User.email == normalize_email(email)))
+    normalized = normalize_email(email)[:255]
+    account = session.scalar(select(User).where(func.lower(User.email) == normalized))
     if not account:
-        return HTMLResponse(layout("エラー", '<p class="error">先にお客様登録またはユーザー登録をしてください。</p><a href="/admin/users">戻る</a>', user))
+        return HTMLResponse(render_user_management(user, tenant, session, searched_email=normalized,
+                            error="登録ユーザーが見つかりません。"), status_code=404)
+    if not account.active:
+        return HTMLResponse(render_user_management(user, tenant, session, searched_email=normalized, account=account,
+                            error="停止中のアカウントは所属へ追加できません。"), status_code=400)
+    if not confirmed:
+        return HTMLResponse(render_user_management(user, tenant, session, searched_email=normalized, account=account,
+                            error="所属追加の確認欄にチェックしてください。"), status_code=400)
     member = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == account.id))
+    updated = member is not None
     if member:
         member.role = role
     else:
         session.add(Membership(tenant_id=tenant.id, user_id=account.id, role=role))
     session.commit()
-    return RedirectResponse("/admin/users", status_code=303)
+    return RedirectResponse(f"/admin/users?{'updated' if updated else 'added'}=1", status_code=303)
 
 
 @app.get("/health")
