@@ -201,6 +201,17 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertIn("Dog.tenant_id == tenant.id", segment)
 
+    def test_birth_records_are_searchable(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "births_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in (
+            "birth-record-search", "birth-record-row", "data-search", "出産記録を検索",
+            "dam.registered_name", "litter.birth_date", "litter.notes",
+            "検索条件に一致する出産記録はありません", "件が見つかりました",
+        ):
+            self.assertIn(marker, segment)
+        self.assertIn("Litter.tenant_id == tenant.id", segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
