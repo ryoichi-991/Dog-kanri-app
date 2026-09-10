@@ -88,6 +88,25 @@ MODULES = {
     "costs": ("原価・利益管理", "犬・出産回別の経費配賦と採算確認"),
     "finance/documents": ("領収書・証憑管理", "台帳記録に紐づく領収書・請求書の保管"),
 }
+EMPLOYEE_PERMISSION_GROUPS = {
+    "daily": ("ホーム・Todo・カレンダー", "日常業務と予定の確認"),
+    "dogs": ("在籍犬・血統書", "犬、個体情報、血統書の管理"),
+    "breeding": ("繁殖・出産・遺伝子", "ヒート、交配、出産、遺伝子検査"),
+    "health": ("健康管理", "体重、診療、ワクチン、投薬、病歴、フード"),
+    "sales": ("顧客・販売・請求書", "顧客、商談、契約、引渡し、請求書"),
+    "finance": ("会計・経費", "収支、経費、口座、帳簿、決算、原価"),
+    "legal": ("法令・行政書類", "動物取扱業、法定帳簿、申請書類"),
+}
+EMPLOYEE_PERMISSION_ACTIONS = {
+    "view": "閲覧", "edit": "登録・編集", "delete": "削除", "export": "CSV・PDF出力", "approve": "承認処理",
+}
+EMPLOYEE_PERMISSION_PRESETS = {
+    "general": {"daily": "edit", "dogs": "edit", "breeding": "edit", "health": "edit"},
+    "care": {"daily": "edit", "dogs": "view", "health": "edit"},
+    "breeding": {"daily": "edit", "dogs": "edit", "breeding": "edit", "health": "view"},
+    "sales": {"daily": "edit", "dogs": "view", "sales": "edit"},
+    "accounting": {"daily": "view", "sales": "view", "finance": "edit"},
+}
 PREFECTURES = [
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県",
     "埼玉県", "千葉県", "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県",
@@ -135,6 +154,7 @@ class Membership(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role: Mapped[Role] = mapped_column(SQLEnum(Role, name="membership_role"))
+    permissions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Dog(Base):
@@ -1853,17 +1873,107 @@ def tenant_role(user: User, tenant: Tenant | None, session: Session) -> Role | N
     return membership.role if membership else None
 
 
+def employee_permission_defaults(preset: str = "general") -> dict[str, dict[str, bool]]:
+    levels = EMPLOYEE_PERMISSION_PRESETS.get(preset, EMPLOYEE_PERMISSION_PRESETS["general"])
+    permissions: dict[str, dict[str, bool]] = {}
+    for group in EMPLOYEE_PERMISSION_GROUPS:
+        level = levels.get(group, "none")
+        permissions[group] = {
+            "view": level in {"view", "edit"},
+            "edit": level == "edit",
+            "delete": False,
+            "export": False,
+            "approve": False,
+        }
+    return permissions
+
+
+def membership_permissions(membership: Membership | None) -> dict[str, dict[str, bool]] | None:
+    """None means a legacy employee whose existing full access must be preserved."""
+    if not membership or membership.role != Role.employee or not membership.permissions_json:
+        return None
+    try:
+        stored = json.loads(membership.permissions_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(stored, dict):
+        return None
+    permissions = employee_permission_defaults("general")
+    for group in EMPLOYEE_PERMISSION_GROUPS:
+        values = stored.get(group, {})
+        if isinstance(values, dict):
+            permissions[group] = {action: bool(values.get(action, False)) for action in EMPLOYEE_PERMISSION_ACTIONS}
+            if permissions[group]["edit"] or permissions[group]["delete"] or permissions[group]["export"] or permissions[group]["approve"]:
+                permissions[group]["view"] = True
+    return permissions
+
+
+def permission_group_for_path(path: str) -> str | None:
+    if path == "/dashboard" or path.startswith(("/modules/todo", "/modules/calendar")):
+        return "daily"
+    if path.startswith(("/modules/resident-dogs", "/modules/dog-list", "/modules/sale-dogs", "/modules/transferred-dogs", "/modules/archived-dogs", "/modules/dogs")):
+        return "dogs"
+    if path.startswith(("/modules/breeding", "/modules/births", "/modules/genetics")):
+        return "breeding"
+    if path.startswith("/modules/health"):
+        return "health"
+    if path.startswith(("/modules/sales", "/modules/invoices")):
+        return "sales"
+    if path.startswith(("/modules/finance", "/modules/costs")):
+        return "finance"
+    if path.startswith("/modules/legal"):
+        return "legal"
+    return None
+
+
+def permission_action_for_request(request: Request) -> str:
+    path = request.url.path.lower()
+    is_export = (path.endswith((".csv", ".pdf", ".zip")) or
+                 any(marker in path for marker in ("/export", "/download")))
+    if request.method in {"GET", "HEAD"}:
+        return "export" if is_export else "view"
+    if any(marker in path for marker in ("/approve", "/reject")):
+        return "approve"
+    if any(marker in path for marker in ("/delete", "/remove", "/archive")):
+        return "delete"
+    if is_export:
+        return "export"
+    return "edit"
+
+
+def employee_can(user: User, group: str | None, action: str = "view") -> bool:
+    if not group or user.platform_admin or getattr(user, "_tenant_role", None) == Role.admin:
+        return True
+    permissions = getattr(user, "_employee_permission_map", None)
+    if permissions is None:
+        return True
+    return bool(permissions.get(group, {}).get(action, False))
+
+
 def require_tenant_admin(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
     tenant = selected_tenant(request, user, session)
     if not tenant or tenant_role(user, tenant, session) != Role.admin:
         raise HTTPException(status_code=403, detail="このテナントの管理権限がありません")
+    user._tenant_role = Role.admin
+    user._employee_permission_map = None
     return user, tenant
 
 
 def require_tenant_user(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
     tenant = selected_tenant(request, user, session)
-    if not tenant or tenant_role(user, tenant, session) is None:
+    role = tenant_role(user, tenant, session)
+    if not tenant or role is None:
         raise HTTPException(status_code=403, detail="利用できるテナントがありません")
+    membership = None if user.platform_admin else session.scalar(select(Membership).where(
+        Membership.user_id == user.id, Membership.tenant_id == tenant.id
+    ))
+    user._tenant_role = role
+    user._employee_permission_map = membership_permissions(membership)
+    if role == Role.employee:
+        group = permission_group_for_path(request.url.path)
+        action = permission_action_for_request(request)
+        if not employee_can(user, group, action):
+            raise HTTPException(status_code=403, detail="このページまたは操作を利用する権限がありません")
     return user, tenant
 
 
@@ -1963,6 +2073,14 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
         </nav>
         <div class="sidebar-user"><div class="avatar">{html.escape(user.name[:1])}</div><div><strong>{html.escape(user.name)}</strong><small>{"運営管理者" if user.platform_admin else "ユーザー"}</small></div><form method="post" action="/logout"><button title="ログアウト">↪</button></form></div>
         </aside>'''
+        if getattr(user, "_tenant_role", None) == Role.employee:
+            def permitted_nav_link(match):
+                href = match.group(1)
+                if href.startswith(("/admin/", "/platform/")) or (href.startswith("/family/") and href.endswith("/manage")):
+                    return ""
+                group = permission_group_for_path(href)
+                return match.group(0) if employee_can(user, group, "view") else ""
+            nav = re.sub(r'<a[^>]*href="([^"]+)"[^>]*>.*?</a>', permitted_nav_link, nav)
     content = body
     if user and 'class="page-guide"' not in content:
         guide = page_usage_guide(title)
@@ -2040,6 +2158,7 @@ def startup():
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS permissions_json TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'resident'"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS titles TEXT"))
@@ -2455,16 +2574,24 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
     options = "".join(f'<option value="{t.id}" {"selected" if tenant and t.id == tenant.id else ""}>{html.escape(t.name)}</option>' for t in tenants)
     switcher = f'<div class="tenant"><form method="post" action="/tenant/switch"><label>表示する会社・犬舎</label><select name="tenant_id">{options}</select><button>切り替える</button></form></div>' if tenants else '<p class="error">所属テナントがありません。管理者へ連絡してください。</p>'
     role = tenant_role(user, tenant, session)
+    membership = None if user.platform_admin or not tenant else session.scalar(select(Membership).where(
+        Membership.user_id == user.id, Membership.tenant_id == tenant.id
+    ))
+    user._tenant_role = role
+    user._employee_permission_map = membership_permissions(membership)
     label = "運営管理者" if user.platform_admin else ({Role.admin: "管理者", Role.employee: "従業員", Role.customer: "お客様"}.get(role, "未所属"))
     dog_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id, Dog.active.is_(True))) if tenant else 0
     module_cards = ""
     if tenant:
         for key, (title, description) in MODULES.items():
+            if role == Role.employee and not employee_can(user, permission_group_for_path(f"/modules/{key}"), "view"):
+                continue
             extra = f"（登録 {dog_count}頭）" if key == "dogs" else ""
             module_cards += f'<a class="module" href="/modules/{key}"><h3>{title}</h3><p>{description}{extra}</p></a>'
     body = f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>'
     if tenant:
-        priority_items = dashboard_priority_items(tenant.id, session); today = date.today()
+        priority_items = [item for item in dashboard_priority_items(tenant.id, session)
+                          if employee_can(user, permission_group_for_path(item[3]), "view")]; today = date.today()
         overdue_count = sum(1 for item in priority_items if item[0] < today); today_count = sum(1 for item in priority_items if item[0] == today); week_count = sum(1 for item in priority_items if today < item[0] <= today + timedelta(days=7))
         priority_rows = "".join(f'''<a class="priority-item" href="{url}"><span><strong>{html.escape(title)}</strong><small>{html.escape(category)}／{due}</small></span><span class="badge" style="{'background:#f4c9ca;color:#8d3037' if due < today else ('background:#ead0d5;color:#704454' if due == today else 'background:#f6e1b8;color:#755514')}">{f'{(today-due).days}日超過' if due < today else ('本日' if due == today else f'{(due-today).days}日後')}</span></a>''' for due, title, category, url in priority_items[:10])
         body += f'''<h2>{html.escape(tenant.name)} 業務ホーム</h2><section aria-label="要対応業務"><h2>今日の要対応</h2><div class="grid"><a class="module" href="/modules/calendar?calendar_state=overdue&show_all=true"><h3>期限超過</h3><p><strong class="{'error' if overdue_count else ''}">{overdue_count}件</strong></p></a><a class="module" href="/modules/calendar?month={today:%Y-%m}"><h3>本日の予定</h3><p><strong>{today_count}件</strong></p></a><a class="module" href="/modules/calendar"><h3>7日以内</h3><p><strong>{week_count}件</strong></p></a></div><div class="priority-list">{priority_rows or '<div class="tenant">7日以内または期限超過の要対応業務はありません。</div>'}</div><div class="health-toolbar"><a class="button" href="/modules/calendar">業務カレンダー</a><a class="button secondary" href="/modules/todo">Todoを登録</a><a class="button secondary" href="/modules/health">健康管理</a></div></section><h2>機能一覧</h2><div class="grid">{module_cards}</div>'''
@@ -4512,7 +4639,7 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
     user, tenant = access
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
     archived_count = session.scalar(select(func.count(Dog.id)).where(Dog.tenant_id == tenant.id, Dog.active.is_(False))) or 0
-    can_archive = tenant_role(user, tenant, session) == Role.admin
+    can_archive = tenant_role(user, tenant, session) == Role.admin or employee_can(user, "dogs", "delete")
     sire_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "male")
     dam_options = '<option value="">未登録</option>' + "".join(f'<option value="{d.id}">{html.escape(d.call_name)}</option>' for d in dogs if d.sex == "female")
     category_labels = {"parent": "親犬", "puppy": "子犬", "external": "外部犬"}
@@ -4537,7 +4664,7 @@ def dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db
 
 
 @app.get("/modules/dogs/{dog_id}/archive-confirm", response_class=HTMLResponse)
-def dog_archive_confirm(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def dog_archive_confirm(dog_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
     if not dog.active:
@@ -4547,7 +4674,7 @@ def dog_archive_confirm(dog_id: int, access=Depends(require_tenant_admin), sessi
 
 
 @app.post("/modules/dogs/{dog_id}/archive")
-def dog_archive(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def dog_archive(dog_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
     dog.active = False
@@ -4556,7 +4683,7 @@ def dog_archive(dog_id: int, access=Depends(require_tenant_admin), session: Sess
 
 
 @app.get("/modules/archived-dogs", response_class=HTMLResponse)
-def archived_dogs_page(access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def archived_dogs_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(False)).order_by(Dog.call_name)).all()
     rows = "".join(
@@ -4568,7 +4695,7 @@ def archived_dogs_page(access=Depends(require_tenant_admin), session: Session = 
 
 
 @app.post("/modules/dogs/{dog_id}/restore")
-def dog_restore(dog_id: int, access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def dog_restore(dog_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
     dog.active = True
@@ -6745,8 +6872,9 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         raise HTTPException(status_code=403, detail="経費申請を利用できる権限がありません")
     if request_status not in {"", "pending", "approved", "rejected", "cancelled"}:
         raise HTTPException(status_code=400, detail="表示条件を確認してください")
+    can_approve = role == Role.admin or (role == Role.employee and employee_can(user, "finance", "approve"))
     query = select(FinanceExpenseRequest).where(FinanceExpenseRequest.tenant_id == tenant.id)
-    if role != Role.admin:
+    if not can_approve:
         query = query.where(FinanceExpenseRequest.requested_by_id == user.id)
     all_requests = session.scalars(query.order_by(FinanceExpenseRequest.created_at.desc(), FinanceExpenseRequest.id.desc()).limit(1000)).all()
     requests = [item for item in all_requests if not request_status or item.status == request_status]
@@ -6771,11 +6899,11 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         document = documents_by_request.get(item.id)
         document_view = f'<a class="button secondary" href="/modules/finance/expense-requests/{item.id}/document" target="_blank">証憑を見る</a>' if document else '<span class="error">証憑未登録</span>'
         upload_form = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/document" enctype="multipart/form-data"><label>領収書・レシート（PDF・写真／8MB以下）</label><input type="file" name="document_file" accept="application/pdf,image/jpeg,image/png,image/webp" required><button>証憑を登録</button></form>''' if item.status == "pending" and item.requested_by_id == user.id and not document else ""
-        if item.status == "pending" and role == Role.admin and accounts and document:
+        if item.status == "pending" and can_approve and accounts and document:
             action = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/approve"><select name="account_id">{account_options}</select><input name="review_comment" maxlength="500" placeholder="承認コメント（任意）"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 内容と支払口座を確認しました</label><button class="success">承認して台帳計上</button></form><form method="post" action="/modules/finance/expense-requests/{item.id}/reject"><input name="review_comment" maxlength="500" placeholder="却下理由" required><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> 却下内容を確認しました</label><button class="danger">却下</button></form>'''
-        elif item.status == "pending" and role == Role.admin and not document:
+        elif item.status == "pending" and can_approve and not document:
             action = '<span class="error">申請者の証憑登録後に承認できます</span>'
-        elif item.status == "pending" and role == Role.admin:
+        elif item.status == "pending" and can_approve:
             action = '<a class="button secondary" href="/modules/finance/accounts">先に支払口座を登録</a>'
         elif item.status == "pending" and item.requested_by_id == user.id:
             action = f'''<form method="post" action="/modules/finance/expense-requests/{item.id}/cancel"><label><input type="checkbox" name="confirmed" value="true" style="width:auto" required> この申請の取消を確認</label><button class="danger">申請を取り消す</button></form>'''
@@ -6784,7 +6912,7 @@ def finance_expense_requests_page(request_status: str = "pending", access=Depend
         reviewed_label = f'{reviewer}／{item.reviewed_at.strftime("%Y-%m-%d %H:%M")}' if item.reviewed_at else "－"
         rows += f'<tr><td>{item.expense_on}</td><td>{requester}</td><td>{FINANCE_CATEGORIES.get(item.category, item.category)}</td><td>{html.escape(item.description)}</td><td>¥{item.amount:,}</td><td>{document_view}{upload_form}</td><td><span class="badge">{state}</span></td><td>{reviewed_label}</td><td>{action}</td></tr>'
         mobile_cards += f'''<article class="calendar-mobile-card"><h3>{html.escape(item.description)}／¥{item.amount:,}</h3><p>{item.expense_on}／{FINANCE_CATEGORIES.get(item.category, item.category)}／{requester}</p><p>証憑：{document_view}</p>{upload_form}<p><span class="badge">{state}</span>／承認者 {reviewed_label}</p>{action}</article>'''
-    scope_label = "犬舎全体" if role == Role.admin else "自分の申請"
+    scope_label = "犬舎全体" if can_approve else "自分の申請"
     body = f'''<h1>経費申請・承認管理</h1><p>従業員が経費と領収書・証憑を申請し、管理者が原本を確認した申請だけを支払口座と収支台帳へ計上します。</p>
     <div class="grid"><div class="module"><h3>{scope_label}の承認待ち</h3><strong class="{'error' if pending else ''}">{len(pending)}件</strong><p>¥{sum(item.amount for item in pending):,}</p></div><div class="module"><h3>承認済み</h3><strong>{len(approved)}件</strong><p>¥{sum(item.amount for item in approved):,}</p></div><div class="module"><h3>却下</h3><strong>{len(rejected)}件</strong></div></div>
     <div class="health-toolbar"><a class="button secondary" href="/modules/finance">収支・経費台帳</a><a class="button secondary" href="/modules/finance/accounts">口座・現金残高</a><a class="button secondary" href="/modules/finance/closing">月次締め</a></div>
@@ -6837,7 +6965,8 @@ def finance_expense_request_document_file(request_id: int, access=Depends(requir
     user, tenant = access
     role = tenant_role(user, tenant, session)
     item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id))
-    if not item or role not in {Role.admin, Role.employee} or (role != Role.admin and item.requested_by_id != user.id):
+    can_approve = role == Role.admin or (role == Role.employee and employee_can(user, "finance", "approve"))
+    if not item or role not in {Role.admin, Role.employee} or (not can_approve and item.requested_by_id != user.id):
         raise HTTPException(status_code=404, detail="証憑が見つかりません")
     document = session.scalar(select(FinanceExpenseDocument).where(FinanceExpenseDocument.tenant_id == tenant.id, FinanceExpenseDocument.expense_request_id == item.id))
     if not document:
@@ -6846,7 +6975,7 @@ def finance_expense_request_document_file(request_id: int, access=Depends(requir
 
 
 @app.post("/modules/finance/expense-requests/{request_id}/approve")
-def finance_expense_request_approve(request_id: int, account_id: int = Form(...), review_comment: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def finance_expense_request_approve(request_id: int, account_id: int = Form(...), review_comment: str = Form(""), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id).with_for_update())
     account = session.scalar(select(FinanceAccount).where(FinanceAccount.id == account_id, FinanceAccount.tenant_id == tenant.id, FinanceAccount.active.is_(True)))
@@ -6866,7 +6995,7 @@ def finance_expense_request_approve(request_id: int, account_id: int = Form(...)
 
 
 @app.post("/modules/finance/expense-requests/{request_id}/reject")
-def finance_expense_request_reject(request_id: int, review_comment: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_admin), session: Session = Depends(db)):
+def finance_expense_request_reject(request_id: int, review_comment: str = Form(...), confirmed: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     item = session.scalar(select(FinanceExpenseRequest).where(FinanceExpenseRequest.id == request_id, FinanceExpenseRequest.tenant_id == tenant.id).with_for_update())
     clean_comment = review_comment.strip()
@@ -12465,8 +12594,10 @@ def render_user_management(user: User, tenant: Tenant, session: Session, searche
         if not member_account:
             continue
         state = "利用中" if member_account.active else "停止中"
+        permission_action = (f'<a class="button secondary" href="/admin/users/{member.id}/permissions">アクセス権限</a>'
+                             if member.role == Role.employee else "－")
         rows += (f"<tr><td>{html.escape(member_account.name)}</td><td>{html.escape(member_account.email)}</td>"
-                 f"<td>{role_labels.get(member.role, member.role.value)}</td><td>{state}</td></tr>")
+                 f"<td>{role_labels.get(member.role, member.role.value)}</td><td>{state}</td><td>{permission_action}</td></tr>")
     result = ""
     if account:
         current = session.scalar(select(Membership).where(
@@ -12500,8 +12631,8 @@ def render_user_management(user: User, tenant: Tenant, session: Session, searche
     {notice}{error_notice}<section class="tenant"><h2>登録ユーザーを検索</h2><p>従業員本人がユーザー登録したメールアドレスを入力してください。</p>
     <form method="post" action="/admin/users/search"><label>登録済みユーザーのメールアドレス</label>
     <input name="email" type="email" value="{html.escape(searched_email)}" maxlength="255" autocomplete="email" required><button>登録ユーザーを検索</button></form></section>
-    {result}<h2>現在の所属ユーザー</h2><div style="overflow-x:auto"><table><tr><th>名前</th><th>メール</th><th>権限</th><th>状態</th></tr>
-    {rows or '<tr><td colspan="4">所属ユーザーはいません。</td></tr>'}</table></div>'''
+    {result}<h2>現在の所属ユーザー</h2><div style="overflow-x:auto"><table><tr><th>名前</th><th>メール</th><th>権限</th><th>状態</th><th>設定</th></tr>
+    {rows or '<tr><td colspan="5">所属ユーザーはいません。</td></tr>'}</table></div>'''
     return layout("ユーザー管理", body, user)
 
 
@@ -12521,6 +12652,75 @@ def user_search(email: str = Form(...), access=Depends(require_tenant_admin), se
         return HTMLResponse(render_user_management(user, tenant, session, error="メールアドレスを確認してください。"), status_code=400)
     account = session.scalar(select(User).where(func.lower(User.email) == normalized))
     return render_user_management(user, tenant, session, searched_email=normalized, account=account)
+
+
+@app.get("/admin/users/{membership_id}/permissions", response_class=HTMLResponse)
+def employee_permissions_edit(membership_id: int, preset: str = "", saved: int = 0,
+                              access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    actor, tenant = access
+    membership = session.scalar(select(Membership).where(
+        Membership.id == membership_id, Membership.tenant_id == tenant.id, Membership.role == Role.employee
+    ))
+    if not membership:
+        raise HTTPException(status_code=404, detail="従業員の所属情報が見つかりません")
+    employee = session.get(User, membership.user_id)
+    if not employee:
+        raise HTTPException(status_code=404, detail="従業員が見つかりません")
+    permissions = (employee_permission_defaults(preset) if preset in EMPLOYEE_PERMISSION_PRESETS
+                   else membership_permissions(membership))
+    legacy_full = permissions is None
+    if permissions is None:
+        permissions = {group: {action: True for action in EMPLOYEE_PERMISSION_ACTIONS}
+                       for group in EMPLOYEE_PERMISSION_GROUPS}
+    preset_links = " ".join(
+        f'<a class="button secondary" href="/admin/users/{membership.id}/permissions?preset={key}">{label}</a>'
+        for key, label in (("general", "一般スタッフ"), ("care", "飼育・健康担当"),
+                           ("breeding", "繁殖担当"), ("sales", "顧客・販売担当"), ("accounting", "経理担当"))
+    )
+    header = "".join(f"<th>{html.escape(label)}</th>" for label in EMPLOYEE_PERMISSION_ACTIONS.values())
+    rows = ""
+    for group, (label, description) in EMPLOYEE_PERMISSION_GROUPS.items():
+        cells = "".join(
+            f'<td><input aria-label="{html.escape(label)} {html.escape(action_label)}" type="checkbox" '
+            f'name="perm_{group}_{action}" value="true" style="width:auto" {"checked" if permissions[group][action] else ""}></td>'
+            for action, action_label in EMPLOYEE_PERMISSION_ACTIONS.items()
+        )
+        rows += f'<tr><td><strong>{html.escape(label)}</strong><br><small>{html.escape(description)}</small></td>{cells}</tr>'
+    notice = '<p class="tenant"><strong>アクセス権限を保存しました。</strong></p>' if saved else ""
+    legacy_notice = ('<p class="tenant">この従業員は従来どおり全機能を利用できます。保存すると、下記の個別設定へ切り替わります。</p>'
+                     if legacy_full and not preset else "")
+    body = f'''<a class="button secondary" href="/admin/users">ユーザー管理へ戻る</a><h1>従業員別アクセス権限</h1>{notice}
+    <section class="tenant"><strong>{html.escape(employee.name)}</strong><p>{html.escape(employee.email)}</p></section>{legacy_notice}
+    <h2>担当別プリセット</h2><p>近い担当を選んだ後、必要な項目を個別に調整できます。</p><div class="health-toolbar">{preset_links}</div>
+    <form method="post" action="/admin/users/{membership.id}/permissions"><h2>ページ・操作権限</h2>
+    <div style="overflow-x:auto"><table><tr><th>カテゴリー</th>{header}</tr>{rows}</table></div>
+    <p class="tenant">登録・編集、削除、出力、承認を許可したカテゴリーは閲覧も自動的に許可されます。ユーザー管理・テナント管理・システム設定は管理者専用です。</p>
+    <label style="font-weight:400"><input type="checkbox" name="confirmed" value="true" style="width:auto" required> この従業員のアクセス権限を変更することを確認しました</label>
+    <button>アクセス権限を保存</button></form>'''
+    return layout("従業員別アクセス権限", body, actor)
+
+
+@app.post("/admin/users/{membership_id}/permissions")
+async def employee_permissions_update(membership_id: int, request: Request,
+                                      access=Depends(require_tenant_admin), session: Session = Depends(db)):
+    _, tenant = access
+    membership = session.scalar(select(Membership).where(
+        Membership.id == membership_id, Membership.tenant_id == tenant.id, Membership.role == Role.employee
+    ).with_for_update())
+    if not membership:
+        raise HTTPException(status_code=404, detail="従業員の所属情報が見つかりません")
+    form = await request.form()
+    if form.get("confirmed") != "true":
+        raise HTTPException(status_code=400, detail="権限変更の確認が必要です")
+    permissions = employee_permission_defaults("general")
+    for group in EMPLOYEE_PERMISSION_GROUPS:
+        values = {action: form.get(f"perm_{group}_{action}") == "true" for action in EMPLOYEE_PERMISSION_ACTIONS}
+        if values["edit"] or values["delete"] or values["export"] or values["approve"]:
+            values["view"] = True
+        permissions[group] = values
+    membership.permissions_json = json.dumps(permissions, ensure_ascii=False, separators=(",", ":"))
+    session.commit()
+    return RedirectResponse(f"/admin/users/{membership.id}/permissions?saved=1", status_code=303)
 
 
 @app.get("/admin/password-resets", response_class=HTMLResponse)
@@ -12855,9 +13055,16 @@ def membership_add(email: str = Form(...), role: Role = Form(...), confirmed: bo
     member = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == account.id))
     updated = member is not None
     if member:
+        previous_role = member.role
         member.role = role
+        if role == Role.employee and previous_role != Role.employee:
+            member.permissions_json = json.dumps(employee_permission_defaults("general"), ensure_ascii=False, separators=(",", ":"))
+        elif role != Role.employee:
+            member.permissions_json = None
     else:
-        session.add(Membership(tenant_id=tenant.id, user_id=account.id, role=role))
+        permissions_json = (json.dumps(employee_permission_defaults("general"), ensure_ascii=False, separators=(",", ":"))
+                            if role == Role.employee else None)
+        session.add(Membership(tenant_id=tenant.id, user_id=account.id, role=role, permissions_json=permissions_json))
     session.commit()
     return RedirectResponse(f"/admin/users?{'updated' if updated else 'added'}=1", status_code=303)
 

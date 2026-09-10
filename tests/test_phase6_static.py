@@ -1304,10 +1304,10 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("tenant_id", "requested_by_id", "expense_on", "category", "description", "amount", "notes", "status", "reviewed_by_id", "reviewed_at", "review_comment", "account_id", "financial_entry_id", "unique=True", "created_at"):
             self.assertIn(marker, segment)
 
-    def test_finance_expense_requests_page_separates_admin_and_employee_scope(self):
+    def test_finance_expense_requests_page_separates_approver_and_employee_scope(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_requests_page")
         segment = ast.get_source_segment(SOURCE, page)
-        for marker in ('role not in {Role.admin, Role.employee}', "FinanceExpenseRequest.tenant_id == tenant.id", "role != Role.admin", "FinanceExpenseRequest.requested_by_id == user.id", "FinanceAccount.tenant_id == tenant.id", 'item.status == "pending" and role == Role.admin', 'name="confirmed"', "calendar-desktop-only", "calendar-mobile-card"):
+        for marker in ('role not in {Role.admin, Role.employee}', "FinanceExpenseRequest.tenant_id == tenant.id", 'employee_can(user, "finance", "approve")', "if not can_approve", "FinanceExpenseRequest.requested_by_id == user.id", "FinanceAccount.tenant_id == tenant.id", 'item.status == "pending" and can_approve', 'name="confirmed"', "calendar-desktop-only", "calendar-mobile-card"):
             self.assertIn(marker, segment)
         for label in ("経費申請・承認管理", "承認待ち", "承認して台帳計上", "却下", "申請を取り消す"):
             self.assertIn(label, segment)
@@ -1319,16 +1319,16 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertNotIn("FinancialEntry(", segment)
 
-    def test_finance_expense_approval_is_admin_confirmed_locked_and_posted_once(self):
+    def test_finance_expense_approval_is_authorized_confirmed_locked_and_posted_once(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_approve")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("require_tenant_admin", "FinanceExpenseRequest.tenant_id == tenant.id", ".with_for_update()", "FinanceAccount.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "item.financial_entry_id", "len(review_comment) > 500", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', "FinanceAccountEntry(", 'item.status = "approved"', "item.reviewed_by_id = user.id", "item.reviewed_at", "item.account_id = account.id", "item.financial_entry_id = entry.id"):
+        for marker in ("require_tenant_user", "FinanceExpenseRequest.tenant_id == tenant.id", ".with_for_update()", "FinanceAccount.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "item.financial_entry_id", "len(review_comment) > 500", "ensure_finance_period_open", "FinancialEntry(", 'entry_type="expense"', "FinanceAccountEntry(", 'item.status = "approved"', "item.reviewed_by_id = user.id", "item.reviewed_at", "item.account_id = account.id", "item.financial_entry_id = entry.id"):
             self.assertIn(marker, segment)
 
     def test_finance_expense_reject_and_requester_cancel_are_non_destructive(self):
         reject = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_reject")
         reject_source = ast.get_source_segment(SOURCE, reject)
-        for marker in ("require_tenant_admin", "FinanceExpenseRequest.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "not clean_comment", "len(clean_comment) > 500", 'item.status = "rejected"', "item.reviewed_by_id = user.id", "item.reviewed_at"):
+        for marker in ("require_tenant_user", "FinanceExpenseRequest.tenant_id == tenant.id", "not confirmed", 'item.status != "pending"', "not clean_comment", "len(clean_comment) > 500", 'item.status = "rejected"', "item.reviewed_by_id = user.id", "item.reviewed_at"):
             self.assertIn(marker, reject_source)
         cancel = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_expense_request_cancel")
         cancel_source = ast.get_source_segment(SOURCE, cancel)
