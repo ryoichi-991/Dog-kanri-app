@@ -39,6 +39,12 @@ class HealthSharingStaticTests(unittest.TestCase):
             self.assertIn(f'name="{field}"', TEXT)
         self.assertIn('type="datetime-local"', TEXT)
 
+    def test_weight_inputs_accept_puppy_weights_to_one_gram(self):
+        self.assertGreaterEqual(TEXT.count('name="weight_kg"'), 4)
+        self.assertEqual(TEXT.count('step="0.01" min="0.01" name="weight_kg"'), 0)
+        self.assertGreaterEqual(TEXT.count('step="0.001" min="0.001" name="weight_kg"'), 4)
+        self.assertGreaterEqual(TEXT.count('placeholder="例：0.158"'), 4)
+
     def test_weight_condition_choices_are_validated(self):
         health_create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_create")
         segment = ast.get_source_segment(TEXT, health_create)
