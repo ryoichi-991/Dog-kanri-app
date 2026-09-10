@@ -4481,12 +4481,12 @@ def dog_restore(dog_id: int, access=Depends(require_tenant_admin), session: Sess
 
 
 @app.get("/modules/resident-dogs", response_class=HTMLResponse)
-def resident_dogs_page(dog_category: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+def resident_dogs_page(dog_category: str = "", dog_sex: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
-    if dog_category not in {"", "parent", "puppy"}:
+    if dog_category not in {"", "parent", "puppy"} or dog_sex not in {"", "male", "female"}:
         raise HTTPException(status_code=400, detail="表示区分を確認してください")
     all_dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.status.in_(["resident", "reserved"]), Dog.category != "external").order_by(Dog.birth_date.desc(), Dog.call_name)).all()
-    dogs = [dog for dog in all_dogs if not dog_category or dog.category == dog_category]
+    dogs = [dog for dog in all_dogs if (not dog_category or dog.category == dog_category) and (not dog_sex or dog.sex == dog_sex)]
     # 出産管理の記録と、母犬に紐づく仔犬の誕生日を統合する。同じ日付は
     # 同一の出産として数えるため、両方に登録されていても二重計上しない。
     birth_dates_by_dam: dict[int, set[date]] = {}
@@ -4506,7 +4506,9 @@ def resident_dogs_page(dog_category: str = "", access=Depends(require_tenant_use
     parents = sum(dog.category == "parent" for dog in all_dogs)
     puppies = sum(dog.category == "puppy" for dog in all_dogs)
     selected_style = "border:2px solid var(--rose);background:#fff5f8"
-    metrics = f'''<div class="grid"><a class="module" style="{selected_style if not dog_category else ''}" href="/modules/resident-dogs"><h3>在籍合計</h3><p><strong style="font-size:28px">{len(all_dogs)}</strong>頭</p><small>すべて表示</small></a><div class="module"><h3>牡／牝</h3><p><strong>{males}</strong>頭 ／ <strong>{females}</strong>頭</p></div><a class="module" style="{selected_style if dog_category == 'parent' else ''}" href="/modules/resident-dogs?dog_category=parent"><h3>親犬</h3><p><strong style="font-size:28px">{parents}</strong>頭</p><small>親犬だけ表示</small></a><a class="module" style="{selected_style if dog_category == 'puppy' else ''}" href="/modules/resident-dogs?dog_category=puppy"><h3>仔犬</h3><p><strong style="font-size:28px">{puppies}</strong>頭</p><small>仔犬だけ表示</small></a></div>'''
+    category_suffix = f"&dog_sex={dog_sex}" if dog_sex else ""
+    sex_suffix = f"&dog_category={dog_category}" if dog_category else ""
+    metrics = f'''<div class="grid"><a class="module" style="{selected_style if not dog_category and not dog_sex else ''}" href="/modules/resident-dogs"><h3>在籍合計</h3><p><strong style="font-size:28px">{len(all_dogs)}</strong>頭</p><small>すべて表示</small></a><a class="module" style="{selected_style if dog_sex == 'male' else ''}" href="/modules/resident-dogs?dog_sex=male{sex_suffix}"><h3>牡</h3><p><strong style="font-size:28px">{males}</strong>頭</p><small>牡だけ表示</small></a><a class="module" style="{selected_style if dog_sex == 'female' else ''}" href="/modules/resident-dogs?dog_sex=female{sex_suffix}"><h3>牝</h3><p><strong style="font-size:28px">{females}</strong>頭</p><small>牝だけ表示</small></a><a class="module" style="{selected_style if dog_category == 'parent' else ''}" href="/modules/resident-dogs?dog_category=parent{category_suffix}"><h3>親犬</h3><p><strong style="font-size:28px">{parents}</strong>頭</p><small>親犬だけ表示</small></a><a class="module" style="{selected_style if dog_category == 'puppy' else ''}" href="/modules/resident-dogs?dog_category=puppy{category_suffix}"><h3>仔犬</h3><p><strong style="font-size:28px">{puppies}</strong>頭</p><small>仔犬だけ表示</small></a></div>'''
     rows = ""
     today = date.today()
     for dog in dogs:
@@ -4522,8 +4524,11 @@ def resident_dogs_page(dog_category: str = "", access=Depends(require_tenant_use
         lifetime_births = len(birth_dates_by_dam.get(dog.id, set())) if dog.sex == "female" else None
         birth_count = f'''<strong>{lifetime_births}</strong>回''' if lifetime_births is not None else "対象外"
         rows += f'''<tr><td><a href="/modules/dogs/{dog.id}"><strong>{html.escape(dog.call_name)}</strong></a><br><small>{html.escape(dog.registered_name or "血統名未登録")}</small></td><td>{title_marks(dog.titles) or "-"}</td><td>{"牡" if dog.sex == "male" else "牝"}</td><td>{category}</td><td>{html.escape(dog.breed or "-")}</td><td>{dog.birth_date or "-"}<br><small>{age}</small></td><td>{html.escape(dog.color or "-")}</td><td>{html.escape(sire.registered_name or sire.call_name) if sire else "-"}</td><td>{html.escape(dam.registered_name or dam.call_name) if dam else "-"}</td><td>{birth_count}</td><td><span class="badge">{state}</span></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/edit">編集</a></td></tr>'''
-    filter_label = {"parent": "親犬のみ", "puppy": "仔犬のみ"}.get(dog_category, "すべての在籍犬")
-    body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<p><span class="badge">表示中：{filter_label}</span>　<strong>{len(dogs)}頭</strong></p><table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>犬種</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>生涯出産回数</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="12">選択した区分の在籍犬はいません。</td></tr>'}</table>'''
+    filter_parts = [{"parent": "親犬", "puppy": "仔犬"}[dog_category]] if dog_category else []
+    if dog_sex:
+        filter_parts.append("牡" if dog_sex == "male" else "牝")
+    filter_label = "・".join(filter_parts) + "のみ" if filter_parts else "すべての在籍犬"
+    body = f'''<h1>在籍犬一覧</h1><p>{html.escape(tenant.name)}で現在管理している在舎中・予約済みの犬を表示しています。</p>{metrics}<p><span class="badge">表示中：{filter_label}</span>　<strong>{len(dogs)}頭</strong></p><table><tr><th>犬名</th><th>タイトル</th><th>性別</th><th>区分</th><th>犬種</th><th>生年月日・年齢</th><th>毛色</th><th>父犬</th><th>母犬</th><th>生涯出産回数</th><th>状態</th><th>操作</th></tr>{rows or '<tr><td colspan="12">選択条件に一致する在籍犬はいません。</td></tr>'}</table>'''
     return layout("在籍犬一覧", body, user)
 
 
