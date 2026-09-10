@@ -249,7 +249,8 @@ class Phase6StaticTests(unittest.TestCase):
             set(namespace["extract_title_keys"]("CH/23. 8, J. CH, CH(THA)")),
             {"champion", "junior_champion", "thai_champion"},
         )
-        self.assertEqual(namespace["extract_title_keys"]("TH. CH."), ["champion"])
+        self.assertEqual(namespace["extract_title_keys"]("TH. CH."), ["thai_champion"])
+        self.assertEqual(namespace["extract_title_keys"]("TH.CH."), ["thai_champion"])
         segment = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "jkc_slot_text"))
         self.assertIn("is_pedigree_registration_line", segment)
         self.assertIn("1: (.055, .385, .505, .465)", SOURCE)

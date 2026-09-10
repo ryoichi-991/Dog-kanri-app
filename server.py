@@ -3149,7 +3149,7 @@ TITLE_PATTERNS = [
     ("international_veteran_champion", r"\b(?:CIB-V|INTERNATIONAL\s+VETERAN\s+CHAMPION)\b"),
     ("international_show_champion", r"\b(?:C\.?I\.?E\.?)\b"),
     ("international_champion", r"\b(?:INT\.?\s*CH\.?|INTERNATIONAL\s+(?:BEAUTY\s+)?CHAMPION|C\.?I\.?B\.?)\b"),
-    ("thai_champion", r"\b(?:CH\s*\(\s*THA\s*\)|THAI(?:LAND)?\s+CHAMPION)(?=$|[\s,;/])"),
+    ("thai_champion", r"\b(?:TH\.?\s*CH\.?|CH\s*\(\s*THA\s*\)|THAI(?:LAND)?\s+CHAMPION)(?=$|[\s,;/])"),
     ("junior_champion", r"\b(?:J\.?\s*CH\.?|JR\.?\s*CH\.?|JUNIOR\s+CHAMPION)\b"),
     ("veteran_champion", r"\b(?:V\.?\s*CH\.?|VETERAN\s+CHAMPION)\b"),
     ("grand_champion", r"\b(?:GCH|GR\.?\s*CH\.?|GRAND\s+CHAMPION)\b"),
