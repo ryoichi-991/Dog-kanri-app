@@ -317,6 +317,16 @@ class Phase6StaticTests(unittest.TestCase):
         ):
             self.assertIn(marker, segment)
 
+    def test_dog_care_tab_has_a_responsive_weight_trend_chart(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_weight_trend_chart")
+        helper_segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("weight_kg is not None", "viewBox", 'role="img"', "体重の推移グラフ", "polyline", "circle", "record_date.strftime", "体重記録を追加すると"):
+            self.assertIn(marker, helper_segment)
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("HealthRecord.tenant_id == tenant.id", "HealthRecord.dog_id == dog.id", "HealthRecord.weight_kg.is_not(None)", ".limit(50)", "dog_weight_trend_chart(weight_records)", "{weight_chart}"):
+            self.assertIn(marker, segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
