@@ -229,12 +229,30 @@ class Phase6StaticTests(unittest.TestCase):
         delete_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "litter_delete")
         self.assertIn("CostAllocation.litter_id == litter.id", ast.get_source_segment(SOURCE, delete_route))
 
-    def test_birth_create_and_update_validate_detailed_counts(self):
+    def test_birth_create_and_update_validate_puppy_details(self):
+        validator = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "validate_litter_puppies")
+        validator_source = ast.get_source_segment(SOURCE, validator)
+        for marker in ("1 <= born_count <= 20", "len(values) == born_count", 'sex not in {"male", "female"}', 'birth_status not in {"alive", "stillborn"}', "1 <= weight_g <= 2000"):
+            self.assertIn(marker, validator_source)
         for route_name in ("litter_create", "litter_update"):
             route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
             segment = ast.get_source_segment(SOURCE, route)
-            for marker in ("male_count + female_count > born_count", "alive_count > born_count", "len(color_details) > 500", "len(notes) > 2000"):
+            for marker in ("puppy_sex", "puppy_color", "puppy_birth_weight_g", "puppy_status", "validate_litter_puppies", "replace_litter_puppies", "len(notes) > 2000"):
                 self.assertIn(marker, segment)
+
+    def test_litter_puppies_are_tenant_scoped_and_drive_totals(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LitterPuppy")
+        model_source = ast.get_source_segment(SOURCE, model)
+        for marker in ("tenant_id", "litter_id", "birth_order", "sex", "color", "birth_weight_g", "birth_status", "uq_litter_puppy_birth_order"):
+            self.assertIn(marker, model_source)
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "replace_litter_puppies")
+        helper_source = ast.get_source_segment(SOURCE, helper)
+        for marker in ("LitterPuppy.tenant_id == tenant_id", "litter.born_count = len(puppies)", "litter.alive_count", "litter.male_count", "litter.female_count", "litter.color_details"):
+            self.assertIn(marker, helper_source)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "births_page")
+        page_source = ast.get_source_segment(SOURCE, page)
+        for marker in ("仔犬ごとの出生情報", "第'+order+'仔", "出生体重（g）", "個体明細未登録", "puppy-detail-list"):
+            self.assertIn(marker, page_source)
 
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
