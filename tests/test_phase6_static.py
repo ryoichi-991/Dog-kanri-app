@@ -162,6 +162,16 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("min(mating_days)", segment)
         self.assertIn("max(mating_days)", segment)
 
+    def test_completed_birth_replaces_predictions_and_automatic_todo(self):
+        calendar_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        calendar_segment = ast.get_source_segment(SOURCE, calendar_route)
+        for marker in ('item.id in completed_breedings', 'continue', ' 出産', '"出産記録"', 'delivered_birth_todo_keys', 'title.endswith(" 出産予定")'):
+            self.assertIn(marker, calendar_segment)
+        create_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "litter_create")
+        create_segment = ast.get_source_segment(SOURCE, create_route)
+        for marker in ('litter.breeding_id = related.id', 'TaskEvent.tenant_id == tenant.id', 'TaskEvent.dog_id == dam.id', 'TaskEvent.category == "breeding"', 'TaskEvent.due_date == expected_day', 'session.delete(task)'):
+            self.assertIn(marker, create_segment)
+
     def test_business_calendar_has_mobile_cards(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
         segment = ast.get_source_segment(SOURCE, route)
