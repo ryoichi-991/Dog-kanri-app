@@ -210,6 +210,7 @@ class Phase6StaticTests(unittest.TestCase):
         reuse_segment = ast.get_source_segment(SOURCE, reuse)
         self.assertIn('re.sub(r"[^A-Z0-9]"', reuse_segment)
         self.assertIn("len(matches) == 1", reuse_segment)
+        self.assertIn('return names, titles, colors, "", matched_ids', reuse_segment)
 
     def test_pedigree_import_preserves_registered_ancestor_data(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "pedigree_import")

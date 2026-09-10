@@ -3778,7 +3778,7 @@ def reuse_registered_pedigree(
     sire = find_registered(names[1], "male")
     dam = find_registered(names[2], "female")
     if not sire or not dam:
-        return names, titles, colors, ""
+        return names, titles, colors, "", matched_ids
 
     def copy_node(index: int, dog: Dog | None) -> None:
         if not dog or index > 14:
@@ -4580,8 +4580,8 @@ async def pedigree_scan(pedigree_file: UploadFile = File(...), access=Depends(re
     <script>(function(){{const search=document.getElementById('existing-dog-search');const select=document.getElementById('existing-dog-select');const result=document.getElementById('existing-dog-result');const dogs=Array.from(select.options).slice(1).map(option=>({{value:option.value,text:option.textContent}}));function render(){{const keyword=search.value.trim().toLocaleLowerCase('ja');const matches=keyword?dogs.filter(dog=>dog.text.toLocaleLowerCase('ja').includes(keyword)):dogs;const selected=select.value;select.replaceChildren(new Option('新しい犬として登録',''),...matches.map(dog=>new Option(dog.text,dog.value)));if(matches.some(dog=>dog.value===selected))select.value=selected;result.textContent=keyword?matches.length+'頭が見つかりました':dogs.length+'頭から検索できます';}}search.addEventListener('input',render);render();const form=document.getElementById('pedigree-review-form');const submit=document.getElementById('pedigree-submit');function reviewState(){{for(let index=0;index<15;index++){{const field=form.querySelector('[name="ancestor_'+index+'"]');const check=form.querySelector('input[value="ancestor_'+index+'"]');if(field&&check){{check.required=Boolean(field.value.trim());check.parentElement.querySelector('span').textContent=check.required?'原本と照合済み':'未読（入力する場合は照合してください）';}}}}const checks=Array.from(form.querySelectorAll('input[name="verified_fields"]:required'));const ready=checks.every(check=>check.checked);submit.disabled=!ready;submit.textContent=ready?'確認した内容で登録・更新する':'未確認の項目があります';}}form.addEventListener('change',reviewState);form.addEventListener('input',reviewState);reviewState();}})();</script>
     <details><summary>読み取った元の文字を確認</summary><pre style="white-space:pre-wrap;background:#f7edef;padding:15px;border-radius:10px;max-height:300px;overflow:auto">{html.escape(raw_text[:12000])}</pre></details>'''
     body = body.replace(
-        ".review-check{{display:flex",
-        ".registered-ancestor{{border-color:#8bb897;background:#f3fbf5}}.review-check{{display:flex",
+        ".review-check{display:flex",
+        ".registered-ancestor{border-color:#8bb897;background:#f3fbf5}.review-check{display:flex",
     )
     body = body.replace(
         "<h2>今回アップロードした書類</h2>",
