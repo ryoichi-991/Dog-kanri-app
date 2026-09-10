@@ -282,6 +282,12 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("uq_litter_puppies_dog_id", SOURCE)
         self.assertIn("仔犬を管理", SOURCE)
 
+    def test_resident_dogs_can_be_segmented_by_parent_or_puppy(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "resident_dogs_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ('dog_category: str = ""', '{"", "parent", "puppy"}', 'dog.category == dog_category', 'dog_category=parent', 'dog_category=puppy', '親犬だけ表示', '仔犬だけ表示', '表示中：', 'すべて表示'):
+            self.assertIn(marker, segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
