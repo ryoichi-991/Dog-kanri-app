@@ -294,6 +294,29 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ('dog_sex: str = ""', '{"", "male", "female"}', 'dog.sex == dog_sex', 'dog_sex=male', 'dog_sex=female', '牡だけ表示', '牝だけ表示', 'category_suffix', 'sex_suffix', '選択条件に一致する在籍犬はいません'):
             self.assertIn(marker, segment)
 
+    def test_dog_detail_is_an_individual_tabbed_management_hub(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in (
+            'tab: str = "care"', '"care": "飼育データ"', '"breeding": "繁殖データ"',
+            '"pedigree": "血統データ"', '"health": "健康データ"', '"management": "データ管理"',
+            'dog-detail-tabs', 'dog-detail-tab', '?tab={key}', 'dog-detail-panel',
+        ):
+            self.assertIn(marker, segment)
+
+    def test_dog_detail_tabs_are_tenant_scoped_and_reuse_existing_records(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in (
+            "TaskEvent.tenant_id == tenant.id", "HealthRecord.tenant_id == tenant.id",
+            "HeatCycle.tenant_id == tenant.id", "BreedingRecord.tenant_id == tenant.id",
+            "Litter.tenant_id == tenant.id", "Vaccination.tenant_id == tenant.id",
+            "GeneticTest.tenant_id == tenant.id", "Medication.tenant_id == tenant.id",
+            "DiseaseHistory.tenant_id == tenant.id", "FoodHistory.tenant_id == tenant.id",
+            "DogTransfer.tenant_id == tenant.id", "飼育・健康記録を追加", "ヒート・交配を登録",
+        ):
+            self.assertIn(marker, segment)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)
