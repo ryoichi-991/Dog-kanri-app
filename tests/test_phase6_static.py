@@ -266,6 +266,22 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("litter_puppies ADD COLUMN IF NOT EXISTS temporary_name", SOURCE)
         self.assertIn("litter_puppies ALTER COLUMN birth_weight_g DROP NOT NULL", SOURCE)
 
+    def test_alive_litter_puppies_sync_to_dog_management(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "LitterPuppy")
+        model_segment = ast.get_source_segment(SOURCE, model)
+        for marker in ('dog_id', 'ForeignKey("dogs.id", ondelete="SET NULL")', 'nullable=True', 'unique=True'):
+            self.assertIn(marker, model_segment)
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "sync_litter_puppy_dogs")
+        helper_segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ('item.birth_status != "alive"', 'dog.active = False', 'existing_candidates', 'category="puppy"', 'status="resident"', 'birth_date=litter.birth_date', 'sire_id=sire_id', 'dam_id=dam.id', 'item.dog_id = dog.id'):
+            self.assertIn(marker, helper_segment)
+        for route_name in ("litter_create", "litter_update"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn("sync_litter_puppy_dogs", ast.get_source_segment(SOURCE, route))
+        self.assertIn("litter_puppies ADD COLUMN IF NOT EXISTS dog_id", SOURCE)
+        self.assertIn("uq_litter_puppies_dog_id", SOURCE)
+        self.assertIn("仔犬を管理", SOURCE)
+
     def test_dashboard_priority_items_are_tenant_scoped_and_incomplete(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard_priority_items")
         segment = ast.get_source_segment(SOURCE, helper)

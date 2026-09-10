@@ -238,6 +238,7 @@ class LitterPuppy(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     litter_id: Mapped[int] = mapped_column(ForeignKey("litters.id", ondelete="CASCADE"), index=True)
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
     birth_order: Mapped[int] = mapped_column(Integer)
     temporary_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sex: Mapped[str] = mapped_column(String(10))
@@ -2080,6 +2081,8 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS litters ADD COLUMN IF NOT EXISTS color_details TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS litter_puppies ADD COLUMN IF NOT EXISTS temporary_name VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS litter_puppies ALTER COLUMN birth_weight_g DROP NOT NULL"))
+        conn.execute(text("ALTER TABLE IF EXISTS litter_puppies ADD COLUMN IF NOT EXISTS dog_id INTEGER REFERENCES dogs(id) ON DELETE SET NULL"))
+        conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uq_litter_puppies_dog_id ON litter_puppies(dog_id) WHERE dog_id IS NOT NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS event_capacity INTEGER"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS response_deadline TIMESTAMPTZ"))
         conn.execute(text("ALTER TABLE IF EXISTS family_announcements ADD COLUMN IF NOT EXISTS waitlist_enabled BOOLEAN NOT NULL DEFAULT FALSE"))
@@ -2157,6 +2160,10 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS line_deliveries ADD COLUMN IF NOT EXISTS target_url VARCHAR(500)"))
     with SessionLocal() as session:
         ensure_vapid_keys(session)
+        for litter in session.scalars(select(Litter).order_by(Litter.id)).all():
+            if session.scalar(select(LitterPuppy.id).where(LitterPuppy.litter_id == litter.id, LitterPuppy.birth_status == "alive", LitterPuppy.dog_id.is_(None)).limit(1)):
+                sync_litter_puppy_dogs(session, litter, litter.tenant_id)
+        session.commit()
         # 旧管理者がいる場合は最初の1人を運営管理者へ自動昇格する。
         if not platform_admin_exists(session):
             legacy = session.scalar(select(User).where(User.role == Role.admin).order_by(User.id).limit(1))
@@ -2734,20 +2741,61 @@ def validate_litter_puppies(born_count: int, temporary_names: list[str], sexes: 
 
 
 def replace_litter_puppies(session: Session, litter: Litter, tenant_id: int, puppies: list[tuple[str, str, str, int | None, str]]) -> None:
-    existing = session.scalars(select(LitterPuppy).where(LitterPuppy.tenant_id == tenant_id, LitterPuppy.litter_id == litter.id)).all()
-    for item in existing:
-        session.delete(item)
-    if existing:
-        session.flush()
+    existing = session.scalars(select(LitterPuppy).where(LitterPuppy.tenant_id == tenant_id, LitterPuppy.litter_id == litter.id).order_by(LitterPuppy.birth_order)).all()
+    existing_by_order = {item.birth_order: item for item in existing}
     color_counts: dict[str, int] = {}
     for order, (temporary_name, sex, color, weight_g, birth_status) in enumerate(puppies, start=1):
-        session.add(LitterPuppy(tenant_id=tenant_id, litter_id=litter.id, birth_order=order, temporary_name=temporary_name or None, sex=sex, color=color, birth_weight_g=weight_g, birth_status=birth_status))
+        item = existing_by_order.pop(order, None)
+        if not item:
+            item = LitterPuppy(tenant_id=tenant_id, litter_id=litter.id, birth_order=order)
+            session.add(item)
+        item.temporary_name, item.sex, item.color = temporary_name or None, sex, color
+        item.birth_weight_g, item.birth_status = weight_g, birth_status
         color_counts[color] = color_counts.get(color, 0) + 1
+    for item in existing_by_order.values():
+        session.delete(item)
     litter.born_count = len(puppies)
     litter.alive_count = sum(item[4] == "alive" for item in puppies)
     litter.male_count = sum(item[1] == "male" for item in puppies)
     litter.female_count = sum(item[1] == "female" for item in puppies)
     litter.color_details = "、".join(f"{color} {count}頭" for color, count in color_counts.items())
+
+
+def sync_litter_puppy_dogs(session: Session, litter: Litter, tenant_id: int) -> None:
+    """生存仔犬を犬台帳へ重複なく登録し、出産明細との紐付けを維持する。"""
+    dam = session.scalar(select(Dog).where(Dog.id == litter.dam_id, Dog.tenant_id == tenant_id))
+    if not dam:
+        return
+    breeding = session.scalar(select(BreedingRecord).where(BreedingRecord.id == litter.breeding_id, BreedingRecord.tenant_id == tenant_id)) if litter.breeding_id else None
+    if not breeding:
+        breeding = session.scalar(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant_id, BreedingRecord.dam_id == dam.id, BreedingRecord.mating_date <= litter.birth_date).order_by(BreedingRecord.mating_date.desc()))
+        if breeding:
+            litter.breeding_id = breeding.id
+    sire_id = breeding.sire_id if breeding else None
+    session.flush()
+    puppies = session.scalars(select(LitterPuppy).where(LitterPuppy.tenant_id == tenant_id, LitterPuppy.litter_id == litter.id).order_by(LitterPuppy.birth_order)).all()
+    linked_dog_ids = set(session.scalars(select(LitterPuppy.dog_id).where(LitterPuppy.tenant_id == tenant_id, LitterPuppy.dog_id.is_not(None))).all())
+    existing_candidates = [dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant_id, Dog.category == "puppy", Dog.dam_id == dam.id, Dog.birth_date == litter.birth_date).order_by(Dog.id)).all() if dog.id not in linked_dog_ids]
+    for item in puppies:
+        dog = session.scalar(select(Dog).where(Dog.id == item.dog_id, Dog.tenant_id == tenant_id)) if item.dog_id else None
+        if item.birth_status != "alive":
+            if dog:
+                dog.active = False
+            continue
+        if not dog:
+            matching = [candidate for candidate in existing_candidates if candidate.sex == item.sex and (candidate.color or "") == item.color and (not item.temporary_name or candidate.call_name == item.temporary_name)]
+            dog = matching[0] if matching else None
+            if dog:
+                existing_candidates.remove(dog)
+            else:
+                dog = Dog(tenant_id=tenant_id, call_name=item.temporary_name or f"{dam.call_name} 第{item.birth_order}仔", breed=dam.breed, sex=item.sex, category="puppy", status="resident", birth_date=litter.birth_date, color=item.color, sire_id=sire_id, dam_id=dam.id)
+                session.add(dog)
+                session.flush()
+            item.dog_id = dog.id
+        if item.temporary_name:
+            dog.call_name = item.temporary_name
+        dog.breed, dog.sex, dog.birth_date, dog.color = dam.breed, item.sex, litter.birth_date, item.color
+        dog.sire_id, dog.dam_id, dog.category, dog.active = sire_id, dam.id, "puppy", True
 
 
 def litter_puppy_cards(puppies: list[LitterPuppy]) -> str:
@@ -2772,7 +2820,10 @@ def births_page(access=Depends(require_tenant_user), session: Session = Depends(
         dam = session.get(Dog, litter.dam_id)
         puppies = puppies_by_litter.get(litter.id, [])
         puppy_search = " ".join(f"{item.temporary_name or ''} {item.sex} {item.color} {item.birth_weight_g or ''} {item.birth_status}" for item in puppies)
-        puppy_details = "".join(f'<li>第{item.birth_order}仔{"（仮名：" + html.escape(item.temporary_name) + "）" if item.temporary_name else ""}：{"牡" if item.sex == "male" else "牝"}／{html.escape(item.color)}／{str(item.birth_weight_g) + "g" if item.birth_weight_g is not None else "出生体重未登録"}／{"生存" if item.birth_status == "alive" else "死産"}</li>' for item in puppies)
+        puppy_details = ""
+        for item in puppies:
+            management_link = f'／<a href="/modules/dogs/{item.dog_id}">仔犬を管理</a>' if item.dog_id else ""
+            puppy_details += f'<li>第{item.birth_order}仔{"（仮名：" + html.escape(item.temporary_name) + "）" if item.temporary_name else ""}：{"牡" if item.sex == "male" else "牝"}／{html.escape(item.color)}／{str(item.birth_weight_g) + "g" if item.birth_weight_g is not None else "出生体重未登録"}／{"生存" if item.birth_status == "alive" else "死産"}{management_link}</li>'
         search_text = " ".join(str(value) for value in (
             litter.birth_date, dam.call_name, dam.registered_name, litter.born_count,
             litter.alive_count, litter.male_count, litter.female_count, litter.color_details, litter.notes, puppy_search,
@@ -2806,6 +2857,7 @@ def litter_create(dam_id: int = Form(...), birth_date: str = Form(...), born_cou
         automatic_tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id, TaskEvent.dog_id == dam.id, TaskEvent.category == "breeding", TaskEvent.title == f"{dam.call_name} 出産予定", TaskEvent.due_date == expected_day)).all()
         for task in automatic_tasks:
             session.delete(task)
+    sync_litter_puppy_dogs(session, litter, tenant.id)
     session.commit()
     return RedirectResponse("/modules/births", status_code=303)
 
@@ -2842,6 +2894,7 @@ def litter_update(litter_id: int, dam_id: int = Form(...), birth_date: str = For
     litter.dam_id, litter.birth_date = dam.id, born
     litter.notes = notes.strip() or None
     replace_litter_puppies(session, litter, tenant.id, puppies)
+    sync_litter_puppy_dogs(session, litter, tenant.id)
     session.commit()
     return RedirectResponse("/modules/births", status_code=303)
 
