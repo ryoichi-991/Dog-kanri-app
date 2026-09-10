@@ -51,6 +51,22 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('{"", "良好", "少し悪い", "悪い"}', segment)
         self.assertIn('"やわらかい"', segment)
 
+    def test_weight_records_can_be_edited_and_deleted_with_confirmation(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_weights_page")
+        segment = ast.get_source_segment(TEXT, page)
+        self.assertIn('/modules/health/weights/{item.id}/edit', segment)
+        self.assertIn('/modules/health/weights/{item.id}/delete', segment)
+        self.assertIn('name="confirm_delete"', segment)
+        self.assertIn("return confirm(", segment)
+        edit = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_weight_edit")
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_weight_delete")
+        for route in (edit, delete):
+            route_segment = ast.get_source_segment(TEXT, route)
+            self.assertIn("HealthRecord.tenant_id == tenant.id", route_segment)
+            self.assertIn('HealthRecord.category == "weight"', route_segment)
+        self.assertIn("if not confirm_delete", ast.get_source_segment(TEXT, delete))
+        self.assertIn("session.delete(share)", ast.get_source_segment(TEXT, delete))
+
     def test_owner_shared_weight_includes_detailed_condition(self):
         function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "family_dog_health")
         segment = ast.get_source_segment(TEXT, function)

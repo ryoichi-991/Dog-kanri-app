@@ -3966,6 +3966,14 @@ def health_weights_page(access=Depends(require_tenant_user), session: Session = 
             return value.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M")
         return item.record_date.isoformat()
 
+    def recorded_input(item: HealthRecord) -> str:
+        value = item.recorded_at
+        if value:
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%dT%H:%M")
+        return f"{item.record_date.isoformat()}T00:00"
+
     def condition_detail(item: HealthRecord) -> str:
         parts = []
         if item.meal_amount_g is not None:
@@ -3985,7 +3993,14 @@ def health_weights_page(access=Depends(require_tenant_user), session: Session = 
                 share = health_share_for(session, "health", item.id)
                 is_shared = bool(share and share.owner_visible)
                 rows += f'''<tr><td>{recorded_time(item)}</td><td>{item.weight_kg if item.weight_kg is not None else "-"} kg</td><td>{condition_detail(item)}</td><td>{html.escape(item.notes or "-")}</td><td>
-                <form method="post" action="/modules/health/shares/health/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if is_shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if is_shared else 'オーナーへ共有'}</button></form></td></tr>'''
+                <form method="post" action="/modules/health/shares/health/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if is_shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if is_shared else 'オーナーへ共有'}</button></form></td><td>
+                <details><summary>編集・削除</summary><form method="post" action="/modules/health/weights/{item.id}/edit">
+                <label>測定日時</label><input type="datetime-local" name="recorded_at" value="{recorded_input(item)}" required><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" value="{item.weight_kg if item.weight_kg is not None else ''}" required>
+                <label>食事量（g）</label><input type="number" step="0.1" min="0" name="meal_amount_g" value="{item.meal_amount_g if item.meal_amount_g is not None else ''}"><label>フード名</label><input name="food_name" maxlength="150" value="{html.escape(item.food_name or '')}">
+                <label>うんちの状態</label><select name="stool_condition">{''.join(f'<option value="{value}" {"selected" if (item.stool_condition or "") == value else ""}>{value or "選択してください"}</option>' for value in ("", "良好", "やわらかい", "下痢", "硬い", "出ていない"))}</select>
+                <label>健康状態</label><select name="health_condition">{''.join(f'<option value="{value}" {"selected" if (item.health_condition or "") == value else ""}>{value or "選択してください"}</option>' for value in ("", "良好", "少し悪い", "悪い"))}</select>
+                <label>メモ</label><textarea name="notes">{html.escape(item.notes or '')}</textarea><button>変更を保存</button></form>
+                <form method="post" action="/modules/health/weights/{item.id}/delete" onsubmit="return confirm('この体重記録を削除します。よろしいですか？');"><label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirm_delete" value="true" required> この記録を削除することを確認しました</label><button class="danger">記録を削除</button></form></details></td></tr>'''
             latest = f"最新 {items[0].weight_kg} kg（{items[0].record_date}）" if items else "記録はまだありません"
             return f'''<section class="tenant"><h3>{html.escape(dog.call_name)}</h3><p>{latest}</p>
             <details><summary>記録を追加・履歴を見る</summary><form method="post" action="/modules/health/record">
@@ -3995,7 +4010,7 @@ def health_weights_page(access=Depends(require_tenant_user), session: Session = 
             <div><label>うんちの状態</label><select name="stool_condition"><option value="">選択してください</option><option>良好</option><option>やわらかい</option><option>下痢</option><option>硬い</option><option>出ていない</option></select></div>
             <div><label>健康状態</label><select name="health_condition"><option value="">選択してください</option><option>良好</option><option>少し悪い</option><option>悪い</option></select></div></div>
             <label>メモ</label><textarea name="notes" placeholder="食欲や体調など"></textarea><label><input type="checkbox" name="owner_visible" checked> オーナーページにも共有する</label><button>体重を記録</button></form>
-            <table><tr><th>測定日時</th><th>体重</th><th>食事・状態</th><th>メモ</th><th>共有</th></tr>{rows or '<tr><td colspan="5">記録はまだありません。</td></tr>'}</table></details></section>'''
+            <table><tr><th>測定日時</th><th>体重</th><th>食事・状態</th><th>メモ</th><th>共有</th><th>操作</th></tr>{rows or '<tr><td colspan="6">記録はまだありません。</td></tr>'}</table></details></section>'''
 
     def dog_cards(category: str):
         targets = [dog for dog in dogs if dog.category == category]
@@ -4119,6 +4134,48 @@ def health_create(dog_id: int = Form(...), record_date: str = Form(""), recorded
         session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="health", record_id=item.id, owner_visible=True, updated_by_id=user.id))
     session.commit()
     return RedirectResponse("/modules/health/weights" if return_to == "weights" else "/modules/health", status_code=303)
+
+
+@app.post("/modules/health/weights/{record_id}/edit")
+def health_weight_edit(record_id: int, recorded_at: str = Form(...), weight_kg: str = Form(...), meal_amount_g: str = Form(""), food_name: str = Form(""), stool_condition: str = Form(""), health_condition: str = Form(""), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    item = session.scalar(select(HealthRecord).where(HealthRecord.id == record_id, HealthRecord.tenant_id == tenant.id, HealthRecord.category == "weight"))
+    if not item:
+        raise HTTPException(status_code=404, detail="体重記録が見つかりません")
+    try:
+        measured_at = datetime.fromisoformat(recorded_at).replace(tzinfo=ZoneInfo("Asia/Tokyo"))
+        weight = float(weight_kg)
+        meal_amount = float(meal_amount_g) if meal_amount_g else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="測定日時・体重・食事量を確認してください")
+    if weight <= 0 or (meal_amount is not None and meal_amount < 0):
+        raise HTTPException(status_code=400, detail="体重・食事量を確認してください")
+    if stool_condition not in {"", "良好", "やわらかい", "下痢", "硬い", "出ていない"}:
+        raise HTTPException(status_code=400, detail="うんちの状態を確認してください")
+    if health_condition not in {"", "良好", "少し悪い", "悪い"}:
+        raise HTTPException(status_code=400, detail="健康状態を確認してください")
+    item.recorded_at, item.record_date, item.weight_kg = measured_at, measured_at.date(), weight
+    item.meal_amount_g, item.food_name = meal_amount, food_name.strip()[:150] or None
+    item.stool_condition, item.health_condition = stool_condition or None, health_condition or None
+    item.notes = notes.strip() or None
+    session.commit()
+    return RedirectResponse("/modules/health/weights", status_code=303)
+
+
+@app.post("/modules/health/weights/{record_id}/delete")
+def health_weight_delete(record_id: int, confirm_delete: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    if not confirm_delete:
+        raise HTTPException(status_code=400, detail="削除確認が必要です")
+    item = session.scalar(select(HealthRecord).where(HealthRecord.id == record_id, HealthRecord.tenant_id == tenant.id, HealthRecord.category == "weight"))
+    if not item:
+        raise HTTPException(status_code=404, detail="体重記録が見つかりません")
+    shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.tenant_id == tenant.id, HealthRecordShare.record_type == "health", HealthRecordShare.record_id == item.id)).all()
+    for share in shares:
+        session.delete(share)
+    session.delete(item)
+    session.commit()
+    return RedirectResponse("/modules/health/weights", status_code=303)
 
 
 @app.post("/modules/health/shares/{record_type}/{record_id}")
