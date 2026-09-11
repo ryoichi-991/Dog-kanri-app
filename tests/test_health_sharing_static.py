@@ -223,9 +223,36 @@ class HealthSharingStaticTests(unittest.TestCase):
     def test_checkup_requires_at_least_one_exam_item(self):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
         segment = ast.get_source_segment(TEXT, create)
-        self.assertIn("not any([physical_exam, blood_test, ultrasound, chest_xray])", segment)
+        self.assertIn("not any([physical_exam, blood_test, ultrasound, chest_xray, other_exam])", segment)
         self.assertIn('category="checkup"', segment)
         self.assertIn("TaskEvent(", segment)
+
+    def test_checkup_history_supports_edit_and_confirmed_delete(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")
+        segment = ast.get_source_segment(TEXT, page)
+        for marker in ('/health/record/{item.id}/edit?return_to=checkups', '/modules/health/checkups/{item.id}/delete', 'name="confirm_delete"', "return confirm(", "<th>操作</th>"):
+            self.assertIn(marker, segment)
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkup_delete")
+        delete_segment = ast.get_source_segment(TEXT, delete)
+        for marker in ("if not confirm_delete", 'HealthRecord.category == "checkup"', 'HealthRecordShare.record_type == "health"', "session.delete(share)", "session.delete(item)"):
+            self.assertIn(marker, delete_segment)
+        edit_page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_health_record_edit_page")
+        self.assertIn('return_to == "checkups"', ast.get_source_segment(TEXT, edit_page))
+        update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        self.assertIn('text_value("return_to") == "checkups"', ast.get_source_segment(TEXT, update))
+
+    def test_checkup_other_exam_and_automatic_next_due(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        self.assertIn('name="other_exam"', page_segment)
+        self.assertIn('if item.other_exam: labels.append("その他")', page_segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
+        create_segment = ast.get_source_segment(TEXT, create)
+        for marker in ("other_exam: bool = Form(False)", "checked_on.replace(year=checked_on.year + 1)", "day=28", "next_due_on else default_due", "other_exam=other_exam"):
+            self.assertIn(marker, create_segment)
+        edit = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_health_record_edit_page")
+        self.assertIn('name="other_exam"', ast.get_source_segment(TEXT, edit))
+        self.assertIn("ADD COLUMN IF NOT EXISTS other_exam BOOLEAN NOT NULL DEFAULT FALSE", TEXT)
 
     def test_checkup_attachment_is_private_and_size_limited(self):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "health_checkup_create")
