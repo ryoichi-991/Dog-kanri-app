@@ -15,7 +15,7 @@ import ssl
 import subprocess
 import tempfile
 import zipfile
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -210,6 +210,8 @@ class TaskEvent(Base):
     title: Mapped[str] = mapped_column(String(200))
     category: Mapped[str] = mapped_column(String(30), default="general")
     due_date: Mapped[date] = mapped_column(Date, index=True)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2239,6 +2241,8 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS start_at TIMESTAMP"))
+        conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS end_at TIMESTAMP"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS permissions_json TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
@@ -2900,23 +2904,35 @@ def calendar_task_new(date_value: str = "", access=Depends(require_tenant_user))
     except ValueError:
         raise HTTPException(status_code=400, detail="予定日を確認してください")
     category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
-    body = f'''<h1>予定を登録</h1><p>{selected_day} の予定を登録します。</p><form method="post" action="/modules/calendar/tasks"><div class="grid"><div><label>予定日</label><input type="date" name="due_date" value="{selected_day}" required></div><div><label>タイトル</label><input name="title" maxlength="200" required autofocus></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を登録</button> <a class="button secondary" href="/modules/calendar?month={selected_day:%Y-%m}">キャンセル</a></form>'''
+    default_start = datetime.combine(selected_day, time(9, 0)).strftime("%Y-%m-%dT%H:%M")
+    default_end = datetime.combine(selected_day, time(10, 0)).strftime("%Y-%m-%dT%H:%M")
+    body = f'''<h1>予定を登録</h1><p>開始日時と終了日時を入力します。終了日を翌日以降にすると、日をまたぐ予定として登録できます。</p><form method="post" action="/modules/calendar/tasks"><div class="grid"><div><label>開始日時</label><input type="datetime-local" name="start_at" value="{default_start}" required></div><div><label>終了日時</label><input type="datetime-local" name="end_at" value="{default_end}" required></div><div><label>タイトル</label><input name="title" maxlength="200" required autofocus></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を登録</button> <a class="button secondary" href="/modules/calendar?month={selected_day:%Y-%m}">キャンセル</a></form>'''
     return layout("予定を登録", body, user)
 
 
-@app.post("/modules/calendar/tasks")
-def calendar_task_create(title: str = Form(...), due_date: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
-    user, tenant = access
+def calendar_task_period(start_at: str, end_at: str) -> tuple[datetime, datetime]:
     try:
-        selected_day = date.fromisoformat(due_date)
+        start_value = datetime.fromisoformat(start_at)
+        end_value = datetime.fromisoformat(end_at)
     except ValueError:
-        raise HTTPException(status_code=400, detail="予定日を確認してください")
+        raise HTTPException(status_code=400, detail="開始日時・終了日時を確認してください")
+    if start_value.year < 2000 or end_value.year > 2100 or end_value <= start_value:
+        raise HTTPException(status_code=400, detail="終了日時は開始日時より後にしてください")
+    if end_value - start_value > timedelta(days=366):
+        raise HTTPException(status_code=400, detail="予定期間は366日以内にしてください")
+    return start_value, end_value
+
+
+@app.post("/modules/calendar/tasks")
+def calendar_task_create(title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    start_value, end_value = calendar_task_period(start_at, end_at)
     clean_title = title.strip()
     if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="入力内容を確認してください")
-    session.add(TaskEvent(tenant_id=tenant.id, title=clean_title, due_date=selected_day, category=category, notes=notes.strip() or None))
+    session.add(TaskEvent(tenant_id=tenant.id, title=clean_title, due_date=start_value.date(), start_at=start_value, end_at=end_value, category=category, notes=notes.strip() or None))
     session.commit()
-    return calendar_month_redirect(selected_day)
+    return calendar_month_redirect(start_value.date())
 
 
 @app.get("/modules/calendar/tasks/{task_id}/edit", response_class=HTMLResponse)
@@ -2924,24 +2940,23 @@ def calendar_task_edit(task_id: int, access=Depends(require_tenant_user), sessio
     user, tenant = access
     task = calendar_manual_task(task_id, tenant.id, session)
     category_options = "".join(f'<option value="{value}" {"selected" if task.category == value else ""}>{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
-    body = f'''<h1>予定を編集</h1><form method="post" action="/modules/calendar/tasks/{task.id}"><div class="grid"><div><label>予定日</label><input type="date" name="due_date" value="{task.due_date}" required></div><div><label>タイトル</label><input name="title" value="{html.escape(task.title, quote=True)}" maxlength="200" required></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes">{html.escape(task.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/calendar?month={task.due_date:%Y-%m}">キャンセル</a></form><hr><div class="health-toolbar"><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了にする"}</button></form><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/delete" onsubmit="return confirm('この予定を削除します。よろしいですか？');"><button class="danger">削除</button></form></div>'''
+    task_start = task.start_at or datetime.combine(task.due_date, time(9, 0))
+    task_end = task.end_at or datetime.combine(task.due_date, time(10, 0))
+    body = f'''<h1>予定を編集</h1><p>終了日を翌日以降にすると、日をまたぐ予定として保存できます。</p><form method="post" action="/modules/calendar/tasks/{task.id}"><div class="grid"><div><label>開始日時</label><input type="datetime-local" name="start_at" value="{task_start:%Y-%m-%dT%H:%M}" required></div><div><label>終了日時</label><input type="datetime-local" name="end_at" value="{task_end:%Y-%m-%dT%H:%M}" required></div><div><label>タイトル</label><input name="title" value="{html.escape(task.title, quote=True)}" maxlength="200" required></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes">{html.escape(task.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/calendar?month={task.due_date:%Y-%m}">キャンセル</a></form><hr><div class="health-toolbar"><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了にする"}</button></form><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/delete" onsubmit="return confirm('この予定を削除します。よろしいですか？');"><button class="danger">削除</button></form></div>'''
     return layout("予定を編集", body, user)
 
 
 @app.post("/modules/calendar/tasks/{task_id}")
-def calendar_task_update(task_id: int, title: str = Form(...), due_date: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def calendar_task_update(task_id: int, title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     task = calendar_manual_task(task_id, tenant.id, session)
-    try:
-        selected_day = date.fromisoformat(due_date)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="予定日を確認してください")
+    start_value, end_value = calendar_task_period(start_at, end_at)
     clean_title = title.strip()
     if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="入力内容を確認してください")
-    task.title, task.due_date, task.category, task.notes = clean_title, selected_day, category, notes.strip() or None
+    task.title, task.due_date, task.start_at, task.end_at, task.category, task.notes = clean_title, start_value.date(), start_value, end_value, category, notes.strip() or None
     session.commit()
-    return calendar_month_redirect(selected_day)
+    return calendar_month_redirect(start_value.date())
 
 
 @app.post("/modules/calendar/tasks/{task_id}/toggle")
@@ -3016,7 +3031,22 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
             continue
         task_category = item.category if item.category in {"breeding", "health", "legal", "sales"} else "todo"
         task_url = f"/modules/calendar/tasks/{item.id}/edit" if item.dog_id is None else {"breeding": "/modules/breeding", "health": "/modules/health", "legal": "/modules/legal", "sales": "/modules/sales"}.get(task_category, "/modules/todo")
-        add_event(item.due_date, item.title, task_category, "Todo", task_url, item.completed)
+        if item.dog_id is None and item.start_at and item.end_at:
+            event_day = item.start_at.date()
+            final_day = item.end_at.date()
+            while event_day <= final_day:
+                if event_day == item.start_at.date() == final_day:
+                    time_label = f"{item.start_at:%H:%M}〜{item.end_at:%H:%M}"
+                elif event_day == item.start_at.date():
+                    time_label = f"{item.start_at:%H:%M}〜"
+                elif event_day == final_day:
+                    time_label = f"〜{item.end_at:%H:%M}"
+                else:
+                    time_label = "継続"
+                add_event(event_day, f"{item.title}（{time_label}）", task_category, "手動予定", task_url, item.completed)
+                event_day += timedelta(days=1)
+        else:
+            add_event(item.due_date, item.title, task_category, "Todo", task_url, item.completed)
     for item in session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id)).all():
         dog = dogs.get(item.dog_id); add_event(item.start_date + timedelta(days=180), f"{dog.call_name if dog else '対象犬'} 次回ヒート予測", "breeding", "ヒート記録", "/modules/breeding")
     for item in session.scalars(select(Vaccination).where(Vaccination.tenant_id == tenant.id, Vaccination.next_due_on.is_not(None))).all():

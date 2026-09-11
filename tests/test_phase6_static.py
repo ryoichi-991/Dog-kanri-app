@@ -221,6 +221,25 @@ class Phase6StaticTests(unittest.TestCase):
             route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
             self.assertIn(marker, ast.get_source_segment(SOURCE, route))
 
+    def test_calendar_manual_schedules_support_times_and_overnight_periods(self):
+        self.assertIn("start_at: Mapped[datetime | None]", SOURCE)
+        self.assertIn("end_at: Mapped[datetime | None]", SOURCE)
+        self.assertIn("task_events ADD COLUMN IF NOT EXISTS start_at TIMESTAMP", SOURCE)
+        self.assertIn("task_events ADD COLUMN IF NOT EXISTS end_at TIMESTAMP", SOURCE)
+        for route_name in ("calendar_task_new", "calendar_task_edit"):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            segment = ast.get_source_segment(SOURCE, route)
+            for marker in ('type="datetime-local"', 'name="start_at"', 'name="end_at"', "開始日時", "終了日時"):
+                self.assertIn(marker, segment)
+        period = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_task_period")
+        period_segment = ast.get_source_segment(SOURCE, period)
+        self.assertIn("end_value <= start_value", period_segment)
+        self.assertIn("timedelta(days=366)", period_segment)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        page_segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("while event_day <= final_day", 'time_label = "継続"', 'item.start_at:%H:%M', 'item.end_at:%H:%M', '"手動予定"'):
+            self.assertIn(marker, page_segment)
+
     def test_calendar_can_opt_in_to_cached_jkc_dogshows(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
         segment = ast.get_source_segment(SOURCE, route)
