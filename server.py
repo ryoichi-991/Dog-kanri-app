@@ -2634,6 +2634,92 @@ def todo_toggle(task_id: int, access=Depends(require_tenant_user), session: Sess
     return RedirectResponse("/modules/todo", status_code=303)
 
 
+CALENDAR_MANUAL_CATEGORIES = {"general", "care", "customer", "breeding", "health", "legal", "sales"}
+
+
+def calendar_manual_task(task_id: int, tenant_id: int, session: Session) -> TaskEvent:
+    task = session.scalar(select(TaskEvent).where(TaskEvent.id == task_id, TaskEvent.tenant_id == tenant_id, TaskEvent.dog_id.is_(None)))
+    if not task:
+        raise HTTPException(status_code=404, detail="手動予定が見つかりません")
+    return task
+
+
+def calendar_month_redirect(day: date) -> RedirectResponse:
+    return RedirectResponse(f"/modules/calendar?month={day:%Y-%m}", status_code=303)
+
+
+@app.get("/modules/calendar/new", response_class=HTMLResponse)
+def calendar_task_new(date_value: str = "", access=Depends(require_tenant_user)):
+    user, tenant = access
+    try:
+        selected_day = date.fromisoformat(date_value) if date_value else date.today()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="予定日を確認してください")
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
+    body = f'''<h1>予定を登録</h1><p>{selected_day} の予定を登録します。</p><form method="post" action="/modules/calendar/tasks"><div class="grid"><div><label>予定日</label><input type="date" name="due_date" value="{selected_day}" required></div><div><label>タイトル</label><input name="title" maxlength="200" required autofocus></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を登録</button> <a class="button secondary" href="/modules/calendar?month={selected_day:%Y-%m}">キャンセル</a></form>'''
+    return layout("予定を登録", body, user)
+
+
+@app.post("/modules/calendar/tasks")
+def calendar_task_create(title: str = Form(...), due_date: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        selected_day = date.fromisoformat(due_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="予定日を確認してください")
+    clean_title = title.strip()
+    if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="入力内容を確認してください")
+    session.add(TaskEvent(tenant_id=tenant.id, title=clean_title, due_date=selected_day, category=category, notes=notes.strip() or None))
+    session.commit()
+    return calendar_month_redirect(selected_day)
+
+
+@app.get("/modules/calendar/tasks/{task_id}/edit", response_class=HTMLResponse)
+def calendar_task_edit(task_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    task = calendar_manual_task(task_id, tenant.id, session)
+    category_options = "".join(f'<option value="{value}" {"selected" if task.category == value else ""}>{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
+    body = f'''<h1>予定を編集</h1><form method="post" action="/modules/calendar/tasks/{task.id}"><div class="grid"><div><label>予定日</label><input type="date" name="due_date" value="{task.due_date}" required></div><div><label>タイトル</label><input name="title" value="{html.escape(task.title, quote=True)}" maxlength="200" required></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes">{html.escape(task.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/calendar?month={task.due_date:%Y-%m}">キャンセル</a></form><hr><div class="health-toolbar"><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了にする"}</button></form><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/delete" onsubmit="return confirm('この予定を削除します。よろしいですか？');"><button class="danger">削除</button></form></div>'''
+    return layout("予定を編集", body, user)
+
+
+@app.post("/modules/calendar/tasks/{task_id}")
+def calendar_task_update(task_id: int, title: str = Form(...), due_date: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    task = calendar_manual_task(task_id, tenant.id, session)
+    try:
+        selected_day = date.fromisoformat(due_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="予定日を確認してください")
+    clean_title = title.strip()
+    if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
+        raise HTTPException(status_code=400, detail="入力内容を確認してください")
+    task.title, task.due_date, task.category, task.notes = clean_title, selected_day, category, notes.strip() or None
+    session.commit()
+    return calendar_month_redirect(selected_day)
+
+
+@app.post("/modules/calendar/tasks/{task_id}/toggle")
+def calendar_task_toggle(task_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    task = calendar_manual_task(task_id, tenant.id, session)
+    task.completed = not task.completed
+    selected_day = task.due_date
+    session.commit()
+    return calendar_month_redirect(selected_day)
+
+
+@app.post("/modules/calendar/tasks/{task_id}/delete")
+def calendar_task_delete(task_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    task = calendar_manual_task(task_id, tenant.id, session)
+    selected_day = task.due_date
+    session.delete(task)
+    session.commit()
+    return calendar_month_redirect(selected_day)
+
+
 @app.get("/modules/calendar", response_class=HTMLResponse)
 def calendar_page(month: str = "", calendar_category: str = "", calendar_state: str = "", show_all: bool = False, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
@@ -2684,7 +2770,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
         if item.category == "breeding" and (item.dog_id, item.due_date) in delivered_birth_todo_keys and item.title.endswith(" 出産予定"):
             continue
         task_category = item.category if item.category in {"breeding", "health", "legal", "sales"} else "todo"
-        task_url = {"breeding": "/modules/breeding", "health": "/modules/health", "legal": "/modules/legal", "sales": "/modules/sales"}.get(task_category, "/modules/todo")
+        task_url = f"/modules/calendar/tasks/{item.id}/edit" if item.dog_id is None else {"breeding": "/modules/breeding", "health": "/modules/health", "legal": "/modules/legal", "sales": "/modules/sales"}.get(task_category, "/modules/todo")
         add_event(item.due_date, item.title, task_category, "Todo", task_url, item.completed)
     for item in session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id)).all():
         dog = dogs.get(item.dog_id); add_event(item.start_date + timedelta(days=180), f"{dog.call_name if dog else '対象犬'} 次回ヒート予測", "breeding", "ヒート記録", "/modules/breeding")
@@ -2735,14 +2821,15 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
                 event_links += f'<a class="month-calendar-event {state}{event_kind}" href="{url}" title="{html.escape(title, quote=True)}">{html.escape(title)}</a>'
             cell_class = "month-calendar-day outside" if day.month != first_day.month else "month-calendar-day"
             if day == date.today(): cell_class += " today"
-            calendar_cells += f'<div class="{cell_class}"><span class="month-calendar-date">{day.day}</span>{event_links}</div>'
+            add_link = f'<a class="month-calendar-add" href="/modules/calendar/new?date_value={day}" aria-label="{day}に予定を追加">＋</a>' if day.month == first_day.month else ""
+            calendar_cells += f'<div class="{cell_class}"><span class="month-calendar-date">{day.day}</span>{add_link}{event_links}</div>'
         calendar_cells += "</div>"
     previous_month = first_day - timedelta(days=1)
     next_month = month_end + timedelta(days=1)
     retained_filters = urlencode({"calendar_category": calendar_category, "calendar_state": calendar_state})
     month_calendar = f'''<section class="month-calendar" aria-label="{first_day.year}年{first_day.month}月のカレンダー"><div class="month-calendar-nav"><a class="button secondary" href="/modules/calendar?month={previous_month:%Y-%m}&{retained_filters}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="/modules/calendar?month={next_month:%Y-%m}&{retained_filters}">翌月 →</a></div><div class="month-calendar-head"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>{calendar_cells}</section>'''
-    body = f'''<h1>業務カレンダー</h1><p>Todoに加え、ヒート予測・出産予定・健康予定・法令期限を登録データから自動表示します。</p><form method="get" action="/modules/calendar"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>分類</label><select name="calendar_category">{category_options}</select></div><div><label>状態</label><select name="calendar_state">{state_options}</select></div></div><label style="font-weight:400"><input type="checkbox" name="show_all" value="true" style="width:auto" {"checked" if show_all else ""}> 月を限定せず全期間を表示</label><button>カレンダーを表示</button> <a class="button secondary" href="/modules/calendar">今月へ戻る</a> <a class="button" href="/modules/todo">予定を手動登録</a></form>{month_calendar}<h2>予定一覧</h2><p><strong>{len(display_events)}件</strong>の予定を表示しています。完了済みは通常非表示です。必要な場合は状態で「完了」を選択してください。</p><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>予定</th><th>分類</th><th>登録元</th><th>状態</th></tr>{rows or '<tr><td colspan="5">条件に一致する予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する予定はありません。</div>'}</section>
-    <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.birth-window{{background:#f8edf1;color:#855667;border-left:3px solid #d7a1b4}}.month-calendar-event.birth-due{{background:#cf6f91;color:#fff;font-weight:700}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
+    body = f'''<h1>業務カレンダー</h1><p>日付の「＋」から予定を直接登録できます。手動予定を選ぶと編集・完了・削除ができます。</p><form method="get" action="/modules/calendar"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>分類</label><select name="calendar_category">{category_options}</select></div><div><label>状態</label><select name="calendar_state">{state_options}</select></div></div><label style="font-weight:400"><input type="checkbox" name="show_all" value="true" style="width:auto" {"checked" if show_all else ""}> 月を限定せず全期間を表示</label><button>カレンダーを表示</button> <a class="button secondary" href="/modules/calendar">今月へ戻る</a> <a class="button" href="/modules/calendar/new?date_value={date.today()}">予定を手動登録</a></form>{month_calendar}<h2>予定一覧</h2><p><strong>{len(display_events)}件</strong>の予定を表示しています。完了済みは通常非表示です。必要な場合は状態で「完了」を選択してください。</p><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>予定</th><th>分類</th><th>登録元</th><th>状態</th></tr>{rows or '<tr><td colspan="5">条件に一致する予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する予定はありません。</div>'}</section>
+    <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{position:relative;min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-add{{position:absolute;top:4px;right:5px;width:24px;height:24px;border-radius:50%;background:#f6edef;color:#704454;text-align:center;text-decoration:none;font-weight:700;line-height:24px}}.month-calendar-add:hover{{background:#cf6f91;color:#fff}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.birth-window{{background:#f8edf1;color:#855667;border-left:3px solid #d7a1b4}}.month-calendar-event.birth-due{{background:#cf6f91;color:#fff;font-weight:700}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
     return layout("カレンダー", body, user)
 
 

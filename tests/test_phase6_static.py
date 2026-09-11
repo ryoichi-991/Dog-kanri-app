@@ -200,6 +200,27 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertLess(segment.index("events_by_day"), segment.index("calendar_weeks"))
 
+    def test_calendar_allows_direct_manual_schedule_management(self):
+        calendar_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        calendar_segment = ast.get_source_segment(SOURCE, calendar_route)
+        for marker in ('class="month-calendar-add"', '/modules/calendar/new?date_value=', 'item.dog_id is None', '/modules/calendar/tasks/{item.id}/edit'):
+            self.assertIn(marker, calendar_segment)
+        route_names = {node.name for node in TREE.body if isinstance(node, ast.FunctionDef)}
+        for route_name in ("calendar_task_new", "calendar_task_create", "calendar_task_edit", "calendar_task_update", "calendar_task_toggle", "calendar_task_delete"):
+            self.assertIn(route_name, route_names)
+
+    def test_calendar_manual_schedule_actions_are_tenant_scoped_and_confirm_delete(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_manual_task")
+        helper_segment = ast.get_source_segment(SOURCE, helper)
+        for marker in ("TaskEvent.tenant_id == tenant_id", "TaskEvent.dog_id.is_(None)", "status_code=404"):
+            self.assertIn(marker, helper_segment)
+        edit_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_task_edit")
+        edit_segment = ast.get_source_segment(SOURCE, edit_route)
+        self.assertIn("return confirm('この予定を削除します。よろしいですか？');", edit_segment)
+        for route_name, marker in (("calendar_task_toggle", "task.completed = not task.completed"), ("calendar_task_delete", "session.delete(task)")):
+            route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
+            self.assertIn(marker, ast.get_source_segment(SOURCE, route))
+
     def test_pedigree_scan_search_includes_external_dogs(self):
         route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
         segment = ast.get_source_segment(SOURCE, route)
