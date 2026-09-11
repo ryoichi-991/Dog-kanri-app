@@ -144,6 +144,7 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(String(150), unique=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    show_jkc_dogshows: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -2178,6 +2179,7 @@ def startup():
     with engine.begin() as conn:
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
+        conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS permissions_json TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
@@ -2760,10 +2762,7 @@ def refresh_jkc_dogshows(first_day: date, month_end: date, session: Session) -> 
 @app.post("/modules/calendar/jkc-setting")
 def calendar_jkc_setting(show_jkc_dogshows: bool = Form(False), month: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
-    membership = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == user.id))
-    if not membership:
-        raise HTTPException(status_code=404)
-    membership.show_jkc_dogshows = show_jkc_dogshows
+    tenant.show_jkc_dogshows = show_jkc_dogshows
     session.commit()
     try:
         selected_month = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
@@ -2855,8 +2854,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     allowed_categories = {"", "todo", "breeding", "health", "sales", "legal", "jkc_show"}; allowed_states = {"", "upcoming", "overdue", "completed"}
     if calendar_category not in allowed_categories or calendar_state not in allowed_states: raise HTTPException(status_code=400, detail="検索条件を確認してください")
     month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
-    membership = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == user.id))
-    show_jkc_dogshows = bool(membership and membership.show_jkc_dogshows)
+    show_jkc_dogshows = bool(tenant.show_jkc_dogshows)
     dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant.id)).all()}
     events: list[tuple[date, str, str, str, str, str]] = []
     event_keys: set[tuple[date, str, str]] = set()
