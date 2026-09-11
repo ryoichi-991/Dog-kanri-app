@@ -221,6 +221,33 @@ class Phase6StaticTests(unittest.TestCase):
             route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
             self.assertIn(marker, ast.get_source_segment(SOURCE, route))
 
+    def test_calendar_can_opt_in_to_cached_jkc_dogshows(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in ("show_jkc_dogshows", "refresh_jkc_dogshows", "JkcDogShowEvent", '"jkc_show"', "JKCドッグショー予定を表示する", "JKC公式", "jkc-show"):
+            self.assertIn(marker, segment)
+        setting_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_jkc_setting")
+        setting_segment = ast.get_source_segment(SOURCE, setting_route)
+        self.assertIn("Membership.tenant_id == tenant.id", setting_segment)
+        self.assertIn("Membership.user_id == user.id", setting_segment)
+        self.assertIn("membership.show_jkc_dogshows", setting_segment)
+
+    def test_jkc_schedule_parser_only_imports_dogshows(self):
+        parser = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "parse_jkc_dogshow_schedule")
+        segment = ast.get_source_segment(SOURCE, parser)
+        for marker in ('event_type != "ドッグショー"', "p-ev_date", "p-ev__title", "p-ev__venue", "予定頭数", "external_id"):
+            self.assertIn(marker, segment)
+        refresh = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "refresh_jkc_dogshows")
+        refresh_segment = ast.get_source_segment(SOURCE, refresh)
+        for marker in ("timedelta(hours=24)", "UrlRequest", "urlopen", "timeout=15", "session.rollback()", "JkcDogShowSync"):
+            self.assertIn(marker, refresh_segment)
+
+    def test_jkc_calendar_database_migration_is_safe(self):
+        membership = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Membership")
+        self.assertIn("show_jkc_dogshows", ast.get_source_segment(SOURCE, membership))
+        startup = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "startup")
+        self.assertIn("ADD COLUMN IF NOT EXISTS show_jkc_dogshows", ast.get_source_segment(SOURCE, startup))
+
     def test_pedigree_scan_search_includes_external_dogs(self):
         route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
         segment = ast.get_source_segment(SOURCE, route)

@@ -155,6 +155,7 @@ class Membership(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role: Mapped[Role] = mapped_column(SQLEnum(Role, name="membership_role"))
     permissions_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    show_jkc_dogshows: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class Dog(Base):
@@ -210,6 +211,25 @@ class TaskEvent(Base):
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class JkcDogShowEvent(Base):
+    __tablename__ = "jkc_dogshow_events"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_id: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    event_date: Mapped[date] = mapped_column(Date, index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    venue: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    planned_entries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_url: Mapped[str] = mapped_column(String(500))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class JkcDogShowSync(Base):
+    __tablename__ = "jkc_dogshow_syncs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    month_key: Mapped[str] = mapped_column(String(7), unique=True, index=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class BreedingRecord(Base):
@@ -2159,6 +2179,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS platform_admin BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS deleted BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS permissions_json TEXT"))
+        conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'resident'"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS titles TEXT"))
@@ -2648,6 +2669,109 @@ def calendar_month_redirect(day: date) -> RedirectResponse:
     return RedirectResponse(f"/modules/calendar?month={day:%Y-%m}", status_code=303)
 
 
+JKC_DOGSHOW_SCHEDULE_URL = "https://www.jkc.or.jp/events/event_schedule/"
+
+
+def jkc_schedule_text(block: str, class_name: str) -> str:
+    match = re.search(rf'<[^>]+class=["\'][^"\']*\b{re.escape(class_name)}\b[^"\']*["\'][^>]*>(.*?)</[^>]+>', block, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return ""
+    value = re.sub(r"<br\s*/?>", "\n", match.group(1), flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", " ", value)
+    return " ".join(html.unescape(value).split())
+
+
+def parse_jkc_dogshow_schedule(source: str) -> list[dict]:
+    starts = list(re.finditer(r'<li\s+id=["\']ev-(\d+)["\'][^>]*class=["\'][^"\']*\bp-ev__item\b[^"\']*["\'][^>]*>', source, re.IGNORECASE))
+    records: list[dict] = []
+    for index, start in enumerate(starts):
+        block = source[start.start():(starts[index + 1].start() if index + 1 < len(starts) else len(source))]
+        event_type = jkc_schedule_text(block, "p-ev__term")
+        if event_type != "ドッグショー":
+            continue
+        date_text = jkc_schedule_text(block, "p-ev_date")
+        date_match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_text)
+        title = jkc_schedule_text(block, "p-ev__title")
+        if not date_match or not title:
+            continue
+        venue = jkc_schedule_text(block, "p-ev__venue")
+        venue = re.split(r"※|出陳申込", venue, maxsplit=1)[0].strip()
+        entry_match = re.search(r"予定頭数\s*([\d,]+)頭", title)
+        records.append({
+            "external_id": start.group(1),
+            "event_date": date(*(int(value) for value in date_match.groups())),
+            "title": title,
+            "venue": venue or None,
+            "planned_entries": int(entry_match.group(1).replace(",", "")) if entry_match else None,
+            "source_url": f"{JKC_DOGSHOW_SCHEDULE_URL}#ev-{start.group(1)}",
+        })
+    return records
+
+
+def refresh_jkc_dogshows(first_day: date, month_end: date, session: Session) -> bool:
+    month_key = first_day.strftime("%Y-%m")
+    sync = session.scalar(select(JkcDogShowSync).where(JkcDogShowSync.month_key == month_key))
+    now = datetime.now(timezone.utc)
+    synced_at = sync.synced_at if sync else None
+    if synced_at and synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=timezone.utc)
+    if synced_at and now - synced_at < timedelta(hours=24):
+        return True
+    records_by_id: dict[str, dict] = {}
+    query_base = f"{JKC_DOGSHOW_SCHEDULE_URL}?_sfm_acf_ev_date={first_day:%Y%m%d}+{month_end:%Y%m%d}"
+    try:
+        for page in range(1, 11):
+            page_url = query_base + (f"&sf_paged={page}" if page > 1 else "")
+            request = UrlRequest(page_url, headers={"User-Agent": "DogKanriApp/1.0 (+https://dog-management.benefit-navi.com)"})
+            with urlopen(request, timeout=15) as response:
+                source = response.read(2_000_000).decode("utf-8", errors="replace")
+            page_records = parse_jkc_dogshow_schedule(source)
+            new_count = sum(1 for item in page_records if item["external_id"] not in records_by_id)
+            records_by_id.update((item["external_id"], item) for item in page_records)
+            if page > 1 and new_count == 0:
+                break
+            if f"sf_paged={page + 1}" not in html.unescape(source):
+                break
+    except (HTTPError, URLError, TimeoutError, OSError):
+        session.rollback()
+        return False
+    existing = session.scalars(select(JkcDogShowEvent).where(JkcDogShowEvent.event_date >= first_day, JkcDogShowEvent.event_date <= month_end)).all()
+    existing_by_id = {item.external_id: item for item in existing}
+    for item in existing:
+        if item.external_id not in records_by_id:
+            session.delete(item)
+    for external_id, values in records_by_id.items():
+        item = existing_by_id.get(external_id)
+        if not item:
+            item = JkcDogShowEvent(external_id=external_id, **{key: value for key, value in values.items() if key != "external_id"})
+            session.add(item)
+        else:
+            for key in ("event_date", "title", "venue", "planned_entries", "source_url"):
+                setattr(item, key, values[key])
+            item.synced_at = now
+    if not sync:
+        sync = JkcDogShowSync(month_key=month_key)
+        session.add(sync)
+    sync.synced_at = now
+    session.commit()
+    return True
+
+
+@app.post("/modules/calendar/jkc-setting")
+def calendar_jkc_setting(show_jkc_dogshows: bool = Form(False), month: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    membership = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == user.id))
+    if not membership:
+        raise HTTPException(status_code=404)
+    membership.show_jkc_dogshows = show_jkc_dogshows
+    session.commit()
+    try:
+        selected_month = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError:
+        selected_month = date.today().replace(day=1)
+    return calendar_month_redirect(selected_month)
+
+
 @app.get("/modules/calendar/new", response_class=HTMLResponse)
 def calendar_task_new(date_value: str = "", access=Depends(require_tenant_user)):
     user, tenant = access
@@ -2728,9 +2852,11 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     except ValueError:
         raise HTTPException(status_code=400, detail="表示月を確認してください")
     if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1): raise HTTPException(status_code=400, detail="表示月を確認してください")
-    allowed_categories = {"", "todo", "breeding", "health", "sales", "legal"}; allowed_states = {"", "upcoming", "overdue", "completed"}
+    allowed_categories = {"", "todo", "breeding", "health", "sales", "legal", "jkc_show"}; allowed_states = {"", "upcoming", "overdue", "completed"}
     if calendar_category not in allowed_categories or calendar_state not in allowed_states: raise HTTPException(status_code=400, detail="検索条件を確認してください")
     month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    membership = session.scalar(select(Membership).where(Membership.tenant_id == tenant.id, Membership.user_id == user.id))
+    show_jkc_dogshows = bool(membership and membership.show_jkc_dogshows)
     dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant.id)).all()}
     events: list[tuple[date, str, str, str, str, str]] = []
     event_keys: set[tuple[date, str, str]] = set()
@@ -2783,9 +2909,15 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     for item in session.scalars(select(DiseaseHistory).where(DiseaseHistory.tenant_id == tenant.id, DiseaseHistory.next_followup_on.is_not(None), DiseaseHistory.status != "recovered")).all():
         dog = dogs.get(item.dog_id); add_event(item.next_followup_on, f"{dog.call_name if dog else '対象犬'} {item.disease_name}再診・確認", "health", "再診・経過確認", "/modules/health/diseases")
     for item in session.scalars(select(LegalDocument).where(LegalDocument.tenant_id == tenant.id, LegalDocument.due_date.is_not(None))).all(): add_event(item.due_date, item.document_type, "legal", "法令・行政", "/modules/legal", item.status == "completed")
+    jkc_sync_ok = True
+    if show_jkc_dogshows:
+        jkc_sync_ok = refresh_jkc_dogshows(first_day, month_end, session)
+        for item in session.scalars(select(JkcDogShowEvent).where(JkcDogShowEvent.event_date >= first_day, JkcDogShowEvent.event_date <= month_end).order_by(JkcDogShowEvent.event_date, JkcDogShowEvent.title)).all():
+            venue_label = f"／{item.venue}" if item.venue else ""
+            add_event(item.event_date, f"{item.title}{venue_label}", "jkc_show", "JKC公式", item.source_url, item.event_date < date.today())
     events = [item for item in events if (show_all or first_day <= item[0] <= month_end) and (not calendar_category or item[2] == calendar_category) and (not calendar_state or item[3] == calendar_state)]
     events.sort(key=lambda item: (item[0], item[1]))
-    category_labels = {"todo": "Todo", "breeding": "繁殖", "health": "健康", "sales": "販売・顧客", "legal": "法令"}; state_labels = {"upcoming": "予定", "overdue": "期限超過", "completed": "完了"}
+    category_labels = {"todo": "Todo", "breeding": "繁殖", "health": "健康", "sales": "販売・顧客", "legal": "法令", "jkc_show": "JKCドッグショー"}; state_labels = {"upcoming": "予定", "overdue": "期限超過", "completed": "完了"}
     state_styles = {"upcoming": "background:#f6e1b8;color:#755514", "overdue": "background:#f4c9ca;color:#8d3037", "completed": "background:#d9eadb;color:#47634b"}
     # 月間カレンダーには日ごとの予定を残し、下の予定一覧だけを見やすく整理する。
     # 完了済みは通常表示から外すが、「完了」フィルターを選んだ場合は確認できる。
@@ -2804,7 +2936,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     display_events.sort(key=lambda item: (item[0], item[2]))
     rows = "".join(f'''<tr><td>{date_label}</td><td><a href="{url}">{html.escape(title)}</a></td><td>{category_labels[category]}</td><td>{html.escape(source)}</td><td><span class="badge" style="{state_styles[state]}">{state_labels[state]}</span></td></tr>''' for _, date_label, title, category, state, source, url in display_events)
     mobile_cards = "".join(f'''<article class="calendar-mobile-card"><h3><a href="{url}">{html.escape(title)}</a></h3><p>{date_label}　<span class="badge" style="{state_styles[state]}">{state_labels[state]}</span></p><p>{category_labels[category]}／{html.escape(source)}</p></article>''' for _, date_label, title, category, state, source, url in display_events)
-    category_options = "".join(f'<option value="{value}" {"selected" if calendar_category == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("todo", "Todo"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "法令")))
+    category_options = "".join(f'<option value="{value}" {"selected" if calendar_category == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("todo", "Todo"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "法令"), ("jkc_show", "JKCドッグショー")))
     state_options = "".join(f'<option value="{value}" {"selected" if calendar_state == value else ""}>{label}</option>' for value, label in (("", "すべて"), ("upcoming", "予定"), ("overdue", "期限超過"), ("completed", "完了")))
     events_by_day: dict[date, list[tuple[str, str, str, str]]] = {}
     for day, title, category, state, source, url in events:
@@ -2817,7 +2949,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
             day_events = events_by_day.get(day, []) if day.month == first_day.month else []
             event_links = ""
             for title, category, state, url in day_events:
-                event_kind = " birth-window" if "出産候補期間" in title else (" birth-due" if "出産予定" in title else "")
+                event_kind = " birth-window" if "出産候補期間" in title else (" birth-due" if "出産予定" in title else (" jkc-show" if category == "jkc_show" else ""))
                 event_links += f'<a class="month-calendar-event {state}{event_kind}" href="{url}" title="{html.escape(title, quote=True)}">{html.escape(title)}</a>'
             cell_class = "month-calendar-day outside" if day.month != first_day.month else "month-calendar-day"
             if day == date.today(): cell_class += " today"
@@ -2828,8 +2960,12 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     next_month = month_end + timedelta(days=1)
     retained_filters = urlencode({"calendar_category": calendar_category, "calendar_state": calendar_state})
     month_calendar = f'''<section class="month-calendar" aria-label="{first_day.year}年{first_day.month}月のカレンダー"><div class="month-calendar-nav"><a class="button secondary" href="/modules/calendar?month={previous_month:%Y-%m}&{retained_filters}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="/modules/calendar?month={next_month:%Y-%m}&{retained_filters}">翌月 →</a></div><div class="month-calendar-head"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>{calendar_cells}</section>'''
+    jkc_sync_message = '<p class="error">JKC公式サイトを現在取得できないため、保存済みの予定を表示しています。</p>' if show_jkc_dogshows and not jkc_sync_ok else ""
+    jkc_panel = f'''<form method="post" action="/modules/calendar/jkc-setting" class="tenant"><input type="hidden" name="month" value="{first_day:%Y-%m}"><label style="font-weight:600"><input type="checkbox" name="show_jkc_dogshows" value="true" style="width:auto" {"checked" if show_jkc_dogshows else ""} onchange="this.form.submit()"> JKCドッグショー予定を表示する</label><small>JKC公式サイトの情報を1日1回、自動更新します。</small></form>{jkc_sync_message}'''
     body = f'''<h1>業務カレンダー</h1><p>日付の「＋」から予定を直接登録できます。手動予定を選ぶと編集・完了・削除ができます。</p><form method="get" action="/modules/calendar"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>分類</label><select name="calendar_category">{category_options}</select></div><div><label>状態</label><select name="calendar_state">{state_options}</select></div></div><label style="font-weight:400"><input type="checkbox" name="show_all" value="true" style="width:auto" {"checked" if show_all else ""}> 月を限定せず全期間を表示</label><button>カレンダーを表示</button> <a class="button secondary" href="/modules/calendar">今月へ戻る</a> <a class="button" href="/modules/calendar/new?date_value={date.today()}">予定を手動登録</a></form>{month_calendar}<h2>予定一覧</h2><p><strong>{len(display_events)}件</strong>の予定を表示しています。完了済みは通常非表示です。必要な場合は状態で「完了」を選択してください。</p><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>予定</th><th>分類</th><th>登録元</th><th>状態</th></tr>{rows or '<tr><td colspan="5">条件に一致する予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する予定はありません。</div>'}</section>
     <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{position:relative;min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-add{{position:absolute;top:4px;right:5px;width:24px;height:24px;border-radius:50%;background:#f6edef;color:#704454;text-align:center;text-decoration:none;font-weight:700;line-height:24px}}.month-calendar-add:hover{{background:#cf6f91;color:#fff}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.birth-window{{background:#f8edf1;color:#855667;border-left:3px solid #d7a1b4}}.month-calendar-event.birth-due{{background:#cf6f91;color:#fff;font-weight:700}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
+    body = body.replace('</p><form method="get" action="/modules/calendar">', f'</p>{jkc_panel}<form method="get" action="/modules/calendar">', 1)
+    body = body.replace('.month-calendar-event.overdue', '.month-calendar-event.jkc-show{{background:#dce9f8;color:#28547a;border-left:3px solid #5d91c4}}.month-calendar-event.overdue', 1)
     return layout("カレンダー", body, user)
 
 
