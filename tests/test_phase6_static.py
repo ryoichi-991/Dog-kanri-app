@@ -189,6 +189,17 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(marker, segment)
         self.assertIn("day == date.today()", segment)
 
+    def test_calendar_list_hides_completed_and_groups_birth_window(self):
+        route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        segment = ast.get_source_segment(SOURCE, route)
+        for marker in (
+            'item[3] != "completed" or calendar_state == "completed"',
+            "candidate_windows", 'title.endswith(" 出産候補期間")',
+            'f"{start_day}〜{end_day}"', "display_events", "完了済みは通常非表示です",
+        ):
+            self.assertIn(marker, segment)
+        self.assertLess(segment.index("events_by_day"), segment.index("calendar_weeks"))
+
     def test_pedigree_scan_search_includes_external_dogs(self):
         route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
         segment = ast.get_source_segment(SOURCE, route)
