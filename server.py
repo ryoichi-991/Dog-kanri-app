@@ -50,6 +50,7 @@ passwords = CryptContext(schemes=["argon2"], deprecated="auto")
 MODULES = {
     "todo": ("Todoリスト", "日々の作業、期限、完了状況"),
     "calendar": ("カレンダー", "繁殖・健康・申請・販売の予定"),
+    "awards": ("アワード管理", "ロイヤルカナンアワードの年間ポイントとライバル犬管理"),
     "legal": ("法令・行政書類", "定期報告、開始・更新・変更申請、法定帳簿"),
     "dogs": ("犬・血統書管理", "個体、マイクロチップ、血統書、親子関係"),
     "breeding": ("交配・近親交配率", "交配計画、係数計算、組み合わせ提案"),
@@ -239,6 +240,37 @@ class JkcDogShowParticipation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("jkc_dogshow_events.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AwardCompetitor(Base):
+    __tablename__ = "award_competitors"
+    __table_args__ = (UniqueConstraint("tenant_id", "award_year", "dog_id", name="uq_award_competitor_dog_year"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    award_year: Mapped[int] = mapped_column(Integer, index=True)
+    competitor_type: Mapped[str] = mapped_column(String(20))
+    dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id", ondelete="SET NULL"), nullable=True, index=True)
+    dog_name: Mapped[str] = mapped_column(String(250))
+    breed: Mapped[str] = mapped_column(String(150), index=True)
+    sex: Mapped[str] = mapped_column(String(10), index=True)
+    owner_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AwardPointRecord(Base):
+    __tablename__ = "award_point_records"
+    __table_args__ = (UniqueConstraint("competitor_id", "show_external_id", name="uq_award_point_competitor_show"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    competitor_id: Mapped[int] = mapped_column(ForeignKey("award_competitors.id", ondelete="CASCADE"), index=True)
+    jkc_event_id: Mapped[int | None] = mapped_column(ForeignKey("jkc_dogshow_events.id", ondelete="SET NULL"), nullable=True, index=True)
+    show_external_id: Mapped[str] = mapped_column(String(30))
+    show_date: Mapped[date] = mapped_column(Date, index=True)
+    show_name: Mapped[str] = mapped_column(String(300))
+    points: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -1943,7 +1975,7 @@ def permission_group_for_path(path: str) -> str | None:
         return "daily"
     if path.startswith(("/modules/resident-dogs", "/modules/dog-list", "/modules/sale-dogs", "/modules/transferred-dogs", "/modules/archived-dogs", "/modules/dogs")):
         return "dogs"
-    if path.startswith(("/modules/breeding", "/modules/births", "/modules/genetics")):
+    if path.startswith(("/modules/breeding", "/modules/births", "/modules/genetics", "/modules/awards")):
         return "breeding"
     if path.startswith("/modules/health"):
         return "health"
@@ -2013,6 +2045,7 @@ def page_usage_guide(title: str) -> str:
     guides = [
         (("ホーム",), ["犬舎全体の登録状況と、優先して対応する予定を確認できます。", "期限超過・本日・7日以内の業務から各管理画面へ直接移動できます。"], ["要対応サマリーで期限超過がないか確認します。", "本日と7日以内の予定を優先度順に確認します。", "予定名またはクイック操作から対象画面を開きます。"], "表示内容は選択中の会社・犬舎だけに限定されます。作業前に画面上部の選択先を確認してください。"),
         (("カレンダー",), ["Todo、繁殖、健康、販売、法令の予定を1か所で確認できます。", "月・分類・状態で絞り込み、期限超過を早く見つけられます。"], ["表示する月を選びます。", "必要に応じて分類と状態を指定します。", "予定名を選び、元の管理画面で内容を確認・更新します。"], "自動表示される予測日は目安です。交配・出産・医療・行政の確定日は原記録で確認してください。"),
+        (("アワード",), ["1月1日から12月31日までの自犬とライバル犬のポイントを管理できます。", "犬種・性別ごとの合計、順位、首位との差を確認できます。"], ["対象年を選び、在籍犬またはライバル犬を登録します。", "開催月を選び、JKC公式予定からショーを選択してポイントを入力します。", "ランキングとポイント履歴を確認し、必要に応じて記録を修正します。"], "ポイントは個別入力です。JKC公式結果や主催者の記録と照合してから登録してください。"),
         (("通知配信履歴",), ["LINE・メール・ブラウザの配信結果をまとめて確認できます。", "条件検索、失敗通知の再送、CSV・PDF出力ができます。"], ["検索条件を指定して履歴を絞り込みます。", "失敗理由を確認し、設定修正後に必要な通知だけ再送します。", "必要に応じて表示条件のまま帳票を出力します。"], "再送はオーナーへ実際に通知されます。宛先と内容を確認してから操作してください。"),
         (("LINE公式", "LINE連携"), ["LINE公式アカウントの接続状態とオーナー連携を確認できます。", "接続診断、テスト通知、配信履歴の確認ができます。"], ["接続状態と最終Webhook受信日時を確認します。", "オーナーの連携状態を確認します。", "必要な場合だけテスト通知を実行します。"], "Channel secretやアクセストークンは第三者へ共有しないでください。"),
         (("健康", "体重", "ワクチン", "健診", "投薬", "病歴", "フード"), ["愛犬の健康記録、予定、共有データを確認・登録できます。", "検索、実施済み管理、カレンダー表示、帳票出力ができます。"], ["対象犬と健康カテゴリーを確認します。", "日付と内容を入力して記録します。", "必要な記録だけブリーダーまたはオーナーへ共有します。"], "健康記録は診断書ではありません。緊急時や判断に迷う場合は獣医師へ相談してください。"),
@@ -2089,7 +2122,7 @@ def layout(title: str, body: str, user: User | None = None, owner_mode: bool = F
             <a href="/modules/resident-dogs"><span>🐕</span>在籍犬一覧</a><a href="/modules/dog-list/puppy"><span>◌</span>仔犬一覧</a><a href="/modules/sale-dogs"><span>¥</span>販売犬一覧</a><a href="/modules/transferred-dogs"><span>↗</span>譲渡済一覧</a><a href="/modules/dog-list/parent"><span>♙</span>親犬一覧</a><a href="/modules/dog-list/external"><span>◇</span>外部犬一覧</a>
           </div></details>
           <details class="nav-group" data-nav-group="breeding"><summary><span>♡</span>繁殖と血統</summary><div class="nav-group-links">
-            <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
+            <a href="/modules/breeding"><span>♡</span>ヒート・交配管理</a><a href="/modules/births"><span>✦</span>出産管理</a><a href="/modules/genetics"><span>⌘</span>遺伝子・交配分析</a><a href="/modules/awards"><span>★</span>アワード管理</a><a href="/modules/dogs"><span>●</span>犬・血統書管理</a>
           </div></details>
           <details class="nav-group" data-nav-group="business"><summary><span>＋</span>健康と販売</summary><div class="nav-group-links">
             <a href="/modules/health"><span>＋</span>健康管理</a><a href="/modules/sales"><span>¥</span>販売管理</a><a href="/modules/finance/reports"><span>▥</span>経営収益</a><a href="/modules/finance/budgets"><span>◎</span>予算・予実比較</a><a href="/modules/finance/cashflow"><span>↗</span>資金繰り</a><a href="/modules/finance/receivables"><span>￥</span>売掛・入金</a><a href="/modules/finance/payables"><span>￥</span>買掛・支払</a><a href="/modules/finance/expense-requests"><span>✓</span>経費申請</a><a href="/modules/finance/accounts"><span>◇</span>口座・現金</a><a href="/modules/finance/statements"><span>⇄</span>明細取込</a><a href="/modules/finance/rules"><span>⚙</span>仕訳候補</a><a href="/modules/finance/tax"><span>％</span>消費税確認</a><a href="/modules/finance/corrections"><span>↶</span>仕訳訂正</a><a href="/modules/finance/audit"><span>◉</span>会計監査</a><a href="/modules/finance/chart-accounts"><span>⌘</span>勘定科目</a><a href="/modules/finance/journals"><span>⇆</span>複式仕訳</a><a href="/modules/finance/opening-balances"><span>↦</span>期首・繰越</a><a href="/modules/finance/books"><span>▥</span>仕訳帳・元帳</a><a href="/modules/finance/trial-balance"><span>▦</span>試算表</a><a href="/modules/finance/statements-report"><span>▤</span>財務諸表</a><a href="/modules/finance/fixed-assets"><span>▣</span>固定資産</a><a href="/modules/finance/year-end"><span>✓</span>年度締め</a><a href="/modules/finance/year-end-checklist"><span>☑</span>決算前確認</a><a href="/modules/finance/reconciliation"><span>≒</span>残高照合</a><a href="/modules/finance/closing"><span>✓</span>月次締め</a><a href="/modules/finance/recurring"><span>↻</span>定期収支</a><a href="/modules/finance"><span>▤</span>収支・経費台帳</a><a href="/modules/finance/documents"><span>▣</span>領収書・証憑</a><a href="/modules/finance/export"><span>⇩</span>会計一括出力</a><a href="/modules/costs"><span>△</span>原価・利益管理</a><a href="/modules/invoices"><span>□</span>請求書管理</a><a href="/modules/legal"><span>▤</span>法令・行政書類</a>
@@ -3022,6 +3055,137 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     body = body.replace('</p><form method="get" action="/modules/calendar">', f'</p>{jkc_panel}<form method="get" action="/modules/calendar">', 1)
     body = body.replace('.month-calendar-event.overdue', '.month-calendar-event.jkc-show{{background:#dce9f8;color:#28547a;border-left:3px solid #5d91c4}}.month-calendar-event.overdue', 1)
     return layout("カレンダー", body, user)
+
+
+def award_year_value(value: int) -> int:
+    if value < 2000 or value > 2100:
+        raise HTTPException(status_code=400, detail="対象年を確認してください")
+    return value
+
+
+def award_competitor_or_404(competitor_id: int, tenant_id: int, session: Session) -> AwardCompetitor:
+    item = session.scalar(select(AwardCompetitor).where(AwardCompetitor.id == competitor_id, AwardCompetitor.tenant_id == tenant_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="アワード対象犬が見つかりません")
+    return item
+
+
+@app.get("/modules/awards", response_class=HTMLResponse)
+def awards_page(year: int = date.today().year, breed: str = "", sex: str = "", show_month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    year = award_year_value(year)
+    if sex not in {"", "male", "female"}:
+        raise HTTPException(status_code=400, detail="性別を確認してください")
+    try:
+        selected_month = datetime.strptime(show_month, "%Y-%m").date().replace(day=1) if show_month else (date.today().replace(day=1) if year == date.today().year else date(year, 1, 1))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ショー開催月を確認してください")
+    if selected_month.year != year:
+        selected_month = date(year, 1, 1)
+    month_end = (selected_month.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    sync_ok = refresh_jkc_dogshows(selected_month, month_end, session)
+    competitors = session.scalars(select(AwardCompetitor).where(AwardCompetitor.tenant_id == tenant.id, AwardCompetitor.award_year == year).order_by(AwardCompetitor.breed, AwardCompetitor.sex, AwardCompetitor.dog_name)).all()
+    competitor_ids = [item.id for item in competitors]
+    point_records = session.scalars(select(AwardPointRecord).where(AwardPointRecord.tenant_id == tenant.id, AwardPointRecord.competitor_id.in_(competitor_ids)).order_by(AwardPointRecord.show_date.desc(), AwardPointRecord.id.desc())).all() if competitor_ids else []
+    totals = {item.id: 0 for item in competitors}; counts = {item.id: 0 for item in competitors}
+    for record in point_records:
+        totals[record.competitor_id] = totals.get(record.competitor_id, 0) + record.points
+        counts[record.competitor_id] = counts.get(record.competitor_id, 0) + 1
+    filtered = [item for item in competitors if (not breed or item.breed == breed) and (not sex or item.sex == sex)]
+    filtered.sort(key=lambda item: (item.breed, item.sex, -totals.get(item.id, 0), item.dog_name))
+    group_tops: dict[tuple[str, str], int] = {}
+    for item in competitors:
+        key = (item.breed, item.sex)
+        group_tops[key] = max(group_tops.get(key, 0), totals.get(item.id, 0))
+    ranking_rows = ""
+    group_ranks: dict[tuple[str, str], int] = {}; previous_totals: dict[tuple[str, str], int] = {}
+    for item in filtered:
+        key = (item.breed, item.sex); total = totals.get(item.id, 0)
+        if previous_totals.get(key) != total:
+            group_ranks[key] = group_ranks.get(key, 0) + 1
+            previous_totals[key] = total
+        difference = group_tops.get(key, total) - total
+        kind = "自犬" if item.competitor_type == "own" else "ライバル"
+        ranking_rows += f'''<tr><td>{html.escape(item.breed)}</td><td>{"オス" if item.sex == "male" else "メス"}</td><td>{group_ranks[key]}位</td><td><strong>{html.escape(item.dog_name)}</strong><br><small>{kind}{f"／{html.escape(item.owner_name)}" if item.owner_name else ""}</small></td><td><strong>{total}pt</strong></td><td>{counts.get(item.id, 0)}回</td><td>個別入力</td><td>{"首位" if difference == 0 else f"首位まで{difference}pt"}</td></tr>'''
+    dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category != "external", Dog.status.notin_({"delivered", "transferred"})).order_by(Dog.breed, Dog.call_name)).all()
+    dog_options = "".join(f'<option value="{dog.id}">{html.escape(dog.call_name)}{f"／{html.escape(dog.registered_name)}" if dog.registered_name else ""}（{html.escape(dog.breed or "犬種未登録")}／{"オス" if dog.sex == "male" else "メス"}）</option>' for dog in dogs)
+    competitor_options = "".join(f'<option value="{item.id}">{html.escape(item.dog_name)}（{"自犬" if item.competitor_type == "own" else "ライバル"}／{html.escape(item.breed)}／{"オス" if item.sex == "male" else "メス"}）</option>' for item in competitors)
+    shows = session.scalars(select(JkcDogShowEvent).where(JkcDogShowEvent.event_date >= selected_month, JkcDogShowEvent.event_date <= month_end).order_by(JkcDogShowEvent.event_date, JkcDogShowEvent.title)).all()
+    show_options = "".join(f'<option value="{item.id}">{item.event_date}　{html.escape(item.title)}{f"／{html.escape(item.venue)}" if item.venue else ""}</option>' for item in shows)
+    breed_values = sorted({item.breed for item in competitors})
+    breed_options = "".join(f'<option value="{html.escape(value, quote=True)}" {"selected" if breed == value else ""}>{html.escape(value)}</option>' for value in breed_values)
+    rival_rows = "".join(f'''<tr><td><form method="post" action="/modules/awards/competitors/{item.id}" class="award-inline-edit"><input type="hidden" name="year" value="{year}"><input name="dog_name" value="{html.escape(item.dog_name, quote=True)}" required><input name="breed" value="{html.escape(item.breed, quote=True)}" required><select name="sex"><option value="male" {"selected" if item.sex == "male" else ""}>オス</option><option value="female" {"selected" if item.sex == "female" else ""}>メス</option></select><input name="owner_name" value="{html.escape(item.owner_name or "", quote=True)}" placeholder="オーナー名"><button>保存</button></form></td><td><form method="post" action="/modules/awards/competitors/{item.id}/delete" onsubmit="return confirm('このライバル犬とポイント記録を削除します。よろしいですか？');"><input type="hidden" name="year" value="{year}"><input type="hidden" name="confirm_delete" value="true"><button class="danger">削除</button></form></td></tr>''' for item in competitors if item.competitor_type == "rival")
+    target_rows = "".join(f'''<tr><td>{html.escape(item.dog_name)}</td><td>{"自犬" if item.competitor_type == "own" else "ライバル"}</td><td>{html.escape(item.breed)}</td><td>{"オス" if item.sex == "male" else "メス"}</td><td><form method="post" action="/modules/awards/competitors/{item.id}/delete" onsubmit="return confirm('この対象犬と関連するポイント記録を削除します。よろしいですか？');"><input type="hidden" name="year" value="{year}"><input type="hidden" name="confirm_delete" value="true"><button class="danger">対象から削除</button></form></td></tr>''' for item in competitors)
+    competitor_map = {item.id: item for item in competitors}
+    point_rows = ""
+    for record in point_records:
+        competitor = competitor_map.get(record.competitor_id)
+        if not competitor: continue
+        point_rows += f'''<tr><td>{record.show_date}</td><td>{html.escape(record.show_name)}</td><td>{html.escape(competitor.dog_name)}</td><td><form class="inline" method="post" action="/modules/awards/points/{record.id}"><input type="hidden" name="year" value="{year}"><input type="number" name="points" value="{record.points}" min="1" max="999" required style="width:80px"><input name="notes" value="{html.escape(record.notes or "", quote=True)}" placeholder="メモ" style="width:150px"><button>更新</button></form></td><td><form class="inline" method="post" action="/modules/awards/points/{record.id}/delete" onsubmit="return confirm('このポイント記録を削除します。よろしいですか？');"><input type="hidden" name="year" value="{year}"><input type="hidden" name="confirm_delete" value="true"><button class="danger">削除</button></form></td></tr>'''
+    sync_message = '<p class="error">JKC公式サイトを現在取得できないため、保存済みのショーを表示しています。</p>' if not sync_ok else ""
+    body = f'''<h1>ロイヤルカナンアワード管理</h1><p>集計期間は1月1日から12月31日です。自犬とライバル犬の年間ポイントを犬種・性別ごとに管理します。</p><form method="get" action="/modules/awards"><div class="grid"><div><label>対象年</label><input type="number" name="year" value="{year}" min="2000" max="2100"></div><div><label>犬種</label><select name="breed"><option value="">すべて</option>{breed_options}</select></div><div><label>性別</label><select name="sex"><option value="">すべて</option><option value="male" {"selected" if sex == "male" else ""}>オス</option><option value="female" {"selected" if sex == "female" else ""}>メス</option></select></div></div><button>ランキングを表示</button></form><section><h2>{year}年 アワードレース</h2><div style="overflow-x:auto"><table><tr><th>犬種</th><th>性別</th><th>順位</th><th>犬</th><th>合計</th><th>獲得回数</th><th>年間条件</th><th>首位との差</th></tr>{ranking_rows or '<tr><td colspan="8">対象犬がまだ登録されていません。</td></tr>'}</table></div></section><div class="grid"><section><h2>自犬を登録</h2><form method="post" action="/modules/awards/competitors"><input type="hidden" name="year" value="{year}"><input type="hidden" name="competitor_type" value="own"><label>在籍犬</label><select name="dog_id" required><option value="">選択してください</option>{dog_options}</select><button>アワード対象に追加</button></form></section><section><h2>ライバル犬を登録</h2><form method="post" action="/modules/awards/competitors"><input type="hidden" name="year" value="{year}"><input type="hidden" name="competitor_type" value="rival"><label>登録犬名</label><input name="dog_name" required><label>犬種</label><input name="breed" required><label>性別</label><select name="sex"><option value="male">オス</option><option value="female">メス</option></select><label>オーナー名（任意）</label><input name="owner_name"><button>ライバル犬を追加</button></form></section></div><section><h2>ポイントを登録</h2>{sync_message}<form method="get" action="/modules/awards"><input type="hidden" name="year" value="{year}"><label>ショー開催月</label><input type="month" name="show_month" value="{selected_month:%Y-%m}" min="{year}-01" max="{year}-12"><button>JKCショーを表示</button></form><form method="post" action="/modules/awards/points"><input type="hidden" name="year" value="{year}"><div class="grid"><div><label>対象犬</label><select name="competitor_id" required><option value="">選択してください</option>{competitor_options}</select></div><div><label>JKCドッグショー</label><select name="jkc_event_id" required><option value="">選択してください</option>{show_options}</select></div><div><label>獲得ポイント</label><input type="number" name="points" min="1" max="999" required></div></div><label>メモ（任意）</label><input name="notes"><button>ポイントを登録</button></form></section><section><h2>ポイント履歴</h2><div style="overflow-x:auto"><table><tr><th>開催日</th><th>ショー</th><th>犬</th><th>ポイント・メモ</th><th>操作</th></tr>{point_rows or '<tr><td colspan="5">ポイント記録はありません。</td></tr>'}</table></div></section><section><h2>ライバル犬情報</h2><div style="overflow-x:auto"><table><tr><th>登録情報</th><th>操作</th></tr>{rival_rows or '<tr><td colspan="2">ライバル犬はまだ登録されていません。</td></tr>'}</table></div></section><style>.award-inline-edit{{display:grid;grid-template-columns:2fr 1.5fr 100px 1.5fr auto;gap:8px;align-items:end}}@media(max-width:700px){{.award-inline-edit{{grid-template-columns:1fr}}}}</style>'''
+    body = body.replace("<th>年間条件</th>", "<th>入力方式</th>", 1)
+    body = body.replace('<section><h2>ライバル犬情報</h2>', f'''<section><h2>対象犬の管理</h2><div style="overflow-x:auto"><table><tr><th>犬名</th><th>区分</th><th>犬種</th><th>性別</th><th>操作</th></tr>{target_rows or '<tr><td colspan="5">対象犬はまだ登録されていません。</td></tr>'}</table></div></section><section><h2>ライバル犬情報</h2>''', 1)
+    return layout("アワード管理", body, user)
+
+
+@app.post("/modules/awards/competitors")
+def award_competitor_create(year: int = Form(...), competitor_type: str = Form(...), dog_id: int | None = Form(None), dog_name: str = Form(""), breed: str = Form(""), sex: str = Form(""), owner_name: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year)
+    if competitor_type == "own":
+        dog = session.scalar(select(Dog).where(Dog.id == dog_id, Dog.tenant_id == tenant.id, Dog.active.is_(True), Dog.category != "external", Dog.status.notin_({"delivered", "transferred"}))) if dog_id else None
+        if not dog or not dog.breed or dog.sex not in {"male", "female"}: raise HTTPException(status_code=400, detail="在籍犬の犬種と性別を確認してください")
+        if session.scalar(select(AwardCompetitor).where(AwardCompetitor.tenant_id == tenant.id, AwardCompetitor.award_year == year, AwardCompetitor.dog_id == dog.id)): raise HTTPException(status_code=409, detail="この犬は対象年に登録済みです")
+        session.add(AwardCompetitor(tenant_id=tenant.id, award_year=year, competitor_type="own", dog_id=dog.id, dog_name=dog.registered_name or dog.call_name, breed=dog.breed, sex=dog.sex))
+    elif competitor_type == "rival":
+        if not dog_name.strip() or not breed.strip() or sex not in {"male", "female"}: raise HTTPException(status_code=400, detail="ライバル犬の情報を確認してください")
+        session.add(AwardCompetitor(tenant_id=tenant.id, award_year=year, competitor_type="rival", dog_name=dog_name.strip(), breed=breed.strip(), sex=sex, owner_name=owner_name.strip() or None))
+    else: raise HTTPException(status_code=400, detail="登録区分を確認してください")
+    session.commit(); return RedirectResponse(f"/modules/awards?year={year}", status_code=303)
+
+
+@app.post("/modules/awards/competitors/{competitor_id}")
+def award_competitor_update(competitor_id: int, year: int = Form(...), dog_name: str = Form(...), breed: str = Form(...), sex: str = Form(...), owner_name: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year); item = award_competitor_or_404(competitor_id, tenant.id, session)
+    if item.competitor_type != "rival" or item.award_year != year: raise HTTPException(status_code=400, detail="ライバル犬だけ編集できます")
+    if not dog_name.strip() or not breed.strip() or sex not in {"male", "female"}: raise HTTPException(status_code=400, detail="入力内容を確認してください")
+    item.dog_name, item.breed, item.sex, item.owner_name = dog_name.strip(), breed.strip(), sex, owner_name.strip() or None
+    session.commit(); return RedirectResponse(f"/modules/awards?year={year}", status_code=303)
+
+
+@app.post("/modules/awards/competitors/{competitor_id}/delete")
+def award_competitor_delete(competitor_id: int, year: int = Form(...), confirm_delete: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year); item = award_competitor_or_404(competitor_id, tenant.id, session)
+    if item.award_year != year: raise HTTPException(status_code=400, detail="対象年を確認してください")
+    if not confirm_delete: raise HTTPException(status_code=400, detail="削除の確認が必要です")
+    session.delete(item); session.commit(); return RedirectResponse(f"/modules/awards?year={year}", status_code=303)
+
+
+@app.post("/modules/awards/points")
+def award_point_create(year: int = Form(...), competitor_id: int = Form(...), jkc_event_id: int = Form(...), points: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year); competitor = award_competitor_or_404(competitor_id, tenant.id, session); show = session.get(JkcDogShowEvent, jkc_event_id)
+    if competitor.award_year != year or not show or show.event_date.year != year or points < 1 or points > 999: raise HTTPException(status_code=400, detail="ポイント登録内容を確認してください")
+    if session.scalar(select(AwardPointRecord).where(AwardPointRecord.competitor_id == competitor.id, AwardPointRecord.show_external_id == show.external_id)): raise HTTPException(status_code=409, detail="この犬には同じショーのポイントが登録済みです")
+    session.add(AwardPointRecord(tenant_id=tenant.id, competitor_id=competitor.id, jkc_event_id=show.id, show_external_id=show.external_id, show_date=show.event_date, show_name=show.title, points=points, notes=notes.strip() or None))
+    session.commit(); return RedirectResponse(f"/modules/awards?year={year}&show_month={show.event_date:%Y-%m}", status_code=303)
+
+
+@app.post("/modules/awards/points/{record_id}")
+def award_point_update(record_id: int, year: int = Form(...), points: int = Form(...), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year)
+    record = session.scalar(select(AwardPointRecord).where(AwardPointRecord.id == record_id, AwardPointRecord.tenant_id == tenant.id))
+    if not record or record.show_date.year != year: raise HTTPException(status_code=404, detail="ポイント記録が見つかりません")
+    if points < 1 or points > 999: raise HTTPException(status_code=400, detail="ポイント数を確認してください")
+    record.points, record.notes = points, notes.strip() or None; session.commit(); return RedirectResponse(f"/modules/awards?year={year}", status_code=303)
+
+
+@app.post("/modules/awards/points/{record_id}/delete")
+def award_point_delete(record_id: int, year: int = Form(...), confirm_delete: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access; year = award_year_value(year)
+    record = session.scalar(select(AwardPointRecord).where(AwardPointRecord.id == record_id, AwardPointRecord.tenant_id == tenant.id))
+    if not record or record.show_date.year != year: raise HTTPException(status_code=404, detail="ポイント記録が見つかりません")
+    if not confirm_delete: raise HTTPException(status_code=400, detail="削除の確認が必要です")
+    session.delete(record); session.commit(); return RedirectResponse(f"/modules/awards?year={year}", status_code=303)
 
 
 @app.get("/modules/breeding", response_class=HTMLResponse)
