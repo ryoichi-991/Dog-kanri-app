@@ -2285,6 +2285,38 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("finance_audit_journal_issues", "journal_audit", "複式仕訳伝票", "借方・貸方合計", "複式仕訳の整合性", "対象期間の複式仕訳に不整合はありません", "/modules/finance/journals", "/modules/finance/general-ledger", "操作履歴"):
             self.assertIn(marker, page)
 
+    def test_award_models_store_annual_competitors_and_jkc_point_snapshots(self):
+        competitor = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AwardCompetitor"))
+        record = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AwardPointRecord"))
+        for marker in ('__tablename__ = "award_competitors"', 'award_year:', 'competitor_type:', 'ForeignKey("dogs.id", ondelete="SET NULL")', 'breed:', 'sex:'):
+            self.assertIn(marker, competitor)
+        for marker in ('__tablename__ = "award_point_records"', 'ForeignKey("award_competitors.id", ondelete="CASCADE")', 'ForeignKey("jkc_dogshow_events.id", ondelete="SET NULL")', 'show_external_id:', 'show_date:', 'show_name:', 'points:'):
+            self.assertIn(marker, record)
+
+    def test_award_page_is_tenant_scoped_and_builds_annual_ranking(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "awards_page"))
+        for marker in ("AwardCompetitor.tenant_id == tenant.id", "AwardCompetitor.award_year == year", "AwardPointRecord.tenant_id == tenant.id", "refresh_jkc_dogshows", "group_tops", "group_ranks", "首位まで", "1月1日から12月31日", "在籍犬", "ライバル犬"):
+            self.assertIn(marker, page)
+
+    def test_award_mutations_validate_tenant_year_points_and_confirmation(self):
+        create = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_competitor_create"))
+        point = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_point_create"))
+        delete = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_point_delete"))
+        for marker in ("Dog.tenant_id == tenant.id", "AwardCompetitor.tenant_id == tenant.id", "AwardCompetitor.award_year == year", 'competitor_type == "own"', 'competitor_type == "rival"'):
+            self.assertIn(marker, create)
+        for marker in ("award_competitor_or_404", "show.event_date.year != year", "points < 1", "points > 999", "show_external_id == show.external_id"):
+            self.assertIn(marker, point)
+        for marker in ("AwardPointRecord.tenant_id == tenant.id", "confirm_delete", "削除の確認が必要です"):
+            self.assertIn(marker, delete)
+
+    def test_award_navigation_permission_and_usage_guide_exist(self):
+        self.assertIn('"awards": ("アワード管理"', SOURCE)
+        self.assertIn('href="/modules/awards"', SOURCE)
+        self.assertIn('path.startswith(("/modules/breeding", "/modules/births", "/modules/genetics", "/modules/awards"))', SOURCE)
+        guide = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "page_usage_guide"))
+        for marker in ("アワード", "1月1日から12月31日", "JKC公式予定", "ポイントは個別入力"):
+            self.assertIn(marker, guide)
+
     def test_finance_audit_issue_output_is_escaped(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page"))
         self.assertIn("html.escape(label)", page)
