@@ -164,6 +164,20 @@ class HealthSharingStaticTests(unittest.TestCase):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
         self.assertIn('dose_number not in {"", "1", "2", "3", "4"}', ast.get_source_segment(TEXT, create))
 
+    def test_vaccination_history_supports_edit_and_confirmed_delete(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        for marker in ('/health/vaccination/{item.id}/edit?return_to=vaccinations', '/modules/health/vaccinations/{item.id}/delete', 'name="confirm_delete"', "return confirm(", "<th>操作</th>"):
+            self.assertIn(marker, page_segment)
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "vaccination_delete")
+        delete_segment = ast.get_source_segment(TEXT, delete)
+        for marker in ("if not confirm_delete", "Vaccination.tenant_id == tenant.id", 'HealthRecordShare.record_type == "vaccination"', "session.delete(share)", "session.delete(item)"):
+            self.assertIn(marker, delete_segment)
+        edit_page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_health_record_edit_page")
+        self.assertIn('return_to == "vaccinations"', ast.get_source_segment(TEXT, edit_page))
+        update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        self.assertIn('text_value("return_to") == "vaccinations"', ast.get_source_segment(TEXT, update))
+
     def test_checkup_management_is_a_dedicated_page(self):
         self.assertIn('@app.get("/modules/health/checkups"', TEXT)
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")

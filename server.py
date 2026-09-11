@@ -4872,7 +4872,8 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
         shared = bool(share and share.owner_visible)
         certificate = f'<a href="/modules/health/vaccinations/{item.id}/certificate" target="_blank">証明書を見る</a>' if item.certificate_data else "-"
         rows += f'''<tr><td>{item.administered_on}</td><td>{html.escape(dog.call_name)}</td><td>{type_labels.get(item.vaccine_type or "other", "その他")}</td><td>{html.escape(item.vaccine_name)}</td><td>{dose_label(item.dose_number)}</td><td>{item.next_due_on or "-"}</td><td>{certificate}</td><td>
-        <form method="post" action="/modules/health/shares/vaccination/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if shared else 'オーナーへ共有'}</button></form></td></tr>'''
+        <form method="post" action="/modules/health/shares/vaccination/{item.id}"><input type="hidden" name="owner_visible" value="{'false' if shared else 'true'}"><button class="secondary">{'共有中（非公開にする）' if shared else 'オーナーへ共有'}</button></form></td><td><a class="button secondary" href="/modules/dogs/{dog.id}/health/vaccination/{item.id}/edit?return_to=vaccinations">編集</a>
+        <form method="post" action="/modules/health/vaccinations/{item.id}/delete" onsubmit="return confirm('このワクチン接種記録を削除します。よろしいですか？');"><label style="font-weight:400"><input style="width:auto" type="checkbox" name="confirm_delete" value="true" required> 削除を確認</label><button class="danger">削除</button></form></td></tr>'''
 
     body = f'''<a class="button secondary" href="/modules/health">健康管理へ戻る</a><h1>ワクチン管理</h1>
     <p>狂犬病と混合ワクチンを別々に判定し、子犬期の接種順と次回予定も管理します。</p>
@@ -4887,7 +4888,7 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
     <div><label>動物病院</label><input name="clinic"></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>製造番号・ロット番号</label><input name="lot_no"></div><div><label>証明書番号</label><input name="certificate_no"></div>
     <div><label>副反応</label><select name="reaction"><option value="none">なし</option><option value="mild">軽い症状あり</option><option value="severe">強い症状あり</option><option value="unknown">不明</option></select></div><div><label>証明書（画像・PDF、8MBまで）</label><input type="file" name="certificate_file" accept="image/jpeg,image/png,image/webp,application/pdf"></div></div>
     <label>メモ</label><textarea name="notes"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="owner_visible" value="true"> オーナーページにも共有する</label><input type="hidden" name="return_to" value="vaccinations"><button>接種を記録</button></form>
-    <h2>接種履歴</h2><div style="overflow-x:auto"><table><tr><th>接種日</th><th>犬</th><th>区分</th><th>ワクチン</th><th>回数</th><th>次回予定</th><th>証明書</th><th>共有</th></tr>{rows or '<tr><td colspan="8">接種記録はまだありません。</td></tr>'}</table></div>
+    <h2>接種履歴</h2><div style="overflow-x:auto"><table><tr><th>接種日</th><th>犬</th><th>区分</th><th>ワクチン</th><th>回数</th><th>次回予定</th><th>証明書</th><th>共有</th><th>操作</th></tr>{rows or '<tr><td colspan="9">接種記録はまだありません。</td></tr>'}</table></div>
     <style>.dog-picker{{grid-column:span 2;min-width:0}}.dog-search-all{{display:flex;gap:7px;align-items:center;margin:8px 0;font-weight:500}}.dog-search-all input{{width:auto;margin:0}}.dog-search-count{{display:block;color:#806b72}}@media(max-width:700px){{.dog-picker{{grid-column:1/-1}}}}</style>
     <script>document.querySelectorAll('.dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),all=input.parentElement.querySelector('.dog-search-all input'),count=input.parentElement.querySelector('.dog-search-count'),original=Array.from(select.options).map(function(o){{return o.cloneNode(true)}});function filterDogs(){{var q=input.value.trim().toLowerCase(),current=select.value,matches=original.filter(function(o){{return (all.checked||o.dataset.nonresident!=='true')&&(!q||(o.dataset.search||o.textContent).toLowerCase().includes(q))}});select.replaceChildren.apply(select,matches.map(function(o){{return o.cloneNode(true)}}));if(matches.some(function(o){{return o.value===current}}))select.value=current;count.textContent=(all.checked?'在籍犬以外を含む ':'在籍犬 ')+matches.length+'頭から選択'}}input.addEventListener('input',filterDogs);all.addEventListener('change',filterDogs);filterDogs()}});</script>'''
     return layout("ワクチン管理", body, user)
@@ -4900,6 +4901,26 @@ def vaccination_certificate(vaccination_id: int, access=Depends(require_tenant_u
     if not item or not item.certificate_data:
         raise HTTPException(status_code=404, detail="証明書が見つかりません")
     return Response(content=item.certificate_data, media_type=item.certificate_content_type or "application/octet-stream", headers={"Cache-Control": "private, no-store"})
+
+
+@app.post("/modules/health/vaccinations/{vaccination_id}/delete")
+def vaccination_delete(vaccination_id: int, confirm_delete: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    _, tenant = access
+    if not confirm_delete:
+        raise HTTPException(status_code=400, detail="削除確認が必要です")
+    item = session.scalar(select(Vaccination).where(Vaccination.id == vaccination_id, Vaccination.tenant_id == tenant.id))
+    if not item:
+        raise HTTPException(status_code=404, detail="ワクチン接種記録が見つかりません")
+    shares = session.scalars(select(HealthRecordShare).where(
+        HealthRecordShare.tenant_id == tenant.id,
+        HealthRecordShare.record_type == "vaccination",
+        HealthRecordShare.record_id == item.id,
+    )).all()
+    for share in shares:
+        session.delete(share)
+    session.delete(item)
+    session.commit()
+    return RedirectResponse("/modules/health/vaccinations", status_code=303)
 
 
 @app.post("/modules/health/vaccine")
@@ -5923,7 +5944,7 @@ def health_edit_select(name: str, selected: str | None, choices: dict[str, str],
 
 
 @app.get("/modules/dogs/{dog_id}/health/{record_type}/{record_id}/edit", response_class=HTMLResponse)
-def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
+def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, return_to: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
     item = dog_health_edit_item(session, tenant.id, dog.id, record_type, record_id)
@@ -5949,7 +5970,9 @@ def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, a
     else:
         fields = f'''<div class="grid"><div><label>検査名・遺伝病名</label><input name="test_name" value="{value('test_name')}" required></div>{health_edit_select('result', item.result, {'clear':'クリア','carrier':'キャリア','affected':'アフェクテッド','unknown':'不明'}, '結果')}<div><label>検査日</label><input type="date" name="tested_on" value="{value('tested_on')}"></div><div><label>検査機関</label><input name="laboratory" value="{value('laboratory')}"></div></div>'''
         title = "遺伝子検査"
-    body = f'''<a class="button secondary" href="/modules/dogs/{dog.id}?tab=health">健康データへ戻る</a><h1>{html.escape(dog.call_name)}の{title}を編集</h1><p>登録済みデータを修正して保存できます。対象犬と記録種別は変更されません。</p><form method="post">{fields}<button>変更を保存</button> <a class="button secondary" href="/modules/dogs/{dog.id}?tab=health">キャンセル</a></form>'''
+    back_url = "/modules/health/vaccinations" if record_type == "vaccination" and return_to == "vaccinations" else f"/modules/dogs/{dog.id}?tab=health"
+    return_input = '<input type="hidden" name="return_to" value="vaccinations">' if back_url == "/modules/health/vaccinations" else ""
+    body = f'''<a class="button secondary" href="{back_url}">健康データへ戻る</a><h1>{html.escape(dog.call_name)}の{title}を編集</h1><p>登録済みデータを修正して保存できます。対象犬と記録種別は変更されません。</p><form method="post">{return_input}{fields}<button>変更を保存</button> <a class="button secondary" href="{back_url}">キャンセル</a></form>'''
     return layout(f"{title}の編集", body, user)
 
 
@@ -6012,6 +6035,8 @@ async def dog_health_record_update(dog_id: int, record_type: str, record_id: int
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="健康記録の入力内容を確認してください")
     session.commit()
+    if record_type == "vaccination" and text_value("return_to") == "vaccinations":
+        return RedirectResponse("/modules/health/vaccinations", status_code=303)
     return RedirectResponse(f"/modules/dogs/{dog.id}?tab=health", status_code=303)
 
 
