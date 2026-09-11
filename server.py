@@ -364,6 +364,7 @@ class HealthRecord(Base):
     recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     category: Mapped[str] = mapped_column(String(50))
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    temperature_c: Mapped[float | None] = mapped_column(Float, nullable=True)
     meal_amount_g: Mapped[float | None] = mapped_column(Float, nullable=True)
     food_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     stool_condition: Mapped[str | None] = mapped_column(String(30), nullable=True)
@@ -2315,6 +2316,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS family_dog_album_items ADD COLUMN IF NOT EXISTS photo_order INTEGER NOT NULL DEFAULT 0"))
         conn.execute(text("ALTER TABLE IF EXISTS family_timeline_reports ALTER COLUMN album_item_id DROP NOT NULL"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ"))
+        conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS temperature_c DOUBLE PRECISION"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS meal_amount_g DOUBLE PRECISION"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS food_name VARCHAR(150)"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS stool_condition VARCHAR(30)"))
@@ -4507,7 +4509,8 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
     diseases = session.scalars(select(DiseaseHistory).where(DiseaseHistory.tenant_id == tenant.id).order_by(DiseaseHistory.diagnosed_on.desc()).limit(30)).all()
     foods = session.scalars(select(FoodHistory).where(FoodHistory.tenant_id == tenant.id).order_by(FoodHistory.started_on.desc())).all()
     owner_shared_count = session.scalar(select(func.count(OwnerHealthRecord.id)).where(OwnerHealthRecord.tenant_id == tenant.id, OwnerHealthRecord.share_to_breeder.is_(True))) or 0
-    health_rows = "".join(f"<tr><td>{r.record_date}</td><td>{html.escape(session.get(Dog,r.dog_id).call_name)}</td><td>{html.escape(r.category)}</td><td>{r.weight_kg or '-'}</td><td>{html.escape(r.notes or '-')}</td></tr>" for r in health)
+    record_category_labels = {"weight": "体重", "temperature": "体温", "checkup": "健診", "treatment": "診療"}
+    health_rows = "".join(f"<tr><td>{r.record_date}</td><td>{html.escape(session.get(Dog,r.dog_id).call_name)}</td><td>{record_category_labels.get(r.category, html.escape(r.category))}</td><td>{r.weight_kg if r.weight_kg is not None else '-'}</td><td>{f'{r.temperature_c:g} ℃' if r.temperature_c is not None else '-'}</td><td>{html.escape(r.notes or '-')}</td></tr>" for r in health)
     vaccine_rows = "".join(f"<tr><td>{v.administered_on}</td><td>{html.escape(session.get(Dog,v.dog_id).call_name)}</td><td>{html.escape(v.vaccine_name)}</td><td>{v.next_due_on or '-'}</td></tr>" for v in vaccines)
     medication_rows = "".join(f"<tr><td>{m.administered_on}</td><td>{html.escape(session.get(Dog,m.dog_id).call_name)}</td><td>{html.escape(m.medicine_name)}</td><td>{html.escape(m.notes or '-')}</td></tr>" for m in medications)
     disease_rows = "".join(f"<tr><td>{d.diagnosed_on or '-'}</td><td>{html.escape(session.get(Dog,d.dog_id).call_name)}</td><td>{html.escape(d.disease_name)}</td><td>{html.escape(d.details or '-')}</td></tr>" for d in diseases)
@@ -4528,7 +4531,7 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
     <a class="module" href="/modules/health/diseases"><h3>病歴管理</h3><p>病歴記録 {len(diseases)}件</p></a>
     <a class="module" href="/modules/health/foods"><h3>フード管理</h3><p>利用履歴 {len(foods)}件</p></a>
     <a class="module" href="/modules/health/owner-records"><h3>オーナー共有記録</h3><p>共有中 {owner_shared_count}件（閲覧専用）</p></a></div>
-    <h2 id="checks">簡易健康記録</h2><form method="post" action="/modules/health/record"><div class="grid">{dog_picker("health")}<div><label>記録日</label><input type="date" name="record_date" required></div><div><label>種類</label><select name="category"><option value="weight">体重</option><option value="treatment">診療</option></select></div><div><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" placeholder="例：0.158"></div><div><label>動物病院</label><input name="clinic"></div></div><label>結果・メモ</label><textarea name="notes"></textarea><button>記録する</button></form><table><tr><th>日付</th><th>犬</th><th>種類</th><th>体重kg</th><th>メモ</th></tr>{health_rows}</table>
+    <h2 id="checks">簡易健康記録</h2><form method="post" action="/modules/health/record"><div class="grid">{dog_picker("health")}<div><label>記録日</label><input type="date" name="record_date" required></div><div><label>種類</label><select name="category" id="health-record-category"><option value="weight">体重</option><option value="temperature">体温</option><option value="treatment">診療</option></select></div><div><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" placeholder="例：0.158"></div><div><label>体温（℃）</label><input type="number" step="0.1" min="30.0" max="45.0" name="temperature_c" id="health-temperature" placeholder="例：38.5"><small>「体温」を選択した場合は必須です</small></div><div><label>動物病院</label><input name="clinic"></div></div><label>結果・メモ</label><textarea name="notes"></textarea><button>記録する</button></form><div style="overflow-x:auto"><table><tr><th>日付</th><th>犬</th><th>種類</th><th>体重kg</th><th>体温</th><th>メモ</th></tr>{health_rows or '<tr><td colspan="6">健康記録はまだありません。</td></tr>'}</table></div>
     {dog_search_script}'''
     return layout("健康管理", body, user)
 
@@ -4738,21 +4741,27 @@ def health_checkup_attachment(record_id: int, access=Depends(require_tenant_user
 
 
 @app.post("/modules/health/record")
-def health_create(dog_id: int = Form(...), record_date: str = Form(""), recorded_at: str = Form(""), category: str = Form(...), weight_kg: str = Form(""), meal_amount_g: str = Form(""), food_name: str = Form(""), stool_condition: str = Form(""), health_condition: str = Form(""), clinic: str = Form(""), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def health_create(dog_id: int = Form(...), record_date: str = Form(""), recorded_at: str = Form(""), category: str = Form(...), weight_kg: str = Form(""), temperature_c: str = Form(""), meal_amount_g: str = Form(""), food_name: str = Form(""), stool_condition: str = Form(""), health_condition: str = Form(""), clinic: str = Form(""), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
-    if category not in {"weight", "checkup", "treatment"}:
+    if category not in {"weight", "temperature", "checkup", "treatment"}:
         raise HTTPException(status_code=400)
-    measured_at = datetime.fromisoformat(recorded_at).replace(tzinfo=ZoneInfo("Asia/Tokyo")) if recorded_at else None
-    measured_date = measured_at.date() if measured_at else date.fromisoformat(record_date)
-    weight = float(weight_kg) if weight_kg else None
-    meal_amount = float(meal_amount_g) if meal_amount_g else None
+    try:
+        measured_at = datetime.fromisoformat(recorded_at).replace(tzinfo=ZoneInfo("Asia/Tokyo")) if recorded_at else None
+        measured_date = measured_at.date() if measured_at else date.fromisoformat(record_date)
+        weight = float(weight_kg) if weight_kg else None
+        temperature = float(temperature_c) if temperature_c else None
+        meal_amount = float(meal_amount_g) if meal_amount_g else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日付・体重・体温・食事量を確認してください")
+    if weight is not None and weight <= 0 or temperature is not None and not 30.0 <= temperature <= 45.0 or category == "temperature" and temperature is None or meal_amount is not None and meal_amount < 0:
+        raise HTTPException(status_code=400, detail="体重・体温・食事量を確認してください")
     if stool_condition not in {"", "良好", "やわらかい", "下痢", "硬い", "出ていない"}:
         raise HTTPException(status_code=400, detail="うんちの状態を確認してください")
     if health_condition not in {"", "良好", "少し悪い", "悪い"}:
         raise HTTPException(status_code=400, detail="健康状態を確認してください")
     item = HealthRecord(tenant_id=tenant.id, dog_id=dog.id, record_date=measured_date, recorded_at=measured_at,
-        category=category, weight_kg=weight, meal_amount_g=meal_amount, food_name=food_name.strip() or None,
+        category=category, weight_kg=weight, temperature_c=temperature, meal_amount_g=meal_amount, food_name=food_name.strip() or None,
         stool_condition=stool_condition or None, health_condition=health_condition or None,
         clinic=clinic.strip() or None, notes=notes.strip() or None)
     session.add(item)
@@ -5911,7 +5920,8 @@ def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, a
     checked = lambda field: "checked" if getattr(item, field, False) else ""
     if record_type == "record":
         recorded_at = item.recorded_at.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%dT%H:%M") if item.recorded_at else ""
-        fields = f'''<div class="grid"><div><label>記録日</label><input type="date" name="record_date" value="{item.record_date}" required></div><div><label>測定日時</label><input type="datetime-local" name="recorded_at" value="{recorded_at}"></div><div><label>分類</label><input value="{html.escape(item.category)}" disabled><input type="hidden" name="category" value="{html.escape(item.category)}"></div><div><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" value="{value('weight_kg')}" placeholder="例：0.158"></div><div><label>食事量（g）</label><input type="number" step="0.1" min="0" name="meal_amount_g" value="{value('meal_amount_g')}"></div><div><label>フード名</label><input name="food_name" value="{value('food_name')}"></div><div><label>うんちの状態</label><input name="stool_condition" value="{value('stool_condition')}"></div><div><label>健康状態</label><input name="health_condition" value="{value('health_condition')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div></div><fieldset><legend>健診項目</legend><label><input type="checkbox" name="physical_exam" {checked('physical_exam')}> 触診</label><label><input type="checkbox" name="blood_test" {checked('blood_test')}> 血液検査</label><label><input type="checkbox" name="ultrasound" {checked('ultrasound')}> エコー</label><label><input type="checkbox" name="chest_xray" {checked('chest_xray')}> 胸部X線</label></fieldset>{health_edit_select('result_summary', item.result_summary, {'':'未設定','normal':'異常なし','followup':'経過観察','recheck':'再検査','treatment':'治療・受診が必要'}, '健診結果')}<label>メモ</label><textarea name="notes">{value('notes')}</textarea>'''
+        category_label = {"weight": "体重", "temperature": "体温", "checkup": "健診", "treatment": "診療"}.get(item.category, item.category)
+        fields = f'''<div class="grid"><div><label>記録日</label><input type="date" name="record_date" value="{item.record_date}" required></div><div><label>測定日時</label><input type="datetime-local" name="recorded_at" value="{recorded_at}"></div><div><label>分類</label><input value="{html.escape(category_label)}" disabled><input type="hidden" name="category" value="{html.escape(item.category)}"></div><div><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" value="{value('weight_kg')}" placeholder="例：0.158"></div><div><label>体温（℃）</label><input type="number" step="0.1" min="30.0" max="45.0" name="temperature_c" value="{value('temperature_c')}" placeholder="例：38.5" {'required' if item.category == 'temperature' else ''}></div><div><label>食事量（g）</label><input type="number" step="0.1" min="0" name="meal_amount_g" value="{value('meal_amount_g')}"></div><div><label>フード名</label><input name="food_name" value="{value('food_name')}"></div><div><label>うんちの状態</label><input name="stool_condition" value="{value('stool_condition')}"></div><div><label>健康状態</label><input name="health_condition" value="{value('health_condition')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div></div><fieldset><legend>健診項目</legend><label><input type="checkbox" name="physical_exam" {checked('physical_exam')}> 触診</label><label><input type="checkbox" name="blood_test" {checked('blood_test')}> 血液検査</label><label><input type="checkbox" name="ultrasound" {checked('ultrasound')}> エコー</label><label><input type="checkbox" name="chest_xray" {checked('chest_xray')}> 胸部X線</label></fieldset>{health_edit_select('result_summary', item.result_summary, {'':'未設定','normal':'異常なし','followup':'経過観察','recheck':'再検査','treatment':'治療・受診が必要'}, '健診結果')}<label>メモ</label><textarea name="notes">{value('notes')}</textarea>'''
         title = "健康・体重記録"
     elif record_type == "vaccination":
         fields = f'''<div class="grid"><div><label>ワクチン名</label><input name="vaccine_name" value="{value('vaccine_name')}" required maxlength="150"></div><div><label>接種日</label><input type="date" name="administered_on" value="{item.administered_on}" required></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div><div><label>証明書番号</label><input name="certificate_no" value="{value('certificate_no')}"></div>{health_edit_select('vaccine_type', item.vaccine_type, {'rabies':'狂犬病','mixed':'混合ワクチン','other':'その他'}, '種類')}<div><label>子犬期の接種順</label><input type="number" min="1" max="4" name="dose_number" value="{value('dose_number')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>メーカー</label><input name="manufacturer" value="{value('manufacturer')}"></div><div><label>ロット番号</label><input name="lot_no" value="{value('lot_no')}"></div>{health_edit_select('reaction', item.reaction, {'none':'なし','mild':'軽度','severe':'重度','unknown':'不明'}, '副反応')}</div><label>メモ</label><textarea name="notes">{value('notes')}</textarea><p><small>登録済みの証明書ファイルはそのまま保持されます。</small></p>'''
@@ -5946,8 +5956,9 @@ async def dog_health_record_update(dog_id: int, record_type: str, record_id: int
             item.record_date = parse_date("record_date")
             item.recorded_at = datetime.fromisoformat(text_value("recorded_at")).replace(tzinfo=ZoneInfo("Asia/Tokyo")) if text_value("recorded_at") else None
             item.weight_kg = float(text_value("weight_kg")) if text_value("weight_kg") else None
+            item.temperature_c = float(text_value("temperature_c")) if text_value("temperature_c") else None
             item.meal_amount_g = float(text_value("meal_amount_g")) if text_value("meal_amount_g") else None
-            if item.weight_kg is not None and item.weight_kg <= 0 or item.meal_amount_g is not None and item.meal_amount_g < 0: raise ValueError
+            if item.weight_kg is not None and item.weight_kg <= 0 or item.temperature_c is not None and not 30.0 <= item.temperature_c <= 45.0 or item.category == "temperature" and item.temperature_c is None or item.meal_amount_g is not None and item.meal_amount_g < 0: raise ValueError
             item.food_name, item.stool_condition, item.health_condition = text_value("food_name") or None, text_value("stool_condition") or None, text_value("health_condition") or None
             item.clinic, item.notes, item.next_due_on = text_value("clinic") or None, text_value("notes") or None, parse_date("next_due_on")
             item.physical_exam, item.blood_test = "physical_exam" in form, "blood_test" in form

@@ -45,6 +45,22 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertGreaterEqual(TEXT.count('step="0.001" min="0.001" name="weight_kg"'), 4)
         self.assertGreaterEqual(TEXT.count('placeholder="例：0.158"'), 4)
 
+    def test_health_records_support_temperature_entry_and_editing(self):
+        self.assertIn("temperature_c: Mapped[float | None]", TEXT)
+        self.assertIn("health_records ADD COLUMN IF NOT EXISTS temperature_c DOUBLE PRECISION", TEXT)
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        for marker in ('<option value="temperature">体温</option>', 'name="temperature_c"', 'step="0.1"', 'min="30.0"', 'max="45.0"', "体温（℃）"):
+            self.assertIn(marker, page_segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_create")
+        create_segment = ast.get_source_segment(TEXT, create)
+        for marker in ('"temperature"', "temperature_c: str = Form", 'category == "temperature" and temperature is None', "30.0 <= temperature <= 45.0"):
+            self.assertIn(marker, create_segment)
+        edit = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        edit_segment = ast.get_source_segment(TEXT, edit)
+        self.assertIn('item.temperature_c = float(text_value("temperature_c"))', edit_segment)
+        self.assertIn('item.category == "temperature" and item.temperature_c is None', edit_segment)
+
     def test_weight_condition_choices_are_validated(self):
         health_create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_create")
         segment = ast.get_source_segment(TEXT, health_create)
