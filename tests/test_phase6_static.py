@@ -80,6 +80,16 @@ class Phase6StaticTests(unittest.TestCase):
             self.assertIn(f"</span>{label}</summary>", layout_source)
         self.assertEqual(layout_source.count('class="nav-group"'), 6)
 
+    def test_awards_navigation_is_below_daily_calendar(self):
+        layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
+        daily_start = layout_source.index('data-nav-group="daily"')
+        daily_end = layout_source.index('</div></details>', daily_start)
+        daily_group = layout_source[daily_start:daily_end]
+        self.assertLess(daily_group.index('href="/modules/calendar"'), daily_group.index('href="/modules/awards"'))
+        breeding_start = layout_source.index('data-nav-group="breeding"')
+        breeding_end = layout_source.index('</div></details>', breeding_start)
+        self.assertNotIn('href="/modules/awards"', layout_source[breeding_start:breeding_end])
+
     def test_business_navigation_restores_and_opens_current_group(self):
         layout_source = SOURCE[SOURCE.index("def layout"):SOURCE.index("def family_layout")]
         for marker in (
