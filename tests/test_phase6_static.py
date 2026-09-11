@@ -473,7 +473,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_dog_care_tab_has_responsive_weight_and_temperature_bar_charts(self):
         helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_vitals_bar_charts")
         helper_segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ('chart("weight_kg", "体重", "kg"', 'chart("temperature_c", "体温", "℃"', "viewBox", 'role="img"', "棒グラフ", "<rect", "record_date.strftime", "尺度が異なる"):
+        for marker in ('chart("weight_kg", "体重", "kg"', 'chart("temperature_c", "体温", "℃", "#d58a45", 35.0, 41.0)', "maximum_axis", "min(max(value, low), high)", "viewBox", 'role="img"', "棒グラフ", "<rect", "record_date.strftime", "体温グラフは35～41℃の固定範囲"):
             self.assertIn(marker, helper_segment)
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
         segment = ast.get_source_segment(SOURCE, route)

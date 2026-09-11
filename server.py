@@ -5765,19 +5765,18 @@ def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
 
 def dog_vitals_bar_charts(records: list[HealthRecord]) -> str:
     """体重と体温を、尺度を分けたレスポンシブ棒グラフで表示する。"""
-    def chart(attribute: str, title: str, unit: str, color: str, minimum_axis: float) -> str:
+    def chart(attribute: str, title: str, unit: str, color: str, minimum_axis: float, maximum_axis: float | None = None) -> str:
         items = [item for item in records if getattr(item, attribute) is not None]
         if not items:
             return f'<section class="vital-chart-panel"><h3>{title}</h3><p class="tenant">{title}記録を追加すると、ここに棒グラフが表示されます。</p></section>'
         width, height, left, right, top, bottom = 760, 260, 58, 24, 22, 46
         values = [float(getattr(item, attribute)) for item in items]
         low = minimum_axis
-        high = max(values)
-        high = max(high * 1.1, low + (15 if attribute == "temperature_c" else 0.2))
+        high = maximum_axis if maximum_axis is not None else max(max(values) * 1.1, low + 0.2)
         chart_width, chart_height = width - left - right, height - top - bottom
         slot = chart_width / len(items)
         bar_width = max(5.0, min(34.0, slot * 0.64))
-        y_for = lambda value: top + (high - value) / (high - low) * chart_height
+        y_for = lambda value: top + (high - min(max(value, low), high)) / (high - low) * chart_height
         grid = ""
         for index in range(5):
             value = high - (high - low) * index / 4
@@ -5795,7 +5794,7 @@ def dog_vitals_bar_charts(records: list[HealthRecord]) -> str:
         latest = values[-1]
         return f'''<section class="vital-chart-panel"><div class="weight-chart-head"><div><h3>{title}</h3><small>直近{len(items)}件を日付順に表示</small></div><strong>{latest:g}{unit}</strong></div><div class="weight-chart-scroll"><svg class="weight-chart" viewBox="0 0 {width} {height}" role="img" aria-label="{title}の棒グラフ"><g class="weight-chart-grid">{grid}</g><text class="weight-chart-unit" x="10" y="16">{unit}</text><g class="vital-chart-bars">{bars}</g><g class="weight-chart-dates">{dates}</g></svg></div></section>'''
 
-    return f'''<div class="weight-chart-card"><h2>体重・体温の推移</h2><p><small>体重と体温は尺度が異なるため、専用の目盛りで上下に表示しています。</small></p>{chart("weight_kg", "体重", "kg", "#bd6680", 0.0)}{chart("temperature_c", "体温", "℃", "#d58a45", 30.0)}</div>'''
+    return f'''<div class="weight-chart-card"><h2>体重・体温の推移</h2><p><small>体重と体温は尺度が異なるため、専用の目盛りで上下に表示しています。体温グラフは35～41℃の固定範囲です。</small></p>{chart("weight_kg", "体重", "kg", "#bd6680", 0.0)}{chart("temperature_c", "体温", "℃", "#d58a45", 35.0, 41.0)}</div>'''
 
 
 @app.get("/modules/dogs/{dog_id}", response_class=HTMLResponse)
