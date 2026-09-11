@@ -164,6 +164,17 @@ class HealthSharingStaticTests(unittest.TestCase):
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
         self.assertIn('dose_number not in {"", "1", "2", "3", "4"}', ast.get_source_segment(TEXT, create))
 
+    def test_rabies_name_and_next_due_are_filled_automatically(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        for marker in ('id="vaccination-type"', 'id="vaccination-name"', "vaccineName.required=vaccineType.value!=='rabies'", "狂犬病で空欄の場合", "接種日の1年後を自動設定"):
+            self.assertIn(marker, page_segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        create_segment = ast.get_source_segment(TEXT, create)
+        for marker in ('"狂犬病ワクチン" if vaccine_type == "rabies"', "administered.replace(year=administered.year + 1)", "day=28", "vaccine_name=normalized_name", "due_date=next_due"):
+            self.assertIn(marker, create_segment)
+        self.assertIn('if not normalized_name', create_segment)
+
     def test_vaccination_history_supports_edit_and_confirmed_delete(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
         page_segment = ast.get_source_segment(TEXT, page)

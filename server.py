@@ -4882,15 +4882,15 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
     <section class="tenant"><h3>30日以内の予定</h3><strong>{len(upcoming)}件</strong></section><section class="tenant"><h3>期限超過</h3><strong>{len(overdue)}件</strong></section></div>
     <h2>接種記録を追加</h2><form method="post" action="/modules/health/vaccine" enctype="multipart/form-data"><div class="grid">
     <div class="dog-picker"><label>対象犬を検索</label><input class="dog-search" type="search" data-dog-select="vaccination-dog" placeholder="呼び名・血統書名・犬種・区分で検索"><label class="dog-search-all"><input type="checkbox"> 販売済み・譲渡済みの犬も検索する</label><small class="dog-search-count"></small><label>対象犬</label><select id="vaccination-dog" name="dog_id" required>{options}</select></div>
-    <div><label>ワクチン区分</label><select name="vaccine_type" required><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div>
-    <div><label>ワクチン名</label><input name="vaccine_name" required></div><div><label>子犬期の接種順（任意）</label><select name="dose_number"><option value="">入力なし</option><option value="1">1回目</option><option value="2">2回目</option><option value="3">3回目</option><option value="4">追加接種</option></select><small>成犬の定期接種では入力不要です。</small></div>
-    <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on"></div>
+    <div><label>ワクチン区分</label><select name="vaccine_type" id="vaccination-type" required><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div>
+    <div><label>ワクチン名</label><input name="vaccine_name" id="vaccination-name" placeholder="狂犬病は空欄でも登録できます"><small>狂犬病で空欄の場合は「狂犬病ワクチン」として登録します。</small></div><div><label>子犬期の接種順（任意）</label><select name="dose_number"><option value="">入力なし</option><option value="1">1回目</option><option value="2">2回目</option><option value="3">3回目</option><option value="4">追加接種</option></select><small>成犬の定期接種では入力不要です。</small></div>
+    <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on"><small>空欄の場合は接種日の1年後を自動設定します。</small></div>
     <div><label>動物病院</label><input name="clinic"></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>製造番号・ロット番号</label><input name="lot_no"></div><div><label>証明書番号</label><input name="certificate_no"></div>
     <div><label>副反応</label><select name="reaction"><option value="none">なし</option><option value="mild">軽い症状あり</option><option value="severe">強い症状あり</option><option value="unknown">不明</option></select></div><div><label>証明書（画像・PDF、8MBまで）</label><input type="file" name="certificate_file" accept="image/jpeg,image/png,image/webp,application/pdf"></div></div>
     <label>メモ</label><textarea name="notes"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="owner_visible" value="true"> オーナーページにも共有する</label><input type="hidden" name="return_to" value="vaccinations"><button>接種を記録</button></form>
     <h2>接種履歴</h2><div style="overflow-x:auto"><table><tr><th>接種日</th><th>犬</th><th>区分</th><th>ワクチン</th><th>回数</th><th>次回予定</th><th>証明書</th><th>共有</th><th>操作</th></tr>{rows or '<tr><td colspan="9">接種記録はまだありません。</td></tr>'}</table></div>
     <style>.dog-picker{{grid-column:span 2;min-width:0}}.dog-search-all{{display:flex;gap:7px;align-items:center;margin:8px 0;font-weight:500}}.dog-search-all input{{width:auto;margin:0}}.dog-search-count{{display:block;color:#806b72}}@media(max-width:700px){{.dog-picker{{grid-column:1/-1}}}}</style>
-    <script>document.querySelectorAll('.dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),all=input.parentElement.querySelector('.dog-search-all input'),count=input.parentElement.querySelector('.dog-search-count'),original=Array.from(select.options).map(function(o){{return o.cloneNode(true)}});function filterDogs(){{var q=input.value.trim().toLowerCase(),current=select.value,matches=original.filter(function(o){{return (all.checked||o.dataset.nonresident!=='true')&&(!q||(o.dataset.search||o.textContent).toLowerCase().includes(q))}});select.replaceChildren.apply(select,matches.map(function(o){{return o.cloneNode(true)}}));if(matches.some(function(o){{return o.value===current}}))select.value=current;count.textContent=(all.checked?'在籍犬以外を含む ':'在籍犬 ')+matches.length+'頭から選択'}}input.addEventListener('input',filterDogs);all.addEventListener('change',filterDogs);filterDogs()}});</script>'''
+    <script>document.querySelectorAll('.dog-search').forEach(function(input){{var select=document.getElementById(input.dataset.dogSelect),all=input.parentElement.querySelector('.dog-search-all input'),count=input.parentElement.querySelector('.dog-search-count'),original=Array.from(select.options).map(function(o){{return o.cloneNode(true)}});function filterDogs(){{var q=input.value.trim().toLowerCase(),current=select.value,matches=original.filter(function(o){{return (all.checked||o.dataset.nonresident!=='true')&&(!q||(o.dataset.search||o.textContent).toLowerCase().includes(q))}});select.replaceChildren.apply(select,matches.map(function(o){{return o.cloneNode(true)}}));if(matches.some(function(o){{return o.value===current}}))select.value=current;count.textContent=(all.checked?'在籍犬以外を含む ':'在籍犬 ')+matches.length+'頭から選択'}}input.addEventListener('input',filterDogs);all.addEventListener('change',filterDogs);filterDogs()}});var vaccineType=document.getElementById('vaccination-type'),vaccineName=document.getElementById('vaccination-name');function updateVaccineNameRequirement(){{vaccineName.required=vaccineType.value!=='rabies'}}vaccineType.addEventListener('change',updateVaccineNameRequirement);updateVaccineNameRequirement();</script>'''
     return layout("ワクチン管理", body, user)
 
 
@@ -4931,7 +4931,20 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...),
         raise HTTPException(status_code=400, detail="ワクチン情報を確認してください")
     if dose_number not in {"", "1", "2", "3", "4"}:
         raise HTTPException(status_code=400, detail="子犬期の接種順を確認してください")
-    next_due = date.fromisoformat(next_due_on) if next_due_on else None
+    normalized_name = vaccine_name.strip() or ("狂犬病ワクチン" if vaccine_type == "rabies" else "")
+    if not normalized_name:
+        raise HTTPException(status_code=400, detail="ワクチン名を入力してください")
+    try:
+        administered = date.fromisoformat(administered_on)
+        if next_due_on:
+            next_due = date.fromisoformat(next_due_on)
+        else:
+            try:
+                next_due = administered.replace(year=administered.year + 1)
+            except ValueError:
+                next_due = administered.replace(year=administered.year + 1, day=28)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="接種日・次回接種予定日を確認してください")
     file_data = None
     if certificate_file and certificate_file.filename:
         allowed = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
@@ -4940,8 +4953,8 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...),
         file_data = await certificate_file.read(8 * 1024 * 1024 + 1)
         if len(file_data) > 8 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="証明書は8MB以下にしてください")
-    item = Vaccination(tenant_id=tenant.id, dog_id=dog.id, vaccine_name=vaccine_name.strip(), vaccine_type=vaccine_type,
-        dose_number=int(dose_number) if dose_number else None, administered_on=date.fromisoformat(administered_on), next_due_on=next_due,
+    item = Vaccination(tenant_id=tenant.id, dog_id=dog.id, vaccine_name=normalized_name, vaccine_type=vaccine_type,
+        dose_number=int(dose_number) if dose_number else None, administered_on=administered, next_due_on=next_due,
         certificate_no=certificate_no.strip() or None, clinic=clinic.strip() or None, manufacturer=manufacturer.strip() or None,
         lot_no=lot_no.strip() or None, reaction=reaction, notes=notes.strip() or None,
         certificate_filename=((certificate_file.filename or "")[:255] or None) if certificate_file and file_data else None,
@@ -4951,7 +4964,7 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...),
     if owner_visible:
         session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="vaccination", record_id=item.id, owner_visible=True, updated_by_id=user.id))
     if next_due:
-        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} {vaccine_name.strip()}接種予定", category="health", due_date=next_due))
+        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} {normalized_name}接種予定", category="health", due_date=next_due))
     session.commit()
     return RedirectResponse("/modules/health/vaccinations" if return_to == "vaccinations" else "/modules/health", status_code=303)
 
