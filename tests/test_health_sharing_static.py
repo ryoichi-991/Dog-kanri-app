@@ -108,6 +108,28 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn("d.call_name, d.registered_name, d.breed", segment)
         self.assertIn("document.querySelectorAll('.dog-search')", segment)
 
+    def test_dog_detail_opens_health_entry_with_the_dog_preselected(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        for marker in (
+            "dog_id: int | None = None",
+            "tenant_dog(session, tenant.id, dog_id)",
+            'type="hidden" name="dog_id"',
+            'name="return_to" value="dog-{selected_dog.id}"',
+            "対象犬は選択済みです。",
+        ):
+            self.assertIn(marker, page_segment)
+
+        create = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_create")
+        create_segment = ast.get_source_segment(TEXT, create)
+        self.assertIn('return_to == f"dog-{dog.id}"', create_segment)
+        self.assertIn('RedirectResponse(f"/modules/dogs/{dog.id}"', create_segment)
+
+        detail = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
+        detail_segment = ast.get_source_segment(TEXT, detail)
+        self.assertIn('f\'href="/modules/health?dog_id={dog.id}#checks"\'', detail_segment)
+        self.assertIn('f\'href="/modules/health?dog_id={dog.id}#checks">健康記録を追加\'', detail_segment)
+
     def test_health_dog_picker_defaults_to_resident_dogs(self):
         function = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_page")
         segment = ast.get_source_segment(TEXT, function)

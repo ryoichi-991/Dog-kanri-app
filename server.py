@@ -4479,8 +4479,9 @@ def genetic_risks(session: Session, tenant_id: int, sire_id: int, dam_id: int) -
 
 
 @app.get("/modules/health", response_class=HTMLResponse)
-def health_page(access=Depends(require_tenant_user), session: Session = Depends(db)):
+def health_page(dog_id: int | None = None, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
+    selected_dog = tenant_dog(session, tenant.id, dog_id) if dog_id is not None else None
     dogs = session.scalars(select(Dog).where(Dog.tenant_id == tenant.id, Dog.active.is_(True)).order_by(Dog.call_name)).all()
     category_labels = {"puppy": "子犬", "parent": "親犬", "external": "外部犬"}
     status_labels = {"resident": "在籍中", "reserved": "予約済み（在籍中）", "retired": "引退（在籍中）", "delivered": "販売済み", "transferred": "譲渡済み"}
@@ -4491,6 +4492,8 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
     )
 
     def dog_picker(key: str) -> str:
+        if selected_dog:
+            return f'''<div class="dog-picker tenant"><label>対象犬</label><strong>{html.escape(selected_dog.call_name)}</strong><input type="hidden" name="dog_id" value="{selected_dog.id}"><input type="hidden" name="return_to" value="dog-{selected_dog.id}"><small>個別犬ページから選択されています。</small></div>'''
         return f'''<div class="dog-picker"><label for="{key}-dog-search">対象犬を検索</label>
         <input id="{key}-dog-search" class="dog-search" type="search" data-dog-select="{key}-dog-select" placeholder="呼び名・血統書名・犬種・区分で検索" autocomplete="off">
         <label class="dog-search-all"><input type="checkbox" data-dog-all="{key}-dog-select"> 販売済み・譲渡済みの犬も検索する</label>
@@ -4523,7 +4526,8 @@ def health_page(access=Depends(require_tenant_user), session: Session = Depends(
         Vaccination.vaccine_type == "mixed", Vaccination.administered_on >= date(current_year, 1, 1))).all())
     checked_ids = set(session.scalars(select(HealthRecord.dog_id).where(HealthRecord.tenant_id == tenant.id,
         HealthRecord.category == "checkup", HealthRecord.record_date >= date(current_year, 1, 1))).all())
-    body = f'''<h1>健康管理</h1><p>犬ごとの健康状態と、未接種・未受診をまとめて確認できます。</p>
+    direct_entry_header = f'''<div class="tenant"><strong>{html.escape(selected_dog.call_name)}の飼育・健康記録を追加</strong><p>対象犬は選択済みです。そのまま記録内容を入力してください。</p><a class="button secondary" href="/modules/dogs/{selected_dog.id}">個別犬ページへ戻る</a></div>''' if selected_dog else ""
+    body = f'''<h1>健康管理</h1>{direct_entry_header}<p>犬ごとの健康状態と、未接種・未受診をまとめて確認できます。</p>
     <div class="grid"><a class="module" href="/modules/health/weights"><h3>体重管理</h3><p>子犬・親犬の体重推移を記録</p></a>
     <a class="module" href="/modules/health/vaccinations"><h3>ワクチン管理</h3><p>狂犬病 未接種 {len(set(parent_ids) - rabies_vaccinated_ids)}頭 ／ 混合 未接種 {len(set(parent_ids) - mixed_vaccinated_ids)}頭</p></a>
     <a class="module" href="/modules/health/checkups"><h3>健診管理</h3><p>今年度未受診 {len(set(parent_ids) - checked_ids)}頭</p></a>
@@ -4769,6 +4773,8 @@ def health_create(dog_id: int = Form(...), record_date: str = Form(""), recorded
     if owner_visible:
         session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="health", record_id=item.id, owner_visible=True, updated_by_id=user.id))
     session.commit()
+    if return_to == f"dog-{dog.id}":
+        return RedirectResponse(f"/modules/dogs/{dog.id}", status_code=303)
     return RedirectResponse("/modules/health/weights" if return_to == "weights" else "/modules/health", status_code=303)
 
 
@@ -5919,6 +5925,14 @@ def dog_detail_page(dog_id: int, tab: str = "care", access=Depends(require_tenan
     else:
         transfer = session.scalar(select(DogTransfer).where(DogTransfer.tenant_id == tenant.id, DogTransfer.dog_id == dog.id))
         tab_content = f'''<h2>登録データ</h2><dl class="dog-facts">{info_html}</dl><div class="dog-tab-actions"><a class="button" href="/modules/dogs/{dog.id}/edit">基本情報・血統書情報を編集</a>{f'<a class="button secondary" href="/modules/transferred-dogs/{dog.id}">譲渡情報を編集</a>' if dog.status == 'transferred' else ''}</div><div class="tenant"><h2>販売・譲渡情報</h2><p><strong>販売先：</strong>{html.escape(buyer or '未登録')}</p><p><strong>譲渡日：</strong>{transfer.transferred_on if transfer else '未登録'}</p><p><strong>譲渡理由：</strong>{html.escape(transfer.reason or '未登録') if transfer else '未登録'}</p></div>'''
+    if tab in {"care", "health"}:
+        tab_content = tab_content.replace(
+            f'href="/modules/health?dog_id={dog.id}"',
+            f'href="/modules/health?dog_id={dog.id}#checks"',
+        ).replace(
+            'href="/modules/health">健康記録を追加',
+            f'href="/modules/health?dog_id={dog.id}#checks">健康記録を追加',
+        )
     body = f'''<style>
     .detail-head{{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;margin-bottom:20px}}.detail-head .button{{margin-top:0}}
     .dog-facts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:1px;background:#eadde1;border:1px solid #eadde1;border-radius:14px;overflow:hidden;margin:18px 0 30px}}
