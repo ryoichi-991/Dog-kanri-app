@@ -236,19 +236,26 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("end_at: Mapped[datetime | None]", SOURCE)
         self.assertIn("task_events ADD COLUMN IF NOT EXISTS start_at TIMESTAMP", SOURCE)
         self.assertIn("task_events ADD COLUMN IF NOT EXISTS end_at TIMESTAMP", SOURCE)
+        self.assertIn("task_events ADD COLUMN IF NOT EXISTS all_day BOOLEAN NOT NULL DEFAULT FALSE", SOURCE)
         for route_name in ("calendar_task_new", "calendar_task_edit"):
             route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == route_name)
             segment = ast.get_source_segment(SOURCE, route)
-            for marker in ('type="datetime-local"', 'name="start_at"', 'name="end_at"', "開始日時", "終了日時"):
-                self.assertIn(marker, segment)
+            self.assertIn("calendar_period_fields", segment)
+        fields = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_period_fields")
+        fields_segment = ast.get_source_segment(SOURCE, fields)
+        for marker in ('type="checkbox" name="all_day"', 'input_type = "date" if all_day else "datetime-local"', 'name="start_at"', 'name="end_at"', "終日予定に切り替える", "start.type='date'", "end.type='date'"):
+            self.assertIn(marker, fields_segment)
         period = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_task_period")
         period_segment = ast.get_source_segment(SOURCE, period)
         self.assertIn("end_value <= start_value", period_segment)
         self.assertIn("timedelta(days=366)", period_segment)
+        self.assertIn("datetime.combine(date.fromisoformat(start_at), time.min)", period_segment)
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
         page_segment = ast.get_source_segment(SOURCE, page)
-        for marker in ("while event_day <= final_day", 'time_label = "継続"', 'item.start_at:%H:%M', 'item.end_at:%H:%M', '"手動予定"'):
+        for marker in ("while event_day <= final_day", 'time_label = "継続"', 'time_label = "終日"', 'time_label = "終日・継続"', 'item.start_at:%H:%M', 'item.end_at:%H:%M', '"手動予定"'):
             self.assertIn(marker, page_segment)
+        self.assertIn('{"general", "care", "customer", "breeding", "health", "legal", "sales", "other"}', SOURCE)
+        self.assertGreaterEqual(SOURCE.count('("other", "その他")'), 2)
 
     def test_calendar_can_opt_in_to_cached_jkc_dogshows(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")

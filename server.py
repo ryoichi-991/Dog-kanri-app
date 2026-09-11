@@ -212,6 +212,7 @@ class TaskEvent(Base):
     due_date: Mapped[date] = mapped_column(Date, index=True)
     start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2243,6 +2244,7 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS tenants ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS start_at TIMESTAMP"))
         conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS end_at TIMESTAMP"))
+        conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS all_day BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS permissions_json TEXT"))
         conn.execute(text("ALTER TABLE IF EXISTS tenant_memberships ADD COLUMN IF NOT EXISTS show_jkc_dogshows BOOLEAN NOT NULL DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE IF EXISTS dogs ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'parent'"))
@@ -2734,7 +2736,7 @@ def todo_toggle(task_id: int, access=Depends(require_tenant_user), session: Sess
     return RedirectResponse("/modules/todo", status_code=303)
 
 
-CALENDAR_MANUAL_CATEGORIES = {"general", "care", "customer", "breeding", "health", "legal", "sales"}
+CALENDAR_MANUAL_CATEGORIES = {"general", "care", "customer", "breeding", "health", "legal", "sales", "other"}
 
 
 def calendar_manual_task(task_id: int, tenant_id: int, session: Session) -> TaskEvent:
@@ -2903,17 +2905,29 @@ def calendar_task_new(date_value: str = "", access=Depends(require_tenant_user))
         selected_day = date.fromisoformat(date_value) if date_value else date.today()
     except ValueError:
         raise HTTPException(status_code=400, detail="予定日を確認してください")
-    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
+    category_options = "".join(f'<option value="{value}">{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請"), ("other", "その他")))
     default_start = datetime.combine(selected_day, time(9, 0)).strftime("%Y-%m-%dT%H:%M")
     default_end = datetime.combine(selected_day, time(10, 0)).strftime("%Y-%m-%dT%H:%M")
-    body = f'''<h1>予定を登録</h1><p>開始日時と終了日時を入力します。終了日を翌日以降にすると、日をまたぐ予定として登録できます。</p><form method="post" action="/modules/calendar/tasks"><div class="grid"><div><label>開始日時</label><input type="datetime-local" name="start_at" value="{default_start}" required></div><div><label>終了日時</label><input type="datetime-local" name="end_at" value="{default_end}" required></div><div><label>タイトル</label><input name="title" maxlength="200" required autofocus></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を登録</button> <a class="button secondary" href="/modules/calendar?month={selected_day:%Y-%m}">キャンセル</a></form>'''
+    period_fields = calendar_period_fields(default_start, default_end, False)
+    body = f'''<h1>予定を登録</h1><p>開始日時と終了日時を入力します。終日予定をオンにすると、時刻なしの開始日・終了日入力へ切り替わります。</p><form method="post" action="/modules/calendar/tasks">{period_fields}<div class="grid"><div><label>タイトル</label><input name="title" maxlength="200" required autofocus></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes"></textarea><button>予定を登録</button> <a class="button secondary" href="/modules/calendar?month={selected_day:%Y-%m}">キャンセル</a></form>'''
     return layout("予定を登録", body, user)
 
 
-def calendar_task_period(start_at: str, end_at: str) -> tuple[datetime, datetime]:
+def calendar_period_fields(start_at: str, end_at: str, all_day: bool) -> str:
+    input_type = "date" if all_day else "datetime-local"
+    start_value = start_at[:10] if all_day else start_at
+    end_value = end_at[:10] if all_day else end_at
+    return f'''<label class="all-day-toggle"><input id="calendar-all-day" type="checkbox" name="all_day" value="true" {"checked" if all_day else ""}><span>{"終日予定（オン）" if all_day else "終日予定に切り替える"}</span></label><div class="grid"><div><label id="calendar-start-label">{"開始日" if all_day else "開始日時"}</label><input id="calendar-start-at" type="{input_type}" name="start_at" value="{start_value}" required></div><div><label id="calendar-end-label">{"終了日" if all_day else "終了日時"}</label><input id="calendar-end-at" type="{input_type}" name="end_at" value="{end_value}" required></div></div><style>.all-day-toggle{{display:inline-flex;align-items:center;margin:0 0 16px;cursor:pointer}}.all-day-toggle input{{position:absolute;opacity:0;pointer-events:none}}.all-day-toggle span{{display:inline-block;padding:10px 16px;border:1px solid #c78698;border-radius:10px;background:#fff;color:#8b3f53;font-weight:700}}.all-day-toggle input:checked+span{{background:#b9627b;color:#fff}}</style><script>(function(){{const toggle=document.getElementById('calendar-all-day'),start=document.getElementById('calendar-start-at'),end=document.getElementById('calendar-end-at'),startLabel=document.getElementById('calendar-start-label'),endLabel=document.getElementById('calendar-end-label'),toggleLabel=toggle.nextElementSibling;toggle.addEventListener('change',function(){{const startDate=start.value.slice(0,10),endDate=end.value.slice(0,10);if(toggle.checked){{start.dataset.timedValue=start.value;end.dataset.timedValue=end.value;start.type='date';end.type='date';start.value=startDate;end.value=endDate;startLabel.textContent='開始日';endLabel.textContent='終了日';toggleLabel.textContent='終日予定（オン）'}}else{{start.type='datetime-local';end.type='datetime-local';start.value=start.dataset.timedValue||startDate+'T09:00';end.value=end.dataset.timedValue||endDate+'T10:00';startLabel.textContent='開始日時';endLabel.textContent='終了日時';toggleLabel.textContent='終日予定に切り替える'}}}})}})();</script>'''
+
+
+def calendar_task_period(start_at: str, end_at: str, all_day: bool = False) -> tuple[datetime, datetime]:
     try:
-        start_value = datetime.fromisoformat(start_at)
-        end_value = datetime.fromisoformat(end_at)
+        if all_day:
+            start_value = datetime.combine(date.fromisoformat(start_at), time.min)
+            end_value = datetime.combine(date.fromisoformat(end_at), time.max)
+        else:
+            start_value = datetime.fromisoformat(start_at)
+            end_value = datetime.fromisoformat(end_at)
     except ValueError:
         raise HTTPException(status_code=400, detail="開始日時・終了日時を確認してください")
     if start_value.year < 2000 or end_value.year > 2100 or end_value <= start_value:
@@ -2924,13 +2938,13 @@ def calendar_task_period(start_at: str, end_at: str) -> tuple[datetime, datetime
 
 
 @app.post("/modules/calendar/tasks")
-def calendar_task_create(title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def calendar_task_create(title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), all_day: bool = Form(False), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
-    start_value, end_value = calendar_task_period(start_at, end_at)
+    start_value, end_value = calendar_task_period(start_at, end_at, all_day)
     clean_title = title.strip()
     if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="入力内容を確認してください")
-    session.add(TaskEvent(tenant_id=tenant.id, title=clean_title, due_date=start_value.date(), start_at=start_value, end_at=end_value, category=category, notes=notes.strip() or None))
+    session.add(TaskEvent(tenant_id=tenant.id, title=clean_title, due_date=start_value.date(), start_at=start_value, end_at=end_value, all_day=all_day, category=category, notes=notes.strip() or None))
     session.commit()
     return calendar_month_redirect(start_value.date())
 
@@ -2939,22 +2953,23 @@ def calendar_task_create(title: str = Form(...), start_at: str = Form(...), end_
 def calendar_task_edit(task_id: int, access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     task = calendar_manual_task(task_id, tenant.id, session)
-    category_options = "".join(f'<option value="{value}" {"selected" if task.category == value else ""}>{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請")))
+    category_options = "".join(f'<option value="{value}" {"selected" if task.category == value else ""}>{label}</option>' for value, label in (("general", "一般"), ("care", "お世話"), ("customer", "お客様対応"), ("breeding", "繁殖"), ("health", "健康"), ("sales", "販売・顧客"), ("legal", "申請"), ("other", "その他")))
     task_start = task.start_at or datetime.combine(task.due_date, time(9, 0))
     task_end = task.end_at or datetime.combine(task.due_date, time(10, 0))
-    body = f'''<h1>予定を編集</h1><p>終了日を翌日以降にすると、日をまたぐ予定として保存できます。</p><form method="post" action="/modules/calendar/tasks/{task.id}"><div class="grid"><div><label>開始日時</label><input type="datetime-local" name="start_at" value="{task_start:%Y-%m-%dT%H:%M}" required></div><div><label>終了日時</label><input type="datetime-local" name="end_at" value="{task_end:%Y-%m-%dT%H:%M}" required></div><div><label>タイトル</label><input name="title" value="{html.escape(task.title, quote=True)}" maxlength="200" required></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes">{html.escape(task.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/calendar?month={task.due_date:%Y-%m}">キャンセル</a></form><hr><div class="health-toolbar"><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了にする"}</button></form><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/delete" onsubmit="return confirm('この予定を削除します。よろしいですか？');"><button class="danger">削除</button></form></div>'''
+    period_fields = calendar_period_fields(f"{task_start:%Y-%m-%dT%H:%M}", f"{task_end:%Y-%m-%dT%H:%M}", task.all_day)
+    body = f'''<h1>予定を編集</h1><p>終日予定をオンにすると、時刻なしの開始日・終了日入力へ切り替わります。</p><form method="post" action="/modules/calendar/tasks/{task.id}">{period_fields}<div class="grid"><div><label>タイトル</label><input name="title" value="{html.escape(task.title, quote=True)}" maxlength="200" required></div><div><label>カテゴリー</label><select name="category">{category_options}</select></div></div><label>メモ</label><textarea name="notes">{html.escape(task.notes or "")}</textarea><button>変更を保存</button> <a class="button secondary" href="/modules/calendar?month={task.due_date:%Y-%m}">キャンセル</a></form><hr><div class="health-toolbar"><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/toggle"><button class="{"secondary" if task.completed else "success"}">{"未完了に戻す" if task.completed else "完了にする"}</button></form><form class="inline" method="post" action="/modules/calendar/tasks/{task.id}/delete" onsubmit="return confirm('この予定を削除します。よろしいですか？');"><button class="danger">削除</button></form></div>'''
     return layout("予定を編集", body, user)
 
 
 @app.post("/modules/calendar/tasks/{task_id}")
-def calendar_task_update(task_id: int, title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+def calendar_task_update(task_id: int, title: str = Form(...), start_at: str = Form(...), end_at: str = Form(...), all_day: bool = Form(False), category: str = Form("general"), notes: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     task = calendar_manual_task(task_id, tenant.id, session)
-    start_value, end_value = calendar_task_period(start_at, end_at)
+    start_value, end_value = calendar_task_period(start_at, end_at, all_day)
     clean_title = title.strip()
     if not clean_title or category not in CALENDAR_MANUAL_CATEGORIES:
         raise HTTPException(status_code=400, detail="入力内容を確認してください")
-    task.title, task.due_date, task.start_at, task.end_at, task.category, task.notes = clean_title, start_value.date(), start_value, end_value, category, notes.strip() or None
+    task.title, task.due_date, task.start_at, task.end_at, task.all_day, task.category, task.notes = clean_title, start_value.date(), start_value, end_value, all_day, category, notes.strip() or None
     session.commit()
     return calendar_month_redirect(start_value.date())
 
@@ -3035,7 +3050,15 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
             event_day = item.start_at.date()
             final_day = item.end_at.date()
             while event_day <= final_day:
-                if event_day == item.start_at.date() == final_day:
+                if item.all_day and event_day == item.start_at.date() == final_day:
+                    time_label = "終日"
+                elif item.all_day and event_day == item.start_at.date():
+                    time_label = "終日・開始"
+                elif item.all_day and event_day == final_day:
+                    time_label = "終日・終了"
+                elif item.all_day:
+                    time_label = "終日・継続"
+                elif event_day == item.start_at.date() == final_day:
                     time_label = f"{item.start_at:%H:%M}〜{item.end_at:%H:%M}"
                 elif event_day == item.start_at.date():
                     time_label = f"{item.start_at:%H:%M}〜"
