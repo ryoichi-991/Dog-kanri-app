@@ -5763,31 +5763,39 @@ def pedigree_flow_chart(session: Session, tenant_id: int, root: Dog) -> str:
     return f'''<div class="pedigree-scroll"><div class="pedigree-canvas"><svg class="pedigree-lines" viewBox="0 0 970 885" aria-hidden="true">{lines}</svg>{cards}</div></div>'''
 
 
-def dog_weight_trend_chart(records: list[HealthRecord]) -> str:
-    """直近の体重記録を、追加ライブラリなしのレスポンシブSVGで表示する。"""
-    weighted = [item for item in records if item.weight_kg is not None]
-    if not weighted:
-        return '<div class="tenant weight-chart-empty">体重記録を追加すると、ここに推移グラフが表示されます。</div>'
-    width, height, left, right, top, bottom = 760, 300, 58, 24, 24, 48
-    weights = [float(item.weight_kg) for item in weighted]
-    minimum, maximum = min(weights), max(weights)
-    padding = max((maximum - minimum) * 0.12, 0.2)
-    low, high = max(0.0, minimum - padding), maximum + padding
-    chart_width, chart_height = width - left - right, height - top - bottom
-    x_for = lambda index: left + (chart_width / (len(weighted) - 1) * index if len(weighted) > 1 else chart_width / 2)
-    y_for = lambda value: top + (high - value) / (high - low) * chart_height
-    points = " ".join(f"{x_for(index):.1f},{y_for(value):.1f}" for index, value in enumerate(weights))
-    grid = ""
-    for index in range(5):
-        value = high - (high - low) * index / 4
-        y = top + chart_height * index / 4
-        grid += f'''<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}"/><text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end">{value:.1f}</text>'''
-    label_count = min(6, len(weighted))
-    label_indices = sorted({round(index * (len(weighted) - 1) / max(1, label_count - 1)) for index in range(label_count)})
-    date_labels = "".join(f'''<text x="{x_for(index):.1f}" y="{height - 17}" text-anchor="middle">{weighted[index].record_date.strftime('%m/%d')}</text>''' for index in label_indices)
-    dots = "".join(f'''<circle cx="{x_for(index):.1f}" cy="{y_for(value):.1f}" r="5"><title>{item.record_date}：{value:g}kg</title></circle>''' for index, (item, value) in enumerate(zip(weighted, weights)))
-    latest = weighted[-1]
-    return f'''<div class="weight-chart-card"><div class="weight-chart-head"><div><h2>体重の推移</h2><small>直近{len(weighted)}件を日付順に表示</small></div><strong>{float(latest.weight_kg):g}kg</strong></div><div class="weight-chart-scroll"><svg class="weight-chart" viewBox="0 0 {width} {height}" role="img" aria-label="体重の推移グラフ"><g class="weight-chart-grid">{grid}</g><text class="weight-chart-unit" x="10" y="16">kg</text><polyline points="{points}"/><g class="weight-chart-dots">{dots}</g><g class="weight-chart-dates">{date_labels}</g></svg></div></div>'''
+def dog_vitals_bar_charts(records: list[HealthRecord]) -> str:
+    """体重と体温を、尺度を分けたレスポンシブ棒グラフで表示する。"""
+    def chart(attribute: str, title: str, unit: str, color: str, minimum_axis: float) -> str:
+        items = [item for item in records if getattr(item, attribute) is not None]
+        if not items:
+            return f'<section class="vital-chart-panel"><h3>{title}</h3><p class="tenant">{title}記録を追加すると、ここに棒グラフが表示されます。</p></section>'
+        width, height, left, right, top, bottom = 760, 260, 58, 24, 22, 46
+        values = [float(getattr(item, attribute)) for item in items]
+        low = minimum_axis
+        high = max(values)
+        high = max(high * 1.1, low + (15 if attribute == "temperature_c" else 0.2))
+        chart_width, chart_height = width - left - right, height - top - bottom
+        slot = chart_width / len(items)
+        bar_width = max(5.0, min(34.0, slot * 0.64))
+        y_for = lambda value: top + (high - value) / (high - low) * chart_height
+        grid = ""
+        for index in range(5):
+            value = high - (high - low) * index / 4
+            y = top + chart_height * index / 4
+            grid += f'''<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}"/><text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end">{value:.1f}</text>'''
+        bars = ""
+        for index, (item, value) in enumerate(zip(items, values)):
+            x = left + slot * index + (slot - bar_width) / 2
+            y = y_for(value)
+            bar_height = max(2.0, top + chart_height - y)
+            bars += f'''<rect x="{x:.1f}" y="{y:.1f}" width="{bar_width:.1f}" height="{bar_height:.1f}" rx="3" style="fill:{color}"><title>{item.record_date}：{value:g}{unit}</title></rect>'''
+        label_count = min(6, len(items))
+        label_indices = sorted({round(index * (len(items) - 1) / max(1, label_count - 1)) for index in range(label_count)})
+        dates = "".join(f'''<text x="{left + slot * index + slot / 2:.1f}" y="{height - 15}" text-anchor="middle">{items[index].record_date.strftime('%m/%d')}</text>''' for index in label_indices)
+        latest = values[-1]
+        return f'''<section class="vital-chart-panel"><div class="weight-chart-head"><div><h3>{title}</h3><small>直近{len(items)}件を日付順に表示</small></div><strong>{latest:g}{unit}</strong></div><div class="weight-chart-scroll"><svg class="weight-chart" viewBox="0 0 {width} {height}" role="img" aria-label="{title}の棒グラフ"><g class="weight-chart-grid">{grid}</g><text class="weight-chart-unit" x="10" y="16">{unit}</text><g class="vital-chart-bars">{bars}</g><g class="weight-chart-dates">{dates}</g></svg></div></section>'''
+
+    return f'''<div class="weight-chart-card"><h2>体重・体温の推移</h2><p><small>体重と体温は尺度が異なるため、専用の目盛りで上下に表示しています。</small></p>{chart("weight_kg", "体重", "kg", "#bd6680", 0.0)}{chart("temperature_c", "体温", "℃", "#d58a45", 30.0)}</div>'''
 
 
 @app.get("/modules/dogs/{dog_id}", response_class=HTMLResponse)
@@ -5836,13 +5844,17 @@ def dog_detail_page(dog_id: int, tab: str = "care", access=Depends(require_tenan
     tabs = "".join(f'''<a class="dog-detail-tab {'active' if tab == key else ''}" href="/modules/dogs/{dog.id}?tab={key}">{label}</a>''' for key, label in tab_labels.items())
     if tab == "care":
         care_records = session.scalars(select(HealthRecord).where(HealthRecord.tenant_id == tenant.id, HealthRecord.dog_id == dog.id).order_by(HealthRecord.record_date.desc()).limit(20)).all()
-        weight_records = list(reversed(session.scalars(select(HealthRecord).where(HealthRecord.tenant_id == tenant.id, HealthRecord.dog_id == dog.id, HealthRecord.weight_kg.is_not(None)).order_by(HealthRecord.record_date.desc()).limit(50)).all()))
+        vital_records = list(reversed(session.scalars(select(HealthRecord).where(HealthRecord.tenant_id == tenant.id, HealthRecord.dog_id == dog.id, (HealthRecord.weight_kg.is_not(None)) | (HealthRecord.temperature_c.is_not(None))).order_by(HealthRecord.record_date.desc(), HealthRecord.id.desc()).limit(100)).all()))
         tasks = session.scalars(select(TaskEvent).where(TaskEvent.tenant_id == tenant.id, TaskEvent.dog_id == dog.id, TaskEvent.completed.is_(False)).order_by(TaskEvent.due_date).limit(20)).all()
+        weight_records = [item for item in vital_records if item.weight_kg is not None]
+        temperature_records = [item for item in vital_records if item.temperature_c is not None]
         latest_weight = weight_records[-1] if weight_records else None
-        weight_chart = dog_weight_trend_chart(weight_records)
-        care_rows = "".join(f'''<tr><td>{item.record_date}</td><td>{html.escape(item.category)}</td><td>{f'{item.weight_kg:g}kg' if item.weight_kg is not None else '-'}</td><td>{f'{item.meal_amount_g:g}g' if item.meal_amount_g is not None else '-'}</td><td>{html.escape(item.health_condition or item.stool_condition or item.notes or '-')}</td></tr>''' for item in care_records)
+        latest_temperature = temperature_records[-1] if temperature_records else None
+        vitals_charts = dog_vitals_bar_charts(vital_records)
+        record_category_labels = {"weight": "体重", "temperature": "体温", "checkup": "健診", "treatment": "診療"}
+        care_rows = "".join(f'''<tr><td>{item.record_date}</td><td>{record_category_labels.get(item.category, html.escape(item.category))}</td><td>{f'{item.weight_kg:g}kg' if item.weight_kg is not None else '-'}</td><td>{f'{item.temperature_c:g}℃' if item.temperature_c is not None else '-'}</td><td>{f'{item.meal_amount_g:g}g' if item.meal_amount_g is not None else '-'}</td><td>{html.escape(item.health_condition or item.stool_condition or item.notes or '-')}</td></tr>''' for item in care_records)
         task_rows = "".join(f'''<tr><td>{item.due_date}</td><td>{html.escape(item.title)}</td><td>{html.escape(item.category)}</td></tr>''' for item in tasks)
-        tab_content = f'''<div class="dog-summary-grid"><div class="tenant"><small>現在の状態</small><h3>{status_labels.get(dog.status, dog.status)}</h3></div><div class="tenant"><small>最新体重</small><h3>{f'{latest_weight.weight_kg:g}kg' if latest_weight else '未登録'}</h3></div><div class="tenant"><small>未完了予定</small><h3>{len(tasks)}件</h3></div></div><div class="dog-tab-actions"><a class="button" href="/modules/health?dog_id={dog.id}">飼育・健康記録を追加</a><a class="button secondary" href="/modules/todo">予定を登録</a></div><h2>基本情報</h2><dl class="dog-facts">{info_html}</dl><h2>今後の予定</h2><table><tr><th>日付</th><th>予定</th><th>分類</th></tr>{task_rows or '<tr><td colspan="3">未完了の予定はありません。</td></tr>'}</table><h2>最近の飼育ログ</h2><table><tr><th>日付</th><th>分類</th><th>体重</th><th>食事量</th><th>状態・メモ</th></tr>{care_rows or '<tr><td colspan="5">飼育記録はまだありません。</td></tr>'}</table>{weight_chart}'''
+        tab_content = f'''<div class="dog-summary-grid"><div class="tenant"><small>現在の状態</small><h3>{status_labels.get(dog.status, dog.status)}</h3></div><div class="tenant"><small>最新体重</small><h3>{f'{latest_weight.weight_kg:g}kg' if latest_weight else '未登録'}</h3></div><div class="tenant"><small>最新体温</small><h3>{f'{latest_temperature.temperature_c:g}℃' if latest_temperature else '未登録'}</h3></div><div class="tenant"><small>未完了予定</small><h3>{len(tasks)}件</h3></div></div><div class="dog-tab-actions"><a class="button" href="/modules/health?dog_id={dog.id}">飼育・健康記録を追加</a><a class="button secondary" href="/modules/todo">予定を登録</a></div><h2>基本情報</h2><dl class="dog-facts">{info_html}</dl><h2>今後の予定</h2><table><tr><th>日付</th><th>予定</th><th>分類</th></tr>{task_rows or '<tr><td colspan="3">未完了の予定はありません。</td></tr>'}</table><h2>最近の飼育ログ</h2><div style="overflow-x:auto"><table><tr><th>日付</th><th>分類</th><th>体重</th><th>体温</th><th>食事量</th><th>状態・メモ</th></tr>{care_rows or '<tr><td colspan="6">飼育記録はまだありません。</td></tr>'}</table></div>{vitals_charts}'''
     elif tab == "breeding":
         heats = session.scalars(select(HeatCycle).where(HeatCycle.tenant_id == tenant.id, HeatCycle.dog_id == dog.id).order_by(HeatCycle.start_date.desc()).limit(30)).all()
         breedings = session.scalars(select(BreedingRecord).where(BreedingRecord.tenant_id == tenant.id, (BreedingRecord.dam_id == dog.id) | (BreedingRecord.sire_id == dog.id)).order_by(BreedingRecord.mating_date.desc()).limit(30)).all()
@@ -5880,7 +5892,7 @@ def dog_detail_page(dog_id: int, tab: str = "care", access=Depends(require_tenan
     .dog-facts div{{background:#fff;padding:14px}}.dog-facts dt{{font-size:12px;color:#765f68;font-weight:700}}.dog-facts dd{{margin:5px 0 0;font-weight:650}}
     .dog-detail-tabs{{display:flex;gap:7px;overflow-x:auto;margin:0 0 24px;padding:4px 0;border-bottom:1px solid #eadde1}}.dog-detail-tab{{flex:0 0 auto;padding:11px 15px;color:#765f68;text-decoration:none;border-radius:10px 10px 0 0;font-weight:700}}.dog-detail-tab:hover{{background:#fff5f8}}.dog-detail-tab.active{{color:#934f63;background:#f8e9ed;border-bottom:3px solid var(--rose)}}
     .dog-summary-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}}.dog-summary-grid .tenant{{margin:0}}.dog-summary-grid h3{{font-size:24px;margin:6px 0}}.dog-tab-actions{{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 24px}}.dog-tab-actions .button{{margin:0}}
-    .weight-chart-card{{margin:24px 0;padding:18px;border:1px solid #eadde1;border-radius:14px;background:#fff}}.weight-chart-head{{display:flex;justify-content:space-between;align-items:center;gap:16px}}.weight-chart-head h2{{margin:0 0 3px}}.weight-chart-head strong{{font-size:26px;color:#934f63}}.weight-chart-scroll{{overflow-x:auto}}.weight-chart{{display:block;width:100%;min-width:560px;height:auto;margin-top:12px}}.weight-chart-grid line{{stroke:#eadde1;stroke-width:1}}.weight-chart-grid text,.weight-chart-dates text,.weight-chart-unit{{fill:#806b72;font-size:11px}}.weight-chart>polyline{{fill:none;stroke:#bd6680;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}}.weight-chart-dots circle{{fill:#fff;stroke:#bd6680;stroke-width:3}}.weight-chart-empty{{margin-top:24px}}
+    .weight-chart-card{{margin:24px 0;padding:18px;border:1px solid #eadde1;border-radius:14px;background:#fff}}.weight-chart-card>h2{{margin-bottom:3px}}.vital-chart-panel{{margin-top:18px;padding-top:16px;border-top:1px solid #eadde1}}.weight-chart-head{{display:flex;justify-content:space-between;align-items:center;gap:16px}}.weight-chart-head h3{{margin:0 0 3px}}.weight-chart-head strong{{font-size:26px;color:#934f63}}.weight-chart-scroll{{overflow-x:auto}}.weight-chart{{display:block;width:100%;min-width:560px;height:auto;margin-top:12px}}.weight-chart-grid line{{stroke:#eadde1;stroke-width:1}}.weight-chart-grid text,.weight-chart-dates text,.weight-chart-unit{{fill:#806b72;font-size:11px}}.vital-chart-bars rect{{transition:opacity .15s}}.vital-chart-bars rect:hover{{opacity:.78}}
     .pedigree-scroll{{overflow-x:auto;overflow-y:hidden;padding:10px 0 24px;width:100%}}.pedigree-canvas{{position:relative;width:970px;height:885px;min-width:970px;margin:0 auto;background:linear-gradient(90deg,#fff 0%,#fffafc 100%);border:1px solid #f0e1e5;border-radius:16px}}
     .pedigree-lines{{position:absolute;inset:0;width:970px;height:885px;pointer-events:none}}.pedigree-lines path{{fill:none;stroke:#c990a0;stroke-width:2;vector-effect:non-scaling-stroke}}
     .pedigree-node{{position:absolute;width:205px;height:106px;padding:6px 9px;border:1px solid #dfc8ce;border-radius:10px;background:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#49323a;text-decoration:none;box-shadow:0 4px 12px #69404c12;overflow:hidden;text-align:center}}

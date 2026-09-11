@@ -470,14 +470,16 @@ class Phase6StaticTests(unittest.TestCase):
         ):
             self.assertIn(marker, segment)
 
-    def test_dog_care_tab_has_a_responsive_weight_trend_chart(self):
-        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_weight_trend_chart")
+    def test_dog_care_tab_has_responsive_weight_and_temperature_bar_charts(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_vitals_bar_charts")
         helper_segment = ast.get_source_segment(SOURCE, helper)
-        for marker in ("weight_kg is not None", "viewBox", 'role="img"', "体重の推移グラフ", "polyline", "circle", "record_date.strftime", "体重記録を追加すると"):
+        for marker in ('chart("weight_kg", "体重", "kg"', 'chart("temperature_c", "体温", "℃"', "viewBox", 'role="img"', "棒グラフ", "<rect", "record_date.strftime", "尺度が異なる"):
             self.assertIn(marker, helper_segment)
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dog_detail_page")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("HealthRecord.tenant_id == tenant.id", "HealthRecord.dog_id == dog.id", "HealthRecord.weight_kg.is_not(None)", ".limit(50)", "dog_weight_trend_chart(weight_records)", "{weight_chart}"):
+        for marker in ("HealthRecord.tenant_id == tenant.id", "HealthRecord.dog_id == dog.id", "HealthRecord.weight_kg.is_not(None)", "HealthRecord.temperature_c.is_not(None)", ".limit(100)", "dog_vitals_bar_charts(vital_records)", "{vitals_charts}"):
+            self.assertIn(marker, segment)
+        for marker in ("最近の飼育ログ", "<th>体温</th>", "item.temperature_c", "最新体温"):
             self.assertIn(marker, segment)
 
     def test_every_health_section_on_dog_detail_has_an_edit_action(self):
