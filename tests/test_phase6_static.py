@@ -2327,6 +2327,32 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("range(1, 13)", "refresh_jkc_dogshows", 'result = "partial" if failed_months else "ok"'):
             self.assertIn(marker, sync)
 
+    def test_award_race_groups_support_multiple_breeds_colors_and_sexes(self):
+        group = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AwardRaceGroup"))
+        for marker in ('__tablename__ = "award_race_groups"', 'UniqueConstraint("tenant_id", "award_year", "name"', "breed:", "color:", "sex:"):
+            self.assertIn(marker, group)
+        competitor = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "AwardCompetitor"))
+        for marker in ('ForeignKey("award_race_groups.id", ondelete="CASCADE")', "color:"):
+            self.assertIn(marker, competitor)
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "awards_page"))
+        for marker in ("AwardRaceGroup.tenant_id == tenant.id", "AwardRaceGroup.award_year == year", "競争グループ", "group_filter_options", "group_id", "毛色"):
+            self.assertIn(marker, page)
+
+    def test_award_group_mutations_are_tenant_scoped_and_confirm_delete(self):
+        create = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_group_create"))
+        update = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_group_update"))
+        delete = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_group_delete"))
+        for marker in ("AwardRaceGroup.tenant_id == tenant.id", "AwardRaceGroup.award_year == year", "AwardRaceGroup(", "color.strip() or None"):
+            self.assertIn(marker, create)
+        self.assertIn("award_group_or_404", update)
+        for marker in ("award_group_or_404", "confirm_delete", "削除の確認が必要です"):
+            self.assertIn(marker, delete)
+
+    def test_award_group_database_migration_preserves_existing_competitors(self):
+        startup = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "startup"))
+        for marker in ("award_competitors ADD COLUMN IF NOT EXISTS group_id", "award_competitors ADD COLUMN IF NOT EXISTS color", "INSERT INTO award_race_groups", "FROM award_competitors WHERE group_id IS NULL", "UPDATE award_competitors AS competitor"):
+            self.assertIn(marker, startup)
+
     def test_finance_audit_issue_output_is_escaped(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page"))
         self.assertIn("html.escape(label)", page)
