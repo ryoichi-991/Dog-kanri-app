@@ -2322,6 +2322,7 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("year_start", "year_end", "award-show-month", "award-show-search", "award-show-option", "data-month", "data-search", "filterShows", "1年間すべて", "全予定を更新"):
             self.assertIn(marker, page)
         self.assertIn('type="radio" name="jkc_event_id"', page)
+        self.assertIn(".award-show-option[hidden]{display:none}", page)
         sync = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_sync_year_shows"))
         for marker in ("range(1, 13)", "refresh_jkc_dogshows", 'result = "partial" if failed_months else "ok"'):
             self.assertIn(marker, sync)
