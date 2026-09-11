@@ -233,6 +233,15 @@ class JkcDogShowSync(Base):
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class JkcDogShowParticipation(Base):
+    __tablename__ = "jkc_dogshow_participations"
+    __table_args__ = (UniqueConstraint("tenant_id", "event_id", name="uq_jkc_dogshow_participation"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("jkc_dogshow_events.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class BreedingRecord(Base):
     __tablename__ = "breeding_records"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -2771,6 +2780,54 @@ def calendar_jkc_setting(show_jkc_dogshows: bool = Form(False), month: str = For
     return calendar_month_redirect(selected_month)
 
 
+@app.get("/modules/calendar/jkc-shows", response_class=HTMLResponse)
+def calendar_jkc_shows_page(month: str = "", access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    try:
+        first_day = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else date.today().replace(day=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+    if first_day < date(2000, 1, 1) or first_day > date(2100, 12, 1):
+        raise HTTPException(status_code=400, detail="表示月を確認してください")
+    month_end = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    sync_ok = refresh_jkc_dogshows(first_day, month_end, session)
+    shows = session.scalars(select(JkcDogShowEvent).where(JkcDogShowEvent.event_date >= first_day, JkcDogShowEvent.event_date <= month_end).order_by(JkcDogShowEvent.event_date, JkcDogShowEvent.title)).all()
+    attending_ids = set(session.scalars(select(JkcDogShowParticipation.event_id).where(JkcDogShowParticipation.tenant_id == tenant.id)).all())
+    rows = ""
+    for show in shows:
+        attending = show.id in attending_ids
+        state = '<span class="badge" style="background:#d9eadb;color:#47634b">参加する</span>' if attending else '<span class="badge">参加しない</span>'
+        action_label = "参加しないに変更" if attending else "参加する"
+        action_class = "secondary" if attending else "success"
+        rows += f'''<tr><td>{show.event_date}</td><td><a href="{show.source_url}" target="_blank" rel="noopener">{html.escape(show.title)}</a></td><td>{html.escape(show.venue or "-")}</td><td>{state}</td><td><form class="inline" method="post" action="/modules/calendar/jkc-shows/{show.id}"><input type="hidden" name="month" value="{first_day:%Y-%m}"><button class="{action_class}" name="attending" value="{str(not attending).lower()}">{action_label}</button></form></td></tr>'''
+    previous_month = first_day - timedelta(days=1)
+    next_month = month_end + timedelta(days=1)
+    sync_message = '<p class="error">JKC公式サイトを現在取得できないため、保存済みの予定を表示しています。</p>' if not sync_ok else ""
+    page_title = "ドッグショー関係"
+    body = f'''<h1>JKCドッグショー参加設定</h1><p>参加するショーだけを選択してください。「参加する」に設定したショーだけが業務カレンダーに表示されます。</p>{sync_message}<div class="month-calendar-nav"><a class="button secondary" href="/modules/calendar/jkc-shows?month={previous_month:%Y-%m}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="/modules/calendar/jkc-shows?month={next_month:%Y-%m}">翌月 →</a></div><div style="overflow-x:auto"><table><tr><th>開催日</th><th>ドッグショー</th><th>会場</th><th>参加設定</th><th>操作</th></tr>{rows or '<tr><td colspan="5">この月のJKCドッグショーはありません。</td></tr>'}</table></div><p><a class="button" href="/modules/calendar?month={first_day:%Y-%m}">カレンダーへ戻る</a></p><style>.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px;margin:20px 0}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}@media(max-width:700px){{.month-calendar-nav{{grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px}}}}</style>'''
+    body = body.replace("<h1>JKCドッグショー参加設定</h1>", f"<h1>{page_title}</h1>", 1)
+    return layout(page_title, body, user)
+
+
+@app.post("/modules/calendar/jkc-shows/{show_id}")
+def calendar_jkc_show_participation(show_id: int, attending: bool = Form(...), month: str = Form(""), access=Depends(require_tenant_user), session: Session = Depends(db)):
+    user, tenant = access
+    show = session.get(JkcDogShowEvent, show_id)
+    if not show:
+        raise HTTPException(status_code=404, detail="JKCドッグショーが見つかりません")
+    participation = session.scalar(select(JkcDogShowParticipation).where(JkcDogShowParticipation.tenant_id == tenant.id, JkcDogShowParticipation.event_id == show.id))
+    if attending and not participation:
+        session.add(JkcDogShowParticipation(tenant_id=tenant.id, event_id=show.id))
+    elif not attending and participation:
+        session.delete(participation)
+    session.commit()
+    try:
+        selected_month = datetime.strptime(month, "%Y-%m").date().replace(day=1) if month else show.event_date.replace(day=1)
+    except ValueError:
+        selected_month = show.event_date.replace(day=1)
+    return RedirectResponse(f"/modules/calendar/jkc-shows?month={selected_month:%Y-%m}", status_code=303)
+
+
 @app.get("/modules/calendar/new", response_class=HTMLResponse)
 def calendar_task_new(date_value: str = "", access=Depends(require_tenant_user)):
     user, tenant = access
@@ -2910,7 +2967,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     jkc_sync_ok = True
     if show_jkc_dogshows:
         jkc_sync_ok = refresh_jkc_dogshows(first_day, month_end, session)
-        for item in session.scalars(select(JkcDogShowEvent).where(JkcDogShowEvent.event_date >= first_day, JkcDogShowEvent.event_date <= month_end).order_by(JkcDogShowEvent.event_date, JkcDogShowEvent.title)).all():
+        for item in session.scalars(select(JkcDogShowEvent).join(JkcDogShowParticipation, JkcDogShowParticipation.event_id == JkcDogShowEvent.id).where(JkcDogShowParticipation.tenant_id == tenant.id, JkcDogShowEvent.event_date >= first_day, JkcDogShowEvent.event_date <= month_end).order_by(JkcDogShowEvent.event_date, JkcDogShowEvent.title)).all():
             venue_label = f"／{item.venue}" if item.venue else ""
             add_event(item.event_date, f"{item.title}{venue_label}", "jkc_show", "JKC公式", item.source_url, item.event_date < date.today())
     events = [item for item in events if (show_all or first_day <= item[0] <= month_end) and (not calendar_category or item[2] == calendar_category) and (not calendar_state or item[3] == calendar_state)]
@@ -2959,7 +3016,7 @@ def calendar_page(month: str = "", calendar_category: str = "", calendar_state: 
     retained_filters = urlencode({"calendar_category": calendar_category, "calendar_state": calendar_state})
     month_calendar = f'''<section class="month-calendar" aria-label="{first_day.year}年{first_day.month}月のカレンダー"><div class="month-calendar-nav"><a class="button secondary" href="/modules/calendar?month={previous_month:%Y-%m}&{retained_filters}">← 前月</a><h2>{first_day.year}年{first_day.month}月</h2><a class="button secondary" href="/modules/calendar?month={next_month:%Y-%m}&{retained_filters}">翌月 →</a></div><div class="month-calendar-head"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div>{calendar_cells}</section>'''
     jkc_sync_message = '<p class="error">JKC公式サイトを現在取得できないため、保存済みの予定を表示しています。</p>' if show_jkc_dogshows and not jkc_sync_ok else ""
-    jkc_panel = f'''<form method="post" action="/modules/calendar/jkc-setting" class="tenant"><input type="hidden" name="month" value="{first_day:%Y-%m}"><label style="font-weight:600"><input type="checkbox" name="show_jkc_dogshows" value="true" style="width:auto" {"checked" if show_jkc_dogshows else ""} onchange="this.form.submit()"> JKCドッグショー予定を表示する</label><small>JKC公式サイトの情報を1日1回、自動更新します。</small></form>{jkc_sync_message}'''
+    jkc_panel = f'''<form method="post" action="/modules/calendar/jkc-setting" class="tenant"><input type="hidden" name="month" value="{first_day:%Y-%m}"><label style="font-weight:600"><input type="checkbox" name="show_jkc_dogshows" value="true" style="width:auto" {"checked" if show_jkc_dogshows else ""} onchange="this.form.submit()"> 参加予定のJKCドッグショーを表示する</label><small>JKC公式サイトの情報を1日1回、自動更新します。　<a href="/modules/calendar/jkc-shows?month={first_day:%Y-%m}">参加するドッグショーを選ぶ</a></small></form>{jkc_sync_message}'''
     body = f'''<h1>業務カレンダー</h1><p>日付の「＋」から予定を直接登録できます。手動予定を選ぶと編集・完了・削除ができます。</p><form method="get" action="/modules/calendar"><div class="grid"><div><label>表示月</label><input type="month" name="month" value="{first_day:%Y-%m}" required></div><div><label>分類</label><select name="calendar_category">{category_options}</select></div><div><label>状態</label><select name="calendar_state">{state_options}</select></div></div><label style="font-weight:400"><input type="checkbox" name="show_all" value="true" style="width:auto" {"checked" if show_all else ""}> 月を限定せず全期間を表示</label><button>カレンダーを表示</button> <a class="button secondary" href="/modules/calendar">今月へ戻る</a> <a class="button" href="/modules/calendar/new?date_value={date.today()}">予定を手動登録</a></form>{month_calendar}<h2>予定一覧</h2><p><strong>{len(display_events)}件</strong>の予定を表示しています。完了済みは通常非表示です。必要な場合は状態で「完了」を選択してください。</p><div class="calendar-desktop-only" style="overflow-x:auto"><table><tr><th>日付</th><th>予定</th><th>分類</th><th>登録元</th><th>状態</th></tr>{rows or '<tr><td colspan="5">条件に一致する予定はありません。</td></tr>'}</table></div><section class="calendar-mobile-only">{mobile_cards or '<div class="tenant">条件に一致する予定はありません。</div>'}</section>
     <style>.month-calendar{{margin:28px 0}}.month-calendar-nav{{display:grid;grid-template-columns:110px 1fr 110px;align-items:center;gap:12px}}.month-calendar-nav h2{{margin:0;text-align:center;border:0;padding:0}}.month-calendar-nav .button{{margin:0;text-align:center}}.month-calendar-head,.month-calendar-week{{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}}.month-calendar-head{{margin-top:16px;background:#f6edef;border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0}}.month-calendar-head span{{padding:8px;text-align:center;font-size:12px;font-weight:700;color:#694d57}}.month-calendar-day{{position:relative;min-height:112px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}}.month-calendar-day:first-child{{border-left:1px solid var(--line)}}.month-calendar-day.outside{{background:#faf7f6;color:#b7aaae}}.month-calendar-day.today{{box-shadow:inset 0 0 0 2px var(--rose)}}.month-calendar-date{{display:block;margin-bottom:5px;font-weight:700}}.month-calendar-add{{position:absolute;top:4px;right:5px;width:24px;height:24px;border-radius:50%;background:#f6edef;color:#704454;text-align:center;text-decoration:none;font-weight:700;line-height:24px}}.month-calendar-add:hover{{background:#cf6f91;color:#fff}}.month-calendar-event{{display:block;margin:3px 0;padding:4px 6px;border-radius:6px;background:#f6e1b8;color:#755514;text-decoration:none;font-size:11px;line-height:1.3;overflow:hidden;text-overflow:ellipsis}}.month-calendar-event.birth-window{{background:#f8edf1;color:#855667;border-left:3px solid #d7a1b4}}.month-calendar-event.birth-due{{background:#cf6f91;color:#fff;font-weight:700}}.month-calendar-event.overdue{{background:#f4c9ca;color:#8d3037}}.month-calendar-event.completed{{background:#d9eadb;color:#47634b}}@media(max-width:700px){{.month-calendar{{overflow-x:auto;margin-left:-14px;margin-right:-14px;padding:0 14px}}.month-calendar-nav{{position:sticky;left:0;grid-template-columns:90px minmax(120px,1fr) 90px}}.month-calendar-nav .button{{padding:9px 6px;font-size:12px;min-height:40px}}.month-calendar-head,.month-calendar-week{{min-width:700px}}.month-calendar-day{{min-height:96px;padding:5px}}}}</style>'''
     body = body.replace('</p><form method="get" action="/modules/calendar">', f'</p>{jkc_panel}<form method="get" action="/modules/calendar">', 1)

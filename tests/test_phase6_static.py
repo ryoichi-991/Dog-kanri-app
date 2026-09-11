@@ -224,7 +224,7 @@ class Phase6StaticTests(unittest.TestCase):
     def test_calendar_can_opt_in_to_cached_jkc_dogshows(self):
         route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
         segment = ast.get_source_segment(SOURCE, route)
-        for marker in ("show_jkc_dogshows", "refresh_jkc_dogshows", "JkcDogShowEvent", '"jkc_show"', "JKCドッグショー予定を表示する", "JKC公式", "jkc-show"):
+        for marker in ("show_jkc_dogshows", "refresh_jkc_dogshows", "JkcDogShowEvent", '"jkc_show"', "参加予定のJKCドッグショーを表示する", "JKC公式", "jkc-show"):
             self.assertIn(marker, segment)
         setting_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_jkc_setting")
         setting_segment = ast.get_source_segment(SOURCE, setting_route)
@@ -248,6 +248,27 @@ class Phase6StaticTests(unittest.TestCase):
         self.assertIn("ADD COLUMN IF NOT EXISTS show_jkc_dogshows", ast.get_source_segment(SOURCE, startup))
         tenant = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "Tenant")
         self.assertIn("show_jkc_dogshows", ast.get_source_segment(SOURCE, tenant))
+
+    def test_jkc_show_participation_page_controls_calendar_visibility(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_jkc_shows_page")
+        page_segment = ast.get_source_segment(SOURCE, page)
+        for marker in ("refresh_jkc_dogshows", "JkcDogShowParticipation.event_id", "参加する", "参加しない", "ドッグショー関係", "カレンダーへ戻る"):
+            self.assertIn(marker, page_segment)
+        action = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_jkc_show_participation")
+        action_segment = ast.get_source_segment(SOURCE, action)
+        for marker in ("JkcDogShowParticipation.tenant_id == tenant.id", "session.add", "session.delete", "session.commit"):
+            self.assertIn(marker, action_segment)
+        calendar_route = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "calendar_page")
+        calendar_segment = ast.get_source_segment(SOURCE, calendar_route)
+        self.assertIn(".join(JkcDogShowParticipation", calendar_segment)
+        self.assertIn("JkcDogShowParticipation.tenant_id == tenant.id", calendar_segment)
+        self.assertIn("参加するドッグショーを選ぶ", calendar_segment)
+
+    def test_jkc_show_participation_is_unique_per_tenant_and_event(self):
+        model = next(node for node in TREE.body if isinstance(node, ast.ClassDef) and node.name == "JkcDogShowParticipation")
+        segment = ast.get_source_segment(SOURCE, model)
+        for marker in ('UniqueConstraint("tenant_id", "event_id"', 'ForeignKey("tenants.id", ondelete="CASCADE")', 'ForeignKey("jkc_dogshow_events.id", ondelete="CASCADE")'):
+            self.assertIn(marker, segment)
 
     def test_pedigree_scan_search_includes_external_dogs(self):
         route = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "pedigree_scan")
