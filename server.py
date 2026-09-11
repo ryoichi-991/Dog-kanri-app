@@ -215,6 +215,8 @@ class TaskEvent(Base):
     all_day: Mapped[bool] = mapped_column(Boolean, default=False)
     completed: Mapped[bool] = mapped_column(Boolean, default=False)
     dog_id: Mapped[int | None] = mapped_column(ForeignKey("dogs.id"), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    source_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -2338,6 +2340,10 @@ def startup():
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS attachment_filename VARCHAR(255)"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS attachment_content_type VARCHAR(100)"))
         conn.execute(text("ALTER TABLE IF EXISTS health_records ADD COLUMN IF NOT EXISTS attachment_data BYTEA"))
+        conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS source_type VARCHAR(30)"))
+        conn.execute(text("ALTER TABLE IF EXISTS task_events ADD COLUMN IF NOT EXISTS source_id INTEGER"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_events_source_type ON task_events(source_type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_task_events_source_id ON task_events(source_id)"))
         conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS vaccine_type VARCHAR(30)"))
         conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS dose_number INTEGER"))
         conn.execute(text("ALTER TABLE IF EXISTS vaccinations ADD COLUMN IF NOT EXISTS clinic VARCHAR(150)"))
@@ -2669,6 +2675,41 @@ def dashboard_priority_items(tenant_id: int, session: Session) -> list[tuple[dat
     return items[:50]
 
 
+def reconcile_legacy_vaccination_tasks(tenant_id: int, session: Session) -> None:
+    """既存の未連携接種予定を最新のワクチン記録へ結び付け、日付ずれと重複を解消する。"""
+    dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant_id)).all()}
+    latest: dict[tuple[int, str], Vaccination] = {}
+    records = session.scalars(select(Vaccination).where(
+        Vaccination.tenant_id == tenant_id,
+        Vaccination.next_due_on.is_not(None),
+    ).order_by(Vaccination.administered_on.desc(), Vaccination.id.desc())).all()
+    for record in records:
+        dog = dogs.get(record.dog_id)
+        if not dog:
+            continue
+        title = f"{dog.call_name} {record.vaccine_name}接種予定"
+        latest.setdefault((record.dog_id, title), record)
+    changed = False
+    for (dog_id, title), record in latest.items():
+        legacy = session.scalars(select(TaskEvent).where(
+            TaskEvent.tenant_id == tenant_id,
+            TaskEvent.dog_id == dog_id,
+            TaskEvent.category == "health",
+            TaskEvent.title == title,
+            TaskEvent.source_type.is_(None),
+        ).order_by(TaskEvent.id)).all()
+        if not legacy:
+            continue
+        primary, *duplicates = legacy
+        primary.due_date = record.next_due_on
+        primary.source_type, primary.source_id = "vaccination", record.id
+        for duplicate in duplicates:
+            session.delete(duplicate)
+        changed = True
+    if changed:
+        session.commit()
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
     tenants = accessible_tenants(user, session)
@@ -2694,6 +2735,7 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
             module_cards += f'<a class="module" href="/modules/{key}"><h3>{title}</h3><p>{description}{extra}</p></a>'
     body = f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>'
     if tenant:
+        reconcile_legacy_vaccination_tasks(tenant.id, session)
         priority_items = [item for item in dashboard_priority_items(tenant.id, session)
                           if employee_can(user, permission_group_for_path(item[3]), "view")]; today = date.today()
         overdue_count = sum(1 for item in priority_items if item[0] < today); today_count = sum(1 for item in priority_items if item[0] == today); week_count = sum(1 for item in priority_items if today < item[0] <= today + timedelta(days=7))
@@ -4967,7 +5009,7 @@ def health_vaccinations_page(access=Depends(require_tenant_user), session: Sessi
     <div class="dog-picker"><label>対象犬を検索</label><input class="dog-search" type="search" data-dog-select="vaccination-dog" placeholder="呼び名・血統書名・犬種・区分で検索"><label class="dog-search-all"><input type="checkbox"> 販売済み・譲渡済みの犬も検索する</label><small class="dog-search-count"></small><label>対象犬</label><select id="vaccination-dog" name="dog_id" required>{options}</select></div>
     <div><label>ワクチン区分</label><select name="vaccine_type" id="vaccination-type" required><option value="rabies">狂犬病</option><option value="mixed">混合ワクチン</option><option value="other">その他</option></select></div>
     <div><label>ワクチン名</label><input name="vaccine_name" id="vaccination-name" placeholder="狂犬病は空欄でも登録できます"><small>狂犬病で空欄の場合は「狂犬病ワクチン」として登録します。</small></div><div><label>子犬期の接種順（任意）</label><select name="dose_number"><option value="">入力なし</option><option value="1">1回目</option><option value="2">2回目</option><option value="3">3回目</option><option value="4">追加接種</option></select><small>成犬の定期接種では入力不要です。</small></div>
-    <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on"><small>空欄の場合は接種日の1年後を自動設定します。</small></div>
+    <div><label>接種日</label><input type="date" name="administered_on" value="{date.today()}" min="2000-01-01" max="2100-12-31" required></div><div><label>次回接種予定日</label><input type="date" name="next_due_on" min="2000-01-01" max="2100-12-31"><small>空欄の場合は接種日の1年後を自動設定します。</small></div>
     <div><label>動物病院</label><input name="clinic"></div><div><label>メーカー</label><input name="manufacturer"></div><div><label>製造番号・ロット番号</label><input name="lot_no"></div><div><label>証明書番号</label><input name="certificate_no"></div>
     <div><label>副反応</label><select name="reaction"><option value="none">なし</option><option value="mild">軽い症状あり</option><option value="severe">強い症状あり</option><option value="unknown">不明</option></select></div><div><label>証明書（画像・PDF、8MBまで）</label><input type="file" name="certificate_file" accept="image/jpeg,image/png,image/webp,application/pdf"></div></div>
     <label>メモ</label><textarea name="notes"></textarea><label style="font-weight:400"><input style="width:auto" type="checkbox" name="owner_visible" value="true"> オーナーページにも共有する</label><input type="hidden" name="return_to" value="vaccinations"><button>接種を記録</button></form>
@@ -4986,6 +5028,37 @@ def vaccination_certificate(vaccination_id: int, access=Depends(require_tenant_u
     return Response(content=item.certificate_data, media_type=item.certificate_content_type or "application/octet-stream", headers={"Cache-Control": "private, no-store"})
 
 
+def sync_vaccination_task(session: Session, tenant_id: int, dog: Dog, item: Vaccination, old_title: str | None = None) -> None:
+    """ワクチン記録と自動予定を1対1で同期し、旧形式の予定も引き継ぐ。"""
+    title = f"{dog.call_name} {item.vaccine_name}接種予定"
+    task = session.scalar(select(TaskEvent).where(
+        TaskEvent.tenant_id == tenant_id,
+        TaskEvent.source_type == "vaccination",
+        TaskEvent.source_id == item.id,
+    ).order_by(TaskEvent.id))
+    if not task:
+        legacy_titles = {title}
+        if old_title:
+            legacy_titles.add(old_title)
+        task = session.scalar(select(TaskEvent).where(
+            TaskEvent.tenant_id == tenant_id,
+            TaskEvent.dog_id == dog.id,
+            TaskEvent.category == "health",
+            TaskEvent.title.in_(legacy_titles),
+            TaskEvent.source_type.is_(None),
+        ).order_by(TaskEvent.id))
+    if item.next_due_on is None:
+        if task:
+            session.delete(task)
+        return
+    if not task:
+        task = TaskEvent(tenant_id=tenant_id, dog_id=dog.id, title=title, category="health", due_date=item.next_due_on)
+        session.add(task)
+    task.title, task.due_date = title, item.next_due_on
+    task.source_type, task.source_id = "vaccination", item.id
+    task.completed = False
+
+
 @app.post("/modules/health/vaccinations/{vaccination_id}/delete")
 def vaccination_delete(vaccination_id: int, confirm_delete: bool = Form(False), access=Depends(require_tenant_user), session: Session = Depends(db)):
     _, tenant = access
@@ -5001,6 +5074,13 @@ def vaccination_delete(vaccination_id: int, confirm_delete: bool = Form(False), 
     )).all()
     for share in shares:
         session.delete(share)
+    tasks = session.scalars(select(TaskEvent).where(
+        TaskEvent.tenant_id == tenant.id,
+        ((TaskEvent.source_type == "vaccination") & (TaskEvent.source_id == item.id))
+        | ((TaskEvent.source_type.is_(None)) & (TaskEvent.dog_id == item.dog_id) & (TaskEvent.title == f"{session.get(Dog, item.dog_id).call_name} {item.vaccine_name}接種予定")),
+    )).all()
+    for task in tasks:
+        session.delete(task)
     session.delete(item)
     session.commit()
     return RedirectResponse("/modules/health/vaccinations", status_code=303)
@@ -5028,6 +5108,8 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(""), 
                 next_due = administered.replace(year=administered.year + 1, day=28)
     except ValueError:
         raise HTTPException(status_code=400, detail="接種日・次回接種予定日を確認してください")
+    if not date(2000, 1, 1) <= administered <= date(2100, 12, 31) or not date(2000, 1, 1) <= next_due <= date(2100, 12, 31):
+        raise HTTPException(status_code=400, detail="接種日・次回接種予定日は2000年から2100年の範囲で入力してください")
     file_data = None
     if certificate_file and certificate_file.filename:
         allowed = {"image/jpeg", "image/png", "image/webp", "application/pdf"}
@@ -5046,8 +5128,7 @@ async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(""), 
     session.flush()
     if owner_visible:
         session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="vaccination", record_id=item.id, owner_visible=True, updated_by_id=user.id))
-    if next_due:
-        session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} {normalized_name}接種予定", category="health", due_date=next_due))
+    sync_vaccination_task(session, tenant.id, dog, item)
     session.commit()
     return RedirectResponse("/modules/health/vaccinations" if return_to == "vaccinations" else "/modules/health", status_code=303)
 
@@ -6060,7 +6141,7 @@ def dog_health_record_edit_page(dog_id: int, record_type: str, record_id: int, r
         fields = f'''<div class="grid"><div><label>記録日</label><input type="date" name="record_date" value="{item.record_date}" required></div><div><label>測定日時</label><input type="datetime-local" name="recorded_at" value="{recorded_at}"></div><div><label>分類</label><input value="{html.escape(category_label)}" disabled><input type="hidden" name="category" value="{html.escape(item.category)}"></div><div><label>体重（kg）</label><input type="number" step="0.001" min="0.001" name="weight_kg" value="{value('weight_kg')}" placeholder="例：0.158"></div><div><label>体温（℃）</label><input type="number" step="0.1" min="30.0" max="45.0" name="temperature_c" value="{value('temperature_c')}" placeholder="例：38.5" {'required' if item.category == 'temperature' else ''}></div><div><label>食事量（g）</label><input type="number" step="0.1" min="0" name="meal_amount_g" value="{value('meal_amount_g')}"></div><div><label>フード名</label><input name="food_name" value="{value('food_name')}"></div><div><label>うんちの状態</label><input name="stool_condition" value="{value('stool_condition')}"></div><div><label>健康状態</label><input name="health_condition" value="{value('health_condition')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div></div><fieldset><legend>健診項目</legend><label><input type="checkbox" name="physical_exam" {checked('physical_exam')}> 触診</label><label><input type="checkbox" name="blood_test" {checked('blood_test')}> 血液検査</label><label><input type="checkbox" name="ultrasound" {checked('ultrasound')}> エコー</label><label><input type="checkbox" name="chest_xray" {checked('chest_xray')}> 胸部X線</label><label><input type="checkbox" name="other_exam" {checked('other_exam')}> その他</label></fieldset>{health_edit_select('result_summary', item.result_summary, {'':'未設定','normal':'異常なし','followup':'経過観察','recheck':'再検査','treatment':'治療・受診が必要'}, '健診結果')}<label>メモ</label><textarea name="notes">{value('notes')}</textarea>'''
         title = "健康・体重記録"
     elif record_type == "vaccination":
-        fields = f'''<div class="grid"><div><label>ワクチン名</label><input name="vaccine_name" value="{value('vaccine_name')}" required maxlength="150"></div><div><label>接種日</label><input type="date" name="administered_on" value="{item.administered_on}" required></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div><div><label>証明書番号</label><input name="certificate_no" value="{value('certificate_no')}"></div>{health_edit_select('vaccine_type', item.vaccine_type, {'rabies':'狂犬病','mixed':'混合ワクチン','other':'その他'}, '種類')}<div><label>子犬期の接種順</label><input type="number" min="1" max="4" name="dose_number" value="{value('dose_number')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>メーカー</label><input name="manufacturer" value="{value('manufacturer')}"></div><div><label>ロット番号</label><input name="lot_no" value="{value('lot_no')}"></div>{health_edit_select('reaction', item.reaction, {'none':'なし','mild':'軽度','severe':'重度','unknown':'不明'}, '副反応')}</div><label>メモ</label><textarea name="notes">{value('notes')}</textarea><p><small>登録済みの証明書ファイルはそのまま保持されます。</small></p>'''
+        fields = f'''<div class="grid"><div><label>ワクチン名</label><input name="vaccine_name" value="{value('vaccine_name')}" required maxlength="150"></div><div><label>接種日</label><input type="date" name="administered_on" value="{item.administered_on}" min="2000-01-01" max="2100-12-31" required></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}" min="2000-01-01" max="2100-12-31"><small>空欄の場合は接種日の1年後を自動設定します。</small></div><div><label>証明書番号</label><input name="certificate_no" value="{value('certificate_no')}"></div>{health_edit_select('vaccine_type', item.vaccine_type, {'rabies':'狂犬病','mixed':'混合ワクチン','other':'その他'}, '種類')}<div><label>子犬期の接種順</label><input type="number" min="1" max="4" name="dose_number" value="{value('dose_number')}"></div><div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div><div><label>メーカー</label><input name="manufacturer" value="{value('manufacturer')}"></div><div><label>ロット番号</label><input name="lot_no" value="{value('lot_no')}"></div>{health_edit_select('reaction', item.reaction, {'none':'なし','mild':'軽度','severe':'重度','unknown':'不明'}, '副反応')}</div><label>メモ</label><textarea name="notes">{value('notes')}</textarea><p><small>登録済みの証明書ファイルはそのまま保持されます。</small></p>'''
         title = "ワクチン記録"
     elif record_type == "medication":
         fields = f'''<div class="grid"><div><label>薬剤名</label><input name="medicine_name" value="{value('medicine_name')}" required></div><div><label>記録日</label><input type="date" name="administered_on" value="{item.administered_on}" required></div>{health_edit_select('medication_type', item.medication_type, {'treatment':'治療薬','prevention':'予防薬','supplement':'サプリメント','other':'その他'}, '区分')}<div><label>目的・対象症状</label><input name="purpose" value="{value('purpose')}"></div><div><label>1回量</label><input name="dosage" value="{value('dosage')}"></div><div><label>投薬頻度</label><input name="frequency" value="{value('frequency')}"></div><div><label>開始日</label><input type="date" name="started_on" value="{value('started_on')}"></div><div><label>終了日</label><input type="date" name="ended_on" value="{value('ended_on')}"></div><div><label>次回予定日</label><input type="date" name="next_due_on" value="{value('next_due_on')}"></div>{health_edit_select('status', item.status, {'single':'単回','ongoing':'継続中','completed':'終了'}, '状態')}<div><label>動物病院</label><input name="clinic" value="{value('clinic')}"></div></div><label>オーナー向け説明</label><textarea name="owner_notes">{value('owner_notes')}</textarea><label>犬舎内部メモ</label><textarea name="notes">{value('notes')}</textarea>'''
@@ -6110,12 +6191,18 @@ async def dog_health_record_update(dog_id: int, record_type: str, record_id: int
                     item.next_due_on = item.record_date.replace(year=item.record_date.year + 1, day=28)
             if not item.record_date or item.stool_condition not in {None, "良好", "やわらかい", "下痢", "硬い", "出ていない"} or item.health_condition not in {None, "良好", "少し悪い", "悪い"} or item.result_summary not in {None, "normal", "followup", "recheck", "treatment"} or item.category == "checkup" and not any([item.physical_exam, item.blood_test, item.ultrasound, item.chest_xray, item.other_exam]): raise ValueError
         elif record_type == "vaccination":
+            old_title = f"{dog.call_name} {item.vaccine_name}接種予定"
             item.vaccine_name, item.administered_on, item.next_due_on = text_value("vaccine_name"), parse_date("administered_on"), parse_date("next_due_on")
+            if item.administered_on and item.next_due_on is None:
+                try:
+                    item.next_due_on = item.administered_on.replace(year=item.administered_on.year + 1)
+                except ValueError:
+                    item.next_due_on = item.administered_on.replace(year=item.administered_on.year + 1, day=28)
             item.certificate_no, item.vaccine_type = text_value("certificate_no") or None, text_value("vaccine_type")
             item.dose_number = int(text_value("dose_number")) if text_value("dose_number") else None
             item.clinic, item.manufacturer, item.lot_no = text_value("clinic") or None, text_value("manufacturer") or None, text_value("lot_no") or None
             item.reaction, item.notes = text_value("reaction"), text_value("notes") or None
-            if not item.vaccine_name or not item.administered_on or item.vaccine_type not in {"rabies", "mixed", "other"} or item.reaction not in {"none", "mild", "severe", "unknown"} or item.dose_number not in {None, 1, 2, 3, 4}: raise ValueError
+            if not item.vaccine_name or not item.administered_on or not item.next_due_on or not date(2000, 1, 1) <= item.administered_on <= date(2100, 12, 31) or not date(2000, 1, 1) <= item.next_due_on <= date(2100, 12, 31) or item.vaccine_type not in {"rabies", "mixed", "other"} or item.reaction not in {"none", "mild", "severe", "unknown"} or item.dose_number not in {None, 1, 2, 3, 4}: raise ValueError
         elif record_type == "medication":
             item.medicine_name, item.administered_on = text_value("medicine_name"), parse_date("administered_on")
             item.medication_type, item.purpose = text_value("medication_type"), text_value("purpose") or None
@@ -6144,6 +6231,8 @@ async def dog_health_record_update(dog_id: int, record_type: str, record_id: int
             if not item.test_name or item.result not in {"clear", "carrier", "affected", "unknown"}: raise ValueError
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="健康記録の入力内容を確認してください")
+    if record_type == "vaccination":
+        sync_vaccination_task(session, tenant.id, dog, item, old_title)
     session.commit()
     if record_type == "vaccination" and text_value("return_to") == "vaccinations":
         return RedirectResponse("/modules/health/vaccinations", status_code=303)

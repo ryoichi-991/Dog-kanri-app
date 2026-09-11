@@ -174,7 +174,9 @@ class HealthSharingStaticTests(unittest.TestCase):
         segment = ast.get_source_segment(TEXT, create)
         self.assertIn("owner_visible: bool = Form(False)", segment)
         self.assertIn('record_type="vaccination"', segment)
-        self.assertIn("TaskEvent(", segment)
+        self.assertIn("sync_vaccination_task(session, tenant.id, dog, item)", segment)
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "sync_vaccination_task")
+        self.assertIn("TaskEvent(", ast.get_source_segment(TEXT, helper))
 
     def test_vaccination_dose_means_puppy_series_not_annual_count(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
@@ -193,7 +195,7 @@ class HealthSharingStaticTests(unittest.TestCase):
             self.assertIn(marker, page_segment)
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
         create_segment = ast.get_source_segment(TEXT, create)
-        for marker in ('vaccine_name: str = Form("")', '"狂犬病ワクチン" if vaccine_type == "rabies"', "administered.replace(year=administered.year + 1)", "day=28", "vaccine_name=normalized_name", "due_date=next_due"):
+        for marker in ('vaccine_name: str = Form("")', '"狂犬病ワクチン" if vaccine_type == "rabies"', "administered.replace(year=administered.year + 1)", "day=28", "vaccine_name=normalized_name", "next_due_on=next_due"):
             self.assertIn(marker, create_segment)
         self.assertIn('if not normalized_name', create_segment)
 
@@ -210,6 +212,43 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('return_to == "vaccinations"', ast.get_source_segment(TEXT, edit_page))
         update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
         self.assertIn('text_value("return_to") == "vaccinations"', ast.get_source_segment(TEXT, update))
+
+    def test_vaccination_edits_keep_automatic_task_in_sync(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "sync_vaccination_task")
+        helper_segment = ast.get_source_segment(TEXT, helper)
+        for marker in ('TaskEvent.source_type == "vaccination"', "TaskEvent.source_id == item.id", "legacy_titles", "task.due_date = title, item.next_due_on", 'task.source_type, task.source_id = "vaccination", item.id', "task.completed = False"):
+            self.assertIn(marker, helper_segment)
+        update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        update_segment = ast.get_source_segment(TEXT, update)
+        for marker in ("old_title", "sync_vaccination_task(session, tenant.id, dog, item, old_title)", "item.administered_on.replace(year=item.administered_on.year + 1)"):
+            self.assertIn(marker, update_segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        self.assertIn("sync_vaccination_task(session, tenant.id, dog, item)", ast.get_source_segment(TEXT, create))
+
+    def test_vaccination_dates_reject_invalid_years(self):
+        page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_vaccinations_page")
+        page_segment = ast.get_source_segment(TEXT, page)
+        self.assertIn('min="2000-01-01" max="2100-12-31"', page_segment)
+        create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
+        create_segment = ast.get_source_segment(TEXT, create)
+        self.assertIn("date(2000, 1, 1) <= administered <= date(2100, 12, 31)", create_segment)
+        self.assertIn("date(2000, 1, 1) <= next_due <= date(2100, 12, 31)", create_segment)
+
+    def test_existing_vaccination_tasks_are_reconciled_on_dashboard(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "reconcile_legacy_vaccination_tasks")
+        segment = ast.get_source_segment(TEXT, helper)
+        for marker in ("Vaccination.next_due_on.is_not(None)", "TaskEvent.source_type.is_(None)", "primary.due_date = record.next_due_on", "session.delete(duplicate)"):
+            self.assertIn(marker, segment)
+        dashboard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard")
+        self.assertIn("reconcile_legacy_vaccination_tasks(tenant.id, session)", ast.get_source_segment(TEXT, dashboard))
+
+    def test_vaccination_delete_removes_linked_automatic_task(self):
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "vaccination_delete")
+        segment = ast.get_source_segment(TEXT, delete)
+        for marker in ('TaskEvent.source_type == "vaccination"', "TaskEvent.source_id == item.id", "session.delete(task)"):
+            self.assertIn(marker, segment)
+        self.assertIn("ADD COLUMN IF NOT EXISTS source_type VARCHAR(30)", TEXT)
+        self.assertIn("ADD COLUMN IF NOT EXISTS source_id INTEGER", TEXT)
 
     def test_checkup_management_is_a_dedicated_page(self):
         self.assertIn('@app.get("/modules/health/checkups"', TEXT)
