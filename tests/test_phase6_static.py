@@ -2317,6 +2317,15 @@ class Phase6StaticTests(unittest.TestCase):
         for marker in ("アワード", "1月1日から12月31日", "JKC公式予定", "ポイントは個別入力"):
             self.assertIn(marker, guide)
 
+    def test_award_show_picker_searches_the_full_year_without_a_large_select(self):
+        page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "awards_page"))
+        for marker in ("year_start", "year_end", "award-show-month", "award-show-search", "award-show-option", "data-month", "data-search", "filterShows", "1年間すべて", "全予定を更新"):
+            self.assertIn(marker, page)
+        self.assertIn('type="radio" name="jkc_event_id"', page)
+        sync = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "award_sync_year_shows"))
+        for marker in ("range(1, 13)", "refresh_jkc_dogshows", 'result = "partial" if failed_months else "ok"'):
+            self.assertIn(marker, sync)
+
     def test_finance_audit_issue_output_is_escaped(self):
         page = ast.get_source_segment(SOURCE, next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "finance_audit_page"))
         self.assertIn("html.escape(label)", page)
