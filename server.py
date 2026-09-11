@@ -2710,6 +2710,40 @@ def reconcile_legacy_vaccination_tasks(tenant_id: int, session: Session) -> None
         session.commit()
 
 
+def reconcile_legacy_checkup_tasks(tenant_id: int, session: Session) -> None:
+    """既存の未連携健診予定を最新の健診記録へ結び付け、日付ずれと重複を解消する。"""
+    dogs = {dog.id: dog for dog in session.scalars(select(Dog).where(Dog.tenant_id == tenant_id)).all()}
+    latest: dict[int, HealthRecord] = {}
+    records = session.scalars(select(HealthRecord).where(
+        HealthRecord.tenant_id == tenant_id,
+        HealthRecord.category == "checkup",
+        HealthRecord.next_due_on.is_not(None),
+    ).order_by(HealthRecord.record_date.desc(), HealthRecord.id.desc())).all()
+    for record in records:
+        if record.dog_id in dogs:
+            latest.setdefault(record.dog_id, record)
+    changed = False
+    for dog_id, record in latest.items():
+        title = f"{dogs[dog_id].call_name} 次回健診予定"
+        legacy = session.scalars(select(TaskEvent).where(
+            TaskEvent.tenant_id == tenant_id,
+            TaskEvent.dog_id == dog_id,
+            TaskEvent.category == "health",
+            TaskEvent.title == title,
+            TaskEvent.source_type.is_(None),
+        ).order_by(TaskEvent.id)).all()
+        if not legacy:
+            continue
+        primary, *duplicates = legacy
+        primary.due_date = record.next_due_on
+        primary.source_type, primary.source_id = "checkup", record.id
+        for duplicate in duplicates:
+            session.delete(duplicate)
+        changed = True
+    if changed:
+        session.commit()
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, user: User = Depends(require_user), session: Session = Depends(db)):
     tenants = accessible_tenants(user, session)
@@ -2736,6 +2770,7 @@ def dashboard(request: Request, user: User = Depends(require_user), session: Ses
     body = f'<h1>{html.escape(user.name)}さん、こんにちは</h1>{switcher}<p><span class="badge">{label}</span></p>'
     if tenant:
         reconcile_legacy_vaccination_tasks(tenant.id, session)
+        reconcile_legacy_checkup_tasks(tenant.id, session)
         priority_items = [item for item in dashboard_priority_items(tenant.id, session)
                           if employee_can(user, permission_group_for_path(item[3]), "view")]; today = date.today()
         overdue_count = sum(1 for item in priority_items if item[0] < today); today_count = sum(1 for item in priority_items if item[0] == today); week_count = sum(1 for item in priority_items if today < item[0] <= today + timedelta(days=7))
@@ -4816,6 +4851,34 @@ def health_checkups_page(access=Depends(require_tenant_user), session: Session =
     return layout("健診管理", body, user)
 
 
+def sync_checkup_task(session: Session, tenant_id: int, dog: Dog, item: HealthRecord) -> None:
+    """健診記録と自動予定を1対1で同期し、旧形式の予定も引き継ぐ。"""
+    title = f"{dog.call_name} 次回健診予定"
+    task = session.scalar(select(TaskEvent).where(
+        TaskEvent.tenant_id == tenant_id,
+        TaskEvent.source_type == "checkup",
+        TaskEvent.source_id == item.id,
+    ).order_by(TaskEvent.id))
+    if not task:
+        task = session.scalar(select(TaskEvent).where(
+            TaskEvent.tenant_id == tenant_id,
+            TaskEvent.dog_id == dog.id,
+            TaskEvent.category == "health",
+            TaskEvent.title == title,
+            TaskEvent.source_type.is_(None),
+        ).order_by(TaskEvent.id))
+    if item.next_due_on is None:
+        if task:
+            session.delete(task)
+        return
+    if not task:
+        task = TaskEvent(tenant_id=tenant_id, dog_id=dog.id, title=title, category="health", due_date=item.next_due_on)
+        session.add(task)
+    task.title, task.due_date = title, item.next_due_on
+    task.source_type, task.source_id = "checkup", item.id
+    task.completed = False
+
+
 @app.post("/modules/health/checkup")
 async def health_checkup_create(dog_id: int = Form(...), record_date: str = Form(...), clinic: str = Form(""), result_summary: str = Form(...), next_due_on: str = Form(""), physical_exam: bool = Form(False), blood_test: bool = Form(False), ultrasound: bool = Form(False), chest_xray: bool = Form(False), other_exam: bool = Form(False), notes: str = Form(""), owner_visible: bool = Form(False), attachment_file: UploadFile | None = File(None), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access; dog = tenant_dog(session, tenant.id, dog_id)
@@ -4836,7 +4899,7 @@ async def health_checkup_create(dog_id: int = Form(...), record_date: str = Form
     item = HealthRecord(tenant_id=tenant.id, dog_id=dog.id, record_date=checked_on, category="checkup", clinic=clinic.strip() or None, notes=notes.strip() or None, physical_exam=physical_exam, blood_test=blood_test, ultrasound=ultrasound, chest_xray=chest_xray, other_exam=other_exam, result_summary=result_summary, next_due_on=due, attachment_filename=((attachment_file.filename or "")[:255] or None) if attachment_file and attachment_data else None, attachment_content_type=attachment_file.content_type if attachment_file and attachment_data else None, attachment_data=attachment_data)
     session.add(item); session.flush()
     if owner_visible: session.add(HealthRecordShare(tenant_id=tenant.id, dog_id=dog.id, record_type="health", record_id=item.id, owner_visible=True, updated_by_id=user.id))
-    if due: session.add(TaskEvent(tenant_id=tenant.id, dog_id=dog.id, title=f"{dog.call_name} 次回健診予定", category="health", due_date=due))
+    sync_checkup_task(session, tenant.id, dog, item)
     session.commit(); return RedirectResponse("/modules/health/checkups", status_code=303)
 
 
@@ -4858,6 +4921,14 @@ def health_checkup_delete(record_id: int, confirm_delete: bool = Form(False), ac
     shares = session.scalars(select(HealthRecordShare).where(HealthRecordShare.tenant_id == tenant.id, HealthRecordShare.record_type == "health", HealthRecordShare.record_id == item.id)).all()
     for share in shares:
         session.delete(share)
+    dog = session.get(Dog, item.dog_id)
+    tasks = session.scalars(select(TaskEvent).where(
+        TaskEvent.tenant_id == tenant.id,
+        ((TaskEvent.source_type == "checkup") & (TaskEvent.source_id == item.id))
+        | ((TaskEvent.source_type.is_(None)) & (TaskEvent.dog_id == item.dog_id) & (TaskEvent.title == f"{dog.call_name if dog else '対象犬'} 次回健診予定")),
+    )).all()
+    for task in tasks:
+        session.delete(task)
     session.delete(item)
     session.commit()
     return RedirectResponse("/modules/health/checkups", status_code=303)
@@ -6231,6 +6302,8 @@ async def dog_health_record_update(dog_id: int, record_type: str, record_id: int
             if not item.test_name or item.result not in {"clear", "carrier", "affected", "unknown"}: raise ValueError
     except (ValueError, TypeError):
         raise HTTPException(status_code=400, detail="健康記録の入力内容を確認してください")
+    if record_type == "record" and item.category == "checkup":
+        sync_checkup_task(session, tenant.id, dog, item)
     if record_type == "vaccination":
         sync_vaccination_task(session, tenant.id, dog, item, old_title)
     session.commit()

@@ -264,7 +264,9 @@ class HealthSharingStaticTests(unittest.TestCase):
         segment = ast.get_source_segment(TEXT, create)
         self.assertIn("not any([physical_exam, blood_test, ultrasound, chest_xray, other_exam])", segment)
         self.assertIn('category="checkup"', segment)
-        self.assertIn("TaskEvent(", segment)
+        self.assertIn("sync_checkup_task(session, tenant.id, dog, item)", segment)
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "sync_checkup_task")
+        self.assertIn("TaskEvent(", ast.get_source_segment(TEXT, helper))
 
     def test_checkup_history_supports_edit_and_confirmed_delete(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")
@@ -279,6 +281,28 @@ class HealthSharingStaticTests(unittest.TestCase):
         self.assertIn('return_to == "checkups"', ast.get_source_segment(TEXT, edit_page))
         update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
         self.assertIn('text_value("return_to") == "checkups"', ast.get_source_segment(TEXT, update))
+
+    def test_checkup_edits_keep_automatic_task_in_sync(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "sync_checkup_task")
+        segment = ast.get_source_segment(TEXT, helper)
+        for marker in ('TaskEvent.source_type == "checkup"', "TaskEvent.source_id == item.id", "TaskEvent.source_type.is_(None)", "task.title, task.due_date = title, item.next_due_on", 'task.source_type, task.source_id = "checkup", item.id', "task.completed = False"):
+            self.assertIn(marker, segment)
+        update = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "dog_health_record_update")
+        self.assertIn("sync_checkup_task(session, tenant.id, dog, item)", ast.get_source_segment(TEXT, update))
+
+    def test_existing_checkup_tasks_are_reconciled_on_dashboard(self):
+        helper = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "reconcile_legacy_checkup_tasks")
+        segment = ast.get_source_segment(TEXT, helper)
+        for marker in ('HealthRecord.category == "checkup"', "HealthRecord.next_due_on.is_not(None)", "TaskEvent.source_type.is_(None)", "primary.due_date = record.next_due_on", "session.delete(duplicate)"):
+            self.assertIn(marker, segment)
+        dashboard = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "dashboard")
+        self.assertIn("reconcile_legacy_checkup_tasks(tenant.id, session)", ast.get_source_segment(TEXT, dashboard))
+
+    def test_checkup_delete_removes_linked_automatic_task(self):
+        delete = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkup_delete")
+        segment = ast.get_source_segment(TEXT, delete)
+        for marker in ('TaskEvent.source_type == "checkup"', "TaskEvent.source_id == item.id", "session.delete(task)"):
+            self.assertIn(marker, segment)
 
     def test_checkup_other_exam_and_automatic_next_due(self):
         page = next(node for node in TREE.body if isinstance(node, ast.FunctionDef) and node.name == "health_checkups_page")
