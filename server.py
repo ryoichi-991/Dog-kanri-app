@@ -4930,7 +4930,7 @@ def vaccination_delete(vaccination_id: int, confirm_delete: bool = Form(False), 
 
 
 @app.post("/modules/health/vaccine")
-async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(...), administered_on: str = Form(...), next_due_on: str = Form(""), certificate_no: str = Form(""), vaccine_type: str = Form("other"), dose_number: str = Form(""), clinic: str = Form(""), manufacturer: str = Form(""), lot_no: str = Form(""), reaction: str = Form("unknown"), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), certificate_file: UploadFile | None = File(None), access=Depends(require_tenant_user), session: Session = Depends(db)):
+async def vaccine_create(dog_id: int = Form(...), vaccine_name: str = Form(""), administered_on: str = Form(...), next_due_on: str = Form(""), certificate_no: str = Form(""), vaccine_type: str = Form("other"), dose_number: str = Form(""), clinic: str = Form(""), manufacturer: str = Form(""), lot_no: str = Form(""), reaction: str = Form("unknown"), notes: str = Form(""), owner_visible: bool = Form(False), return_to: str = Form("health"), certificate_file: UploadFile | None = File(None), access=Depends(require_tenant_user), session: Session = Depends(db)):
     user, tenant = access
     dog = tenant_dog(session, tenant.id, dog_id)
     if vaccine_type not in {"rabies", "mixed", "other"} or reaction not in {"none", "mild", "severe", "unknown"}:

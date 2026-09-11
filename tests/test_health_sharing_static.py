@@ -193,7 +193,7 @@ class HealthSharingStaticTests(unittest.TestCase):
             self.assertIn(marker, page_segment)
         create = next(node for node in TREE.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "vaccine_create")
         create_segment = ast.get_source_segment(TEXT, create)
-        for marker in ('"狂犬病ワクチン" if vaccine_type == "rabies"', "administered.replace(year=administered.year + 1)", "day=28", "vaccine_name=normalized_name", "due_date=next_due"):
+        for marker in ('vaccine_name: str = Form("")', '"狂犬病ワクチン" if vaccine_type == "rabies"', "administered.replace(year=administered.year + 1)", "day=28", "vaccine_name=normalized_name", "due_date=next_due"):
             self.assertIn(marker, create_segment)
         self.assertIn('if not normalized_name', create_segment)
 
